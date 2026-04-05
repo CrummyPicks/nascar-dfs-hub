@@ -87,13 +87,14 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                     "Laps Led", "Fastest Laps", "Fast Laps", "DNF", "Laps",
                     "TH Races", "TH Wins", "TH T5", "TH T10", "TH T20",
                     "TH Laps Led", "TH DNF", "TH Best", "TH Worst",
-                    "Races (Trk)", "Wins (Trk)", "T5 (Trk)", "T10 (Trk)", "T20 (Trk)",
-                    "Laps Led (Trk)", "DNF (Trk)",
+                    "TH_Races", "TH_Wins", "TH_T5", "TH_T10", "TH_T20",
+                    "TH_Laps Led", "TH_DNF",
                     "GFS Races", "Finish Position", "Start", "Qual",
                     "Qualifying Position", "Finish", "Pos Diff",
                     "Position Differential", "Projected Finish",
                     "Proj Laps Led", "Proj Fast Laps", "Count",
-                    "Best Finish", "Worst Finish", "DK Salary"}
+                    "Best Finish", "Worst Finish", "DK Salary",
+                    "Qual Pos"}
 
     # 1-decimal columns
     one_dec_patterns = {"Avg Finish", "Avg Start", "Avg Rating", "Rating",
@@ -102,7 +103,7 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                         "Track Score", "Qual Score", "Practice Score",
                         "Weighted Score", "Score", "TH Avg Finish",
                         "TH Avg Start", "TH Rating",
-                        "Avg Finish (Trk)", "Avg Start (Trk)", "Rating (Trk)",
+                        "TH_Avg Finish", "TH_Avg Start", "TH_Rating",
                         "Avg DFS", "Best DFS",
                         "Worst DFS", "GFS Avg DK Pts", "GFS Avg FD Pts",
                         "Avg Laps Led", "Avg Fastest Laps", "Avg Fast Laps",

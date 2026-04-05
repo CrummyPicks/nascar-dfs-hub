@@ -98,12 +98,13 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     with st.spinner(f"Loading {track_name} history..."):
         th_df = scrape_track_history(track_name, series_id)
     if not th_df.empty:
-        # Prefix needed to avoid column name clashes with Results columns
+        # Rename track history columns to avoid clashes with Results columns
+        # Use "TH_" prefix internally, then display without prefix under group header
         th_rename = {
-            "Races": "Races (Trk)", "Avg Finish": "Avg Finish (Trk)", "Avg Start": "Avg Start (Trk)",
-            "Avg Rating": "Rating (Trk)", "Wins": "Wins (Trk)", "Top 5": "T5 (Trk)",
-            "Top 10": "T10 (Trk)", "Top 20": "T20 (Trk)", "Laps Led": "Laps Led (Trk)",
-            "DNF": "DNF (Trk)",
+            "Races": "TH_Races", "Avg Finish": "TH_Avg Finish", "Avg Start": "TH_Avg Start",
+            "Avg Rating": "TH_Rating", "Wins": "TH_Wins", "Top 5": "TH_T5",
+            "Top 10": "TH_T10", "Top 20": "TH_T20", "Laps Led": "TH_Laps Led",
+            "DNF": "TH_DNF",
         }
         th_merge = th_df.rename(columns=th_rename)
         th_cols = ["Driver"] + [v for v in th_rename.values() if v in th_merge.columns]
@@ -145,8 +146,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
             practice.append(c)
 
     track_history = []
-    for c in ["Races (Trk)", "Avg Finish (Trk)", "Avg Start (Trk)", "Rating (Trk)",
-              "Wins (Trk)", "T5 (Trk)", "T10 (Trk)", "T20 (Trk)", "Laps Led (Trk)", "DNF (Trk)"]:
+    for c in ["TH_Races", "TH_Avg Finish", "TH_Avg Start", "TH_Rating",
+              "TH_Wins", "TH_T5", "TH_T10", "TH_T20", "TH_Laps Led", "TH_DNF"]:
         if c in master.columns:
             track_history.append(c)
 
@@ -183,7 +184,12 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     for c in track_history:
         group_map[c] = "Track History"
 
-    multi_tuples = [(group_map.get(c, ""), c) for c in display_df.columns]
+    # Build display names — strip "TH_" prefix for Track History columns
+    multi_tuples = []
+    for c in display_df.columns:
+        group = group_map.get(c, "")
+        display_name = c.replace("TH_", "") if c.startswith("TH_") else c
+        multi_tuples.append((group, display_name))
     display_df.columns = pd.MultiIndex.from_tuples(multi_tuples)
 
     field_count = len(display_df)

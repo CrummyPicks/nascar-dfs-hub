@@ -94,11 +94,69 @@ def _dominator_share(laps_led_history, total_laps_history, races):
     return (laps_led_history / races) / max(total_laps_history / races, 1)
 
 
+# Track-type dominator modifiers
+# At superspeedways, laps led are distributed widely; at short/intermediate, dominators emerge
+TRACK_TYPE_DOM_MODIFIER = {
+    "superspeedway": 0.4,   # Laps led spread across many drivers (pack racing)
+    "short": 1.2,           # Dominators can lead 100+ laps
+    "intermediate": 1.0,    # Baseline
+    "road": 0.7,            # Less domination, more passing
+    "dirt": 0.8,            # Moderate domination
+}
+
+# How much of a driver's fastest laps come from their laps led vs general speed
+FL_FROM_LED_RATIO = 0.5  # 50% of fastest laps correlate with laps led
+
+
+def _allocate_laps_led(driver_scores: dict, race_laps: int, track_type: str) -> dict:
+    """Allocate projected laps led across the field as a zero-sum problem.
+
+    Total laps led across all drivers = race_laps (every lap has exactly one leader).
+    Drivers with higher dominator scores get a proportionally larger share.
+    Track type modifies how concentrated vs distributed the laps are.
+    """
+    if not driver_scores or race_laps <= 0:
+        return {}
+
+    modifier = TRACK_TYPE_DOM_MODIFIER.get(track_type, 1.0)
+
+    # Apply modifier — at superspeedways, compress scores toward the mean
+    # At short tracks, amplify the spread
+    scores = {}
+    mean_score = np.mean(list(driver_scores.values())) if driver_scores else 1
+    for d, s in driver_scores.items():
+        if modifier < 1.0:
+            # Compress toward mean (superspeedways)
+            scores[d] = mean_score + (s - mean_score) * modifier
+        else:
+            # Amplify away from mean (short tracks)
+            scores[d] = mean_score + (s - mean_score) * modifier
+        scores[d] = max(0.01, scores[d])  # floor at tiny positive
+
+    total = sum(scores.values())
+    if total <= 0:
+        return {}
+
+    return {d: (s / total) * race_laps for d, s in scores.items()}
+
+
+def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int) -> dict:
+    """Allocate projected fastest laps across the field (zero-sum).
+
+    Total fastest laps across all drivers = race_laps.
+    """
+    if not driver_fl_scores or race_laps <= 0:
+        return {}
+
+    total = sum(max(0.01, s) for s in driver_fl_scores.values())
+    return {d: (max(0.01, s) / total) * race_laps for d, s in driver_fl_scores.items()}
+
+
 # ── Main Render ──────────────────────────────────────────────────────────────
 
 def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
-           odds_data=None):
+           odds_data=None, scheduled_laps=0):
     """Render the Projections tab."""
     st.markdown(f"### Projections — {race_name}")
 
@@ -109,9 +167,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.warning("Entry list not available for this race.")
         return
 
-    # Get race laps for dominator calculations
+    # Get race laps for dominator calculations (feed first, then scheduled_laps fallback)
     feed = fetch_weekend_feed(series_id, race_id)
-    race_laps = _get_race_laps(feed)
+    race_laps = _get_race_laps(feed) or scheduled_laps or 0
 
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
@@ -286,8 +344,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 # Convert rank to projected finish (spread across field)
                 odds_finish[matched] = rank * (field_size / len(ranked))
 
-    # ── PROJECT EACH DRIVER ──────────────────────────────────────────────────
-    rows = []
+    # ── PROJECT EACH DRIVER — PASS 1: Finish position + dominator raw scores ──
+    track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
+    driver_projections = {}  # d -> dict of intermediate values
+    dom_raw_scores = {}      # d -> raw dominator score (for allocation)
+    fl_raw_scores = {}       # d -> raw fastest lap score (for allocation)
+
     for d in drivers:
         th = th_data.get(d)
         tt = tt_data.get(d)
@@ -329,50 +391,80 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         start_pos = qp if qp else (pr if pr else round(proj_finish))
         proj_diff = start_pos - proj_finish
 
-        # --- Project dominator stats (laps led + fastest laps) ---
-        proj_laps_led = 0.0
-        proj_fastest = 0.0
-
+        # --- Build raw dominator score (laps led potential) ---
+        # Combines track history laps led, track type laps led, qualifying, odds
+        dom_score = 0.0
         if race_laps > 0:
-            # Dominator score from track history
             dom_signals = []
             dom_weights_list = []
 
-            if th and th["races"] >= 2:
+            # Track history: laps led per race at this track
+            if th and th["races"] >= 1 and th["laps_led"] > 0:
                 ll_per_race = th["laps_led"] / th["races"]
-                # Scale to this race's lap count (assume ~250 avg historical)
-                race_scale = race_laps / 250
-                dom_signals.append(ll_per_race * race_scale)
-                dom_weights_list.append(wn["track"] + wn["track_type"] * 0.5)
+                dom_signals.append(ll_per_race)
+                dom_weights_list.append(0.35)
 
+            # Track type history: laps led per race at similar tracks
             if tt and tt.get("laps_led_per_race", 0) > 0:
-                race_scale = race_laps / 250
-                dom_signals.append(tt["laps_led_per_race"] * race_scale)
-                dom_weights_list.append(wn["track_type"])
+                dom_signals.append(tt["laps_led_per_race"])
+                dom_weights_list.append(0.20)
+
+            # Qualifying: pole sitters and front-row starters lead more laps
+            if qp and qp <= 10:
+                # Front row = high dominator potential
+                qual_dom = max(0, (11 - qp) / 10) * 20  # 0-20 scale
+                dom_signals.append(qual_dom)
+                dom_weights_list.append(0.25)
+
+            # Odds: favorites are more likely to dominate
+            if od and wn.get("odds", 0) > 0:
+                # Lower odds_finish = higher probability = more domination
+                odds_dom = max(0, (field_size - od) / field_size) * 25  # 0-25 scale
+                dom_signals.append(odds_dom)
+                dom_weights_list.append(0.20)
 
             if dom_signals:
                 total_dw = sum(dom_weights_list)
-                proj_laps_led = sum(s * w for s, w in zip(dom_signals, dom_weights_list)) / total_dw
-            elif proj_finish <= 5:
-                # Top finishers who have no history still get some dominator credit
-                proj_laps_led = race_laps * 0.02 * (6 - proj_finish)
+                dom_score = sum(s * w for s, w in zip(dom_signals, dom_weights_list)) / total_dw
+            else:
+                # Fallback: use projected finish as proxy
+                dom_score = max(0, (field_size - proj_finish) / field_size) * 5
 
-            # Fastest laps correlate with laps led but also with overall speed
-            if proj_laps_led > 0:
-                proj_fastest = proj_laps_led * 0.6  # ~60% of laps led are also fastest
-            elif proj_finish <= 10:
-                proj_fastest = race_laps * 0.01 * (11 - proj_finish)
+        # --- Build raw fastest laps score ---
+        fl_score = 0.0
+        if race_laps > 0:
+            fl_signals = []
+            fl_signal_weights = []
 
-            # Cap dominator projections
-            proj_laps_led = min(proj_laps_led, race_laps * 0.5)
-            proj_fastest = min(proj_fastest, race_laps * 0.3)
+            # Laps led potential (leaders have many fastest laps)
+            if dom_score > 0:
+                fl_signals.append(dom_score * FL_FROM_LED_RATIO)
+                fl_signal_weights.append(0.35)
 
-        # --- Compute projected DK points ---
-        finish_pts = _expected_finish_from_avg(proj_finish)
-        diff_pts = proj_diff * 1.0
-        led_pts = proj_laps_led * 0.25
-        fl_pts = proj_fastest * 0.45
-        proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
+            # Qualifying speed (fast cars stay fast)
+            if qp and qp <= field_size:
+                qual_fl = max(0, (field_size + 1 - qp) / field_size) * 15
+                fl_signals.append(qual_fl)
+                fl_signal_weights.append(0.30)
+
+            # Practice pace
+            if pr:
+                max_p = max(practice_data.values()) if practice_data else field_size
+                prac_fl = max(0, (max_p + 1 - pr) / max_p) * 12
+                fl_signals.append(prac_fl)
+                fl_signal_weights.append(0.20)
+
+            # Projected finish (top finishers earn more fastest laps)
+            finish_fl = max(0, (field_size - proj_finish) / field_size) * 10
+            fl_signals.append(finish_fl)
+            fl_signal_weights.append(0.15)
+
+            if fl_signals:
+                total_fw = sum(fl_signal_weights)
+                fl_score = sum(s * w for s, w in zip(fl_signals, fl_signal_weights)) / total_fw
+
+        dom_raw_scores[d] = dom_score
+        fl_raw_scores[d] = fl_score
 
         # --- Track Score (for display) ---
         track_score = 0
@@ -385,19 +477,44 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         if tt:
             tt_score = round(max(0, (40 - tt["avg_finish"]) / 39 * 100), 1)
 
+        driver_projections[d] = {
+            "proj_finish": proj_finish,
+            "start_pos": start_pos,
+            "proj_diff": proj_diff,
+            "track_score": track_score,
+            "tt_score": tt_score,
+        }
+
+    # ── PASS 2: Allocate laps led and fastest laps (zero-sum across field) ──
+    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_type) if race_laps > 0 else {}
+    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps) if race_laps > 0 else {}
+
+    # ── PASS 3: Compute final DK points ─────────────────────────────────────
+    rows = []
+    for d in drivers:
+        p = driver_projections[d]
+        proj_laps_led = allocated_ll.get(d, 0)
+        proj_fastest = allocated_fl.get(d, 0)
+
+        finish_pts = _expected_finish_from_avg(p["proj_finish"])
+        diff_pts = p["proj_diff"] * 1.0
+        led_pts = proj_laps_led * 0.25
+        fl_pts = proj_fastest * 0.45
+        proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
+
         rows.append({
             "Driver": d,
             "Proj DK": proj_dk,
-            "Proj Finish": round(proj_finish, 1),
+            "Proj Finish": round(p["proj_finish"], 1),
             "Finish Pts": round(finish_pts, 1),
             "Diff Pts": round(diff_pts, 1),
             "Led Pts": round(led_pts, 1),
             "FL Pts": round(fl_pts, 1),
             "Proj Laps Led": round(proj_laps_led),
             "Proj Fast Laps": round(proj_fastest),
-            "Track": track_score,
-            "Track Type": tt_score,
-            "Start": start_pos,
+            "Track": p["track_score"],
+            "Track Type": p["tt_score"],
+            "Start": p["start_pos"],
         })
 
     proj = pd.DataFrame(rows)
@@ -426,14 +543,21 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     weight_str = " | ".join(f"{k.replace('_', ' ').title()} {v:.0%}" for k, v in active)
     st.caption(f"Weights: {weight_str}")
 
+    # Rename Start to Qual Pos for clarity in projections context
+    if "Start" in proj.columns:
+        proj = proj.rename(columns={"Start": "Qual Pos"})
+
     # Display columns
     display_cols = ["Driver"]
     if "Car" in proj.columns:
         display_cols.append("Car")
     if "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
+    if "Qual Pos" in proj.columns:
+        display_cols.append("Qual Pos")
     display_cols.extend(["Proj DK", "Proj Finish", "Finish Pts", "Diff Pts",
-                         "Led Pts", "FL Pts", "Track", "Track Type"])
+                         "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
+                         "Track", "Track Type"])
     if "Value" in proj.columns:
         display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]

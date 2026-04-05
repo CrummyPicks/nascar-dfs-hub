@@ -30,7 +30,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     default_series_idx = series_list.index(series_name) if series_name in series_list else 0
 
     with st.expander("Filters", expanded=False):
-        f_cols = st.columns(3)
+        f_cols = st.columns(4)
         with f_cols[0]:
             ra_series_name = st.selectbox("Series", series_list,
                                           index=default_series_idx, key="ra_series")
@@ -41,11 +41,18 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
             ra_year_selection = st.selectbox("Year", year_options,
                                             index=default_year_idx, key="ra_year")
         with f_cols[2]:
+            # Track type filter
+            type_options = ["All Types"] + sorted(set(TRACK_TYPE_MAP.values()))
+            ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type")
+        with f_cols[3]:
             # Build track list from the first year for filtering
             sample_year = selected_year if ra_year_selection == "All Years" else ra_year_selection
             ra_races = fetch_race_list(ra_series_id, sample_year)
             ra_point_races = filter_point_races(ra_races) if ra_races else []
             tracks = sorted(set(r.get("track_name", "") for r in ra_point_races if r.get("track_name")))
+            # Filter track list by track type if selected
+            if ra_track_type != "All Types":
+                tracks = [t for t in tracks if TRACK_TYPE_MAP.get(t, "intermediate") == ra_track_type]
             ra_track = st.selectbox("Track Filter", ["All Tracks"] + tracks, key="ra_track")
 
     # Build completed races based on filters
@@ -74,7 +81,12 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                     pass
         ra_completed.extend(yr_completed)
 
-    # Filter by track if selected
+    # Filter by track type if selected
+    if ra_track_type != "All Types":
+        ra_completed = [(i, r) for i, r in ra_completed
+                        if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == ra_track_type]
+
+    # Filter by specific track if selected
     if ra_track != "All Tracks":
         ra_completed = [(i, r) for i, r in ra_completed if r.get("track_name") == ra_track]
 

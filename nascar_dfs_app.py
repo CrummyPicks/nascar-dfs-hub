@@ -159,11 +159,13 @@ if races:
     race_name = selected_race.get("race_name", "Unknown Race")
     track_name = selected_race.get("track_name", "Unknown Track")
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
+    scheduled_laps = selected_race.get("scheduled_laps", 0) or 0
 else:
     st.warning("Could not fetch race list from API")
     race_id, race_name = 5596, "Daytona 500"
     track_name = "Daytona International Speedway"
     track_type = "superspeedway"
+    scheduled_laps = 200
     completed_races = []
     upcoming_races = []
 
@@ -325,7 +327,7 @@ with tab_proj:
         lap_averages_df=lap_averages_df, practice_data=practice_data,
         is_prerace=is_prerace, race_name=race_name, race_id=race_id,
         track_name=track_name, series_id=series_id, dk_df=dk_df,
-        odds_data=odds_data,
+        odds_data=odds_data, scheduled_laps=scheduled_laps,
     )
 
 with tab_optimizer:

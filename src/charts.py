@@ -70,17 +70,32 @@ def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
     return fig
 
 
-def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 450) -> go.Figure:
-    """Start vs Finish Position scatter plot."""
-    fig = px.scatter(results_df, x="Start", y="Finish Position",
-                     text="Driver", color="DFS Points",
+def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 500) -> go.Figure:
+    """Start vs Finish Position scatter plot with smart labeling."""
+    df = results_df.copy()
+    df = df.dropna(subset=["Start", "Finish Position", "DFS Points"])
+    if df.empty:
+        return go.Figure()
+
+    # Label top 15 and bottom 5 DFS scorers; leave rest as hover-only
+    sorted_by_pts = df.sort_values("DFS Points", ascending=False)
+    labeled_drivers = set(
+        sorted_by_pts.head(15)["Driver"].tolist() +
+        sorted_by_pts.tail(5)["Driver"].tolist()
+    )
+    df["Label"] = df["Driver"].where(df["Driver"].isin(labeled_drivers), "")
+
+    fig = px.scatter(df, x="Start", y="Finish Position",
+                     text="Label", color="DFS Points",
                      color_continuous_scale="Viridis",
+                     hover_data={"Driver": True, "DFS Points": ":.1f",
+                                 "Start": True, "Finish Position": True, "Label": False},
                      title="Start vs Finish Position")
     fig.add_trace(go.Scatter(x=[1, 40], y=[1, 40], mode="lines",
                              line=dict(dash="dash", color="gray"), showlegend=False))
     fig.update_layout(**DARK_LAYOUT, height=height,
                       yaxis=dict(autorange="reversed"))
-    fig.update_traces(textposition="top center", textfont_size=7)
+    fig.update_traces(textposition="top right", textfont_size=10)
     return fig
 
 
