@@ -6,7 +6,6 @@ import streamlit as st
 import sqlite3
 import os
 from datetime import datetime
-from itertools import product
 
 from src.config import (
     SERIES_OPTIONS, TRACK_TYPE_MAP, DK_FINISH_POINTS,
@@ -14,7 +13,7 @@ from src.config import (
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps,
-    filter_point_races, query_salaries,
+    filter_point_races, query_salaries, load_race_odds,
 )
 from src.utils import calc_dk_points, safe_fillna, format_display_df
 
@@ -177,6 +176,243 @@ def _load_actual_results(race, series_id):
     return results
 
 
+# ── DB-backed track stats (fast, no API calls) ──────────────────────────────
+
+def _query_driver_track_stats(track_name, series_id):
+    """Query per-driver stats at a specific track from race_results table.
+
+    Returns dict of {driver_name: {avg_finish, avg_start, laps_led_per_race,
+    fastest_laps_per_race, races, dnf_rate, crash_rate, speed_score}}
+    """
+    if not os.path.exists(PROJ_DB):
+        return {}
+
+    conn = sqlite3.connect(PROJ_DB)
+    rows = conn.execute('''
+        SELECT d.full_name,
+               COUNT(*) as races,
+               AVG(rr.finish_pos) as avg_finish,
+               AVG(rr.start_pos) as avg_start,
+               SUM(rr.laps_led) as total_laps_led,
+               SUM(rr.fastest_laps) as total_fastest_laps,
+               SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as dnfs,
+               SUM(CASE WHEN LOWER(rr.status) IN ('accident','crash','damage') THEN 1 ELSE 0 END) as crashes
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE t.name LIKE ? AND r.series_id = ?
+        GROUP BY d.id
+    ''', (f"%{track_name}%", series_id)).fetchall()
+    conn.close()
+
+    result = {}
+    for r in rows:
+        name, races, avg_f, avg_s, ll, fl, dnfs, crashes = r
+        if races and races > 0:
+            ll_per = (ll or 0) / races
+            fl_per = (fl or 0) / races
+            result[name] = {
+                "avg_finish": avg_f or 20,
+                "avg_start": avg_s or 20,
+                "laps_led_per_race": ll_per,
+                "fastest_laps_per_race": fl_per,
+                "races": races,
+                "dnf_rate": (dnfs or 0) / races,
+                "crash_rate": (crashes or 0) / races,
+                "speed_score": ll_per + fl_per,
+            }
+    return result
+
+
+def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
+    """Query per-driver stats across all tracks of a given type.
+
+    Returns dict of {driver_name: {avg_finish, laps_led_per_race, ...}}
+    """
+    if not os.path.exists(PROJ_DB):
+        return {}
+
+    conn = sqlite3.connect(PROJ_DB)
+    query = '''
+        SELECT d.full_name,
+               COUNT(*) as races,
+               AVG(rr.finish_pos) as avg_finish,
+               AVG(rr.start_pos) as avg_start,
+               SUM(rr.laps_led) as total_laps_led,
+               SUM(rr.fastest_laps) as total_fastest_laps
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE t.track_type = ? AND r.series_id = ?
+    '''
+    params = [track_type, series_id]
+    if exclude_track:
+        query += " AND t.name NOT LIKE ?"
+        params.append(f"%{exclude_track}%")
+    query += " GROUP BY d.id"
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    result = {}
+    for r in rows:
+        name, races, avg_f, avg_s, ll, fl = r
+        if races and races > 0:
+            result[name] = {
+                "avg_finish": avg_f or 20,
+                "laps_led_per_race": (ll or 0) / races,
+                "races": races,
+            }
+    return result
+
+
+def _query_driver_career_dnf(series_id):
+    """Query career DNF and crash rates for all drivers.
+
+    Returns dict of {driver_name: {dnf_rate, crash_rate, speed_score, races}}
+    """
+    if not os.path.exists(PROJ_DB):
+        return {}
+
+    conn = sqlite3.connect(PROJ_DB)
+    rows = conn.execute('''
+        SELECT d.full_name,
+               COUNT(*) as races,
+               SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as dnfs,
+               SUM(CASE WHEN LOWER(rr.status) IN ('accident','crash','damage') THEN 1 ELSE 0 END) as crashes,
+               1.0 * SUM(rr.laps_led) / COUNT(*) as ll_per_race,
+               1.0 * SUM(rr.fastest_laps) / COUNT(*) as fl_per_race
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        WHERE r.series_id = ?
+        GROUP BY d.id
+        HAVING races >= 5
+    ''', (series_id,)).fetchall()
+    conn.close()
+
+    result = {}
+    for r in rows:
+        name, races, dnfs, crashes, ll_per, fl_per = r
+        if races and races > 0:
+            speed = (ll_per or 0) + (fl_per or 0)
+            result[name] = {
+                "dnf_rate": (dnfs or 0) / races,
+                "crash_rate": (crashes or 0) / races,
+                "speed_score": speed,
+                "races": races,
+            }
+    return result
+
+
+# ── Full projection engine for backtesting ───────────────────────────────────
+
+def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
+                           start_positions, odds_finish, dnf_data):
+    """Run the full projection model for a single race.
+
+    Uses all 5 signals with weight redistribution when data is missing.
+    Returns dict of {driver: proj_dk_points}
+
+    Args:
+        drivers: list of driver names
+        field_size: number of drivers in field
+        wn: normalized weights dict {track, track_type, qual, practice, odds}
+        th_data: {driver: {avg_finish, speed_score, ...}} from track history
+        tt_data: {driver: {avg_finish, ...}} from track type history
+        start_positions: {driver: start_pos} (qualifying proxy)
+        odds_finish: {driver: implied_finish} from odds
+        dnf_data: {driver: {dnf_rate, crash_rate, speed_score}} career DNF info
+    """
+    driver_raw_scores = {}
+
+    for d in drivers:
+        th = th_data.get(d)
+        tt = tt_data.get(d)
+        sp = start_positions.get(d)
+        od = odds_finish.get(d)
+
+        # Collect finish signals with per-driver weight redistribution
+        finish_signals = []
+        signal_weights = []
+
+        if th and wn.get("track", 0) > 0:
+            finish_signals.append(th["avg_finish"])
+            signal_weights.append(wn["track"])
+
+        if tt and wn.get("track_type", 0) > 0:
+            finish_signals.append(tt["avg_finish"])
+            signal_weights.append(wn["track_type"])
+
+        if sp and wn.get("qual", 0) > 0:
+            qual_finish = sp * 0.85 + (field_size * 0.5) * 0.15
+            finish_signals.append(qual_finish)
+            signal_weights.append(wn["qual"])
+
+        # Practice: use track history speed_score as proxy for pace
+        if th and th.get("speed_score", 0) > 0 and wn.get("practice", 0) > 0:
+            # Convert speed_score to finish-like metric
+            # Higher speed = lower (better) finish estimate
+            max_speed = max((t.get("speed_score", 0) for t in th_data.values()), default=1)
+            if max_speed > 0:
+                speed_pct = th["speed_score"] / max_speed
+                prac_finish = field_size * (1 - speed_pct * 0.8)
+                finish_signals.append(max(1, prac_finish))
+                signal_weights.append(wn["practice"] * 0.5)
+
+        if od and wn.get("odds", 0) > 0:
+            finish_signals.append(od)
+            signal_weights.append(wn["odds"] * 1.2)
+
+        if finish_signals and sum(signal_weights) > 0:
+            total_w = sum(signal_weights)
+            raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
+        else:
+            raw_finish = field_size * 0.65
+
+        # Apply DNF risk adjustment
+        dnf = dnf_data.get(d)
+        if dnf and dnf["races"] >= 10:
+            crash_rate = dnf["crash_rate"]
+            speed = dnf["speed_score"]
+            max_speed_all = max((v["speed_score"] for v in dnf_data.values()), default=1)
+            # Fast drivers get smaller penalty (crashes are more likely bad luck)
+            speed_factor = speed / max(max_speed_all, 1)
+            penalty_weight = max(0.05, 0.3 - speed_factor * 0.2)
+            mech_rate = dnf["dnf_rate"] - crash_rate
+            # Crashes penalized 3x more than mechanical
+            risk_penalty = crash_rate * penalty_weight + mech_rate * (penalty_weight * 0.3)
+            # Shift finish worse by up to ~3 positions for very high risk
+            raw_finish = raw_finish + risk_penalty * 10
+
+        driver_raw_scores[d] = raw_finish
+
+    # Rank-order finish spreading
+    sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
+    n = len(sorted_drivers)
+
+    proj_dk = {}
+    for rank_idx, (d, _) in enumerate(sorted_drivers):
+        if n > 1:
+            t = rank_idx / (n - 1)
+            proj_finish = 1 + (field_size - 1) * (t ** 0.85)
+        else:
+            proj_finish = field_size * 0.5
+
+        proj_finish = max(1, min(40, proj_finish))
+        finish_pts = DK_FINISH_POINTS.get(round(proj_finish), 0)
+
+        sp = start_positions.get(d)
+        start = sp if sp else round(proj_finish)
+        diff_pts = (start - proj_finish) * 1.0  # DK: ±1.0 per position
+
+        proj_dk[d] = finish_pts + diff_pts
+
+    return proj_dk
+
+
 # ── Main Render ──────────────────────────────────────────────────────────────
 
 def render(*, completed_races, series_id, selected_year, series_name="Cup"):
@@ -201,7 +437,6 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
 
 def _render_race_comparison(completed_races, series_id, selected_year):
     """Compare projections vs actuals for a single race."""
-    # Check for saved projections
     saved_races = load_saved_race_list(series_id)
 
     if saved_races.empty:
@@ -219,7 +454,6 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         )
         return
 
-    # Race picker from saved projections
     race_labels = []
     race_map = {}
     for _, row in saved_races.iterrows():
@@ -233,13 +467,11 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     saved_race = race_map[selected_label]
     race_id = int(saved_race["race_id"])
 
-    # Load saved projections
     proj_df = load_saved_projections(series_id=series_id, race_id=race_id)
     if proj_df.empty:
         st.warning("No projection data found for this race.")
         return
 
-    # Find matching completed race to load actuals
     actual_race = None
     for _, rc in completed_races:
         if rc.get("race_id") == race_id:
@@ -247,7 +479,6 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             break
 
     if actual_race is None:
-        # Try to find it by fetching the race list
         races = fetch_race_list(series_id, int(saved_race["season"]))
         point_races = filter_point_races(races) if races else []
         for rc in point_races:
@@ -267,7 +498,6 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         st.warning("Race results not available yet.")
         return
 
-    # Merge projections with actuals
     merged = proj_df.merge(
         actuals[["Driver", "Finish Position", "Start", "Laps Led",
                  "Fastest Laps", "DK Pts"]],
@@ -278,7 +508,6 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         st.warning("Could not match projected drivers to actual results.")
         return
 
-    # Build comparison table
     comp = pd.DataFrame({
         "Driver": merged["Driver"],
         "Proj DK": merged["proj_dk"].round(1),
@@ -300,13 +529,11 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     comp.index = comp.index + 1
     comp.index.name = "Rank"
 
-    # ── Accuracy metrics ──
+    # Accuracy metrics
     mae_dk = comp["DK Error"].abs().mean()
     mae_finish = comp["Finish Error"].abs().mean()
     corr_dk = comp["Proj DK"].corr(comp["Actual DK"])
     corr_finish = comp["Proj Finish"].corr(comp["Actual Finish"])
-
-    # Rank correlation (Spearman) — did we get the ORDER right?
     rank_corr = comp["Proj DK"].rank(ascending=False).corr(
         comp["Actual DK"].rank(ascending=False))
 
@@ -323,7 +550,6 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         "**Rank Correlation** = Spearman rank correlation of projected vs actual DK points"
     )
 
-    # Weights used
     w_row = proj_df.iloc[0]
     st.caption(
         f"Weights used: Odds {w_row.get('w_odds', 0):.0%} | "
@@ -333,29 +559,22 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         f"Track Type {w_row.get('w_track_type', 0):.0%}"
     )
 
-    # Table
     st.dataframe(safe_fillna(format_display_df(comp)), use_container_width=True,
                  hide_index=False, height=500)
 
-    # ── Scatter: Projected vs Actual DK Points ──
+    # Scatter: Projected vs Actual DK Points
     import plotly.graph_objects as go
     from src.charts import DARK_LAYOUT
 
     fig = go.Figure()
-
-    # Perfect prediction line
     min_val = min(comp["Proj DK"].min(), comp["Actual DK"].min()) - 5
     max_val = max(comp["Proj DK"].max(), comp["Actual DK"].max()) + 5
     fig.add_trace(go.Scatter(
         x=[min_val, max_val], y=[min_val, max_val],
-        mode="lines", name="Perfect",
-        line=dict(color="#444", dash="dash", width=1),
+        mode="lines", line=dict(color="#444", dash="dash", width=1),
         showlegend=False,
     ))
-
-    # Color by error: green = under-projected (good surprise), red = over-projected
     colors = np.where(comp["DK Error"] > 0, "#ef4444", "#22c55e")
-
     fig.add_trace(go.Scatter(
         x=comp["Actual DK"], y=comp["Proj DK"],
         mode="markers+text",
@@ -365,34 +584,25 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         marker=dict(size=9, color=colors, opacity=0.8),
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
-            "Projected: %{y:.1f}<br>"
-            "Actual: %{x:.1f}<br>"
+            "Projected: %{y:.1f}<br>Actual: %{x:.1f}<br>"
             "Error: %{customdata[1]:+.1f}<extra></extra>"
         ),
         customdata=np.column_stack([comp["Driver"], comp["DK Error"]]),
         showlegend=False,
     ))
-
-    fig.update_layout(
-        **DARK_LAYOUT, height=500,
-        title="Projected vs Actual DK Points",
-        xaxis_title="Actual DK Points",
-        yaxis_title="Projected DK Points",
-    )
+    fig.update_layout(**DARK_LAYOUT, height=500,
+                      title="Projected vs Actual DK Points",
+                      xaxis_title="Actual DK Points",
+                      yaxis_title="Projected DK Points")
     st.plotly_chart(fig, use_container_width=True, key="acc_scatter_dk")
 
-    # ── Scatter: Projected vs Actual Finish ──
+    # Scatter: Projected vs Actual Finish
     fig2 = go.Figure()
-
     fig2.add_trace(go.Scatter(
-        x=[0, 40], y=[0, 40],
-        mode="lines", name="Perfect",
-        line=dict(color="#444", dash="dash", width=1),
-        showlegend=False,
+        x=[0, 40], y=[0, 40], mode="lines",
+        line=dict(color="#444", dash="dash", width=1), showlegend=False,
     ))
-
     colors2 = np.where(comp["Finish Error"] > 0, "#ef4444", "#22c55e")
-
     fig2.add_trace(go.Scatter(
         x=comp["Actual Finish"], y=comp["Proj Finish"],
         mode="markers+text",
@@ -402,45 +612,33 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         marker=dict(size=9, color=colors2, opacity=0.8),
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
-            "Projected: %{y:.1f}<br>"
-            "Actual: %{x}<br>"
+            "Projected: %{y:.1f}<br>Actual: %{x}<br>"
             "Error: %{customdata[1]:+.1f}<extra></extra>"
         ),
         customdata=np.column_stack([comp["Driver"], comp["Finish Error"]]),
         showlegend=False,
     ))
-
-    fig2.update_layout(
-        **DARK_LAYOUT, height=450,
-        title="Projected vs Actual Finish Position",
-        xaxis_title="Actual Finish",
-        yaxis_title="Projected Finish",
-        xaxis=dict(autorange="reversed"),
-        yaxis=dict(autorange="reversed"),
-    )
+    fig2.update_layout(**DARK_LAYOUT, height=450,
+                       title="Projected vs Actual Finish Position",
+                       xaxis_title="Actual Finish", yaxis_title="Projected Finish",
+                       xaxis=dict(autorange="reversed"),
+                       yaxis=dict(autorange="reversed"))
     st.plotly_chart(fig2, use_container_width=True, key="acc_scatter_finish")
 
-    # ── Error distribution ──
+    # Error distribution
     fig3 = go.Figure()
-    fig3.add_trace(go.Histogram(
-        x=comp["DK Error"], nbinsx=20,
-        marker_color="#4a7dfc", opacity=0.8,
-        name="DK Error Distribution",
-    ))
+    fig3.add_trace(go.Histogram(x=comp["DK Error"], nbinsx=20,
+                                marker_color="#4a7dfc", opacity=0.8))
     fig3.add_vline(x=0, line_dash="dash", line_color="#888")
-    fig3.update_layout(
-        **DARK_LAYOUT, height=300,
-        title="DK Points Error Distribution (Projected - Actual)",
-        xaxis_title="Error (+ = over-projected, - = under-projected)",
-        yaxis_title="Count",
-    )
+    fig3.update_layout(**DARK_LAYOUT, height=300,
+                       title="DK Points Error Distribution (Projected - Actual)",
+                       xaxis_title="Error (+ = over-projected, - = under-projected)",
+                       yaxis_title="Count")
     st.plotly_chart(fig3, use_container_width=True, key="acc_error_dist")
 
-    # Export
     csv = comp.to_csv(index=True).encode("utf-8")
     st.download_button("Export Comparison CSV", csv,
-                       f"accuracy_{race_id}.csv", "text/csv",
-                       key="acc_export")
+                       f"accuracy_{race_id}.csv", "text/csv", key="acc_export")
 
 
 # ── Accuracy Dashboard ───────────────────────────────────────────────────────
@@ -455,7 +653,6 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
 
     st.caption(f"**{len(saved_races)} races** with saved projections for {series_name}")
 
-    # Load all projections and their actuals
     all_comparisons = []
     race_metrics = []
 
@@ -463,12 +660,10 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         race_id = int(race_row["race_id"])
         season = int(race_row["season"])
 
-        # Load projections
         proj_df = load_saved_projections(series_id=series_id, race_id=race_id)
         if proj_df.empty:
             continue
 
-        # Find the actual race
         races = fetch_race_list(series_id, season)
         point_races = filter_point_races(races) if races else []
         actual_race = None
@@ -484,13 +679,11 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         if actuals.empty:
             continue
 
-        # Merge
         merged = proj_df.merge(
             actuals[["Driver", "Finish Position", "Start", "Laps Led",
                      "Fastest Laps", "DK Pts"]],
             left_on="driver", right_on="Driver", how="inner"
         )
-
         if merged.empty:
             continue
 
@@ -509,7 +702,7 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
             "Finish Corr": merged["proj_finish"].corr(merged["Finish Position"]),
             "Rank Corr": merged["proj_dk"].rank(ascending=False).corr(
                 merged["DK Pts"].rank(ascending=False)),
-            "Avg Bias": dk_errors.mean(),  # positive = systematically over-projecting
+            "Avg Bias": dk_errors.mean(),
         })
 
         for _, row in merged.iterrows():
@@ -530,7 +723,6 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
     metrics_df = pd.DataFrame(race_metrics)
     all_comp_df = pd.DataFrame(all_comparisons)
 
-    # ── Overall metrics ──
     overall_mae = all_comp_df["Error"].abs().mean()
     overall_corr = all_comp_df["Proj DK"].corr(all_comp_df["Actual DK"])
     overall_rank_corr = metrics_df["Rank Corr"].mean()
@@ -543,14 +735,12 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
     m_cols[3].metric("Avg Bias", f"{overall_bias:+.1f}",
                      help="Positive = over-projecting on average, Negative = under-projecting")
 
-    # ── Per-race metrics table ──
     st.markdown("**Race-by-Race Accuracy**")
     race_disp = metrics_df.copy()
     for col in ["DK MAE", "Finish MAE", "DK Corr", "Finish Corr", "Rank Corr", "Avg Bias"]:
         race_disp[col] = race_disp[col].round(2)
     st.dataframe(safe_fillna(race_disp), use_container_width=True, hide_index=True, height=300)
 
-    # ── By track type breakdown ──
     st.markdown("**Accuracy by Track Type**")
     type_agg = all_comp_df.groupby("Track Type").agg(
         Races=("Race", lambda x: x.nunique()),
@@ -569,87 +759,95 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
 # ── Weight Optimizer ─────────────────────────────────────────────────────────
 
 def _render_weight_optimizer(completed_races, series_id, selected_year, series_name):
-    """Find optimal weights by backtesting against completed races with actual results."""
-    st.markdown("**Backtest Weight Combinations**")
+    """Find optimal weights by backtesting against completed races."""
+    st.markdown(f"**Backtest Weight Combinations — {series_name} Series**")
     st.caption(
-        "Runs the projection model with different weight combinations against "
-        "completed races to find which weights produce the lowest error. "
-        "Uses actual race results from the database."
+        "Runs the full 5-signal projection model with different weight combinations "
+        "against completed races using DB-stored track history, track type stats, "
+        "qualifying positions, speed ratings, and saved odds."
     )
 
     if not completed_races:
         st.info("No completed races available for backtesting.")
         return
 
-    # Let user pick how many races to backtest
     max_races = min(len(completed_races), 20)
-    n_races = st.slider("Races to backtest", 1, max_races,
-                         min(5, max_races), key="acc_n_races")
+    f_cols = st.columns(3)
+    with f_cols[0]:
+        n_races = st.slider("Races to backtest", 1, max_races,
+                             min(5, max_races), key="acc_n_races")
+    with f_cols[1]:
+        type_opts = ["All Types"] + sorted(set(TRACK_TYPE_MAP.values()))
+        track_type_filter = st.selectbox("Track Type Filter", type_opts,
+                                          key="acc_tt_filter")
+    with f_cols[2]:
+        include_dnf = st.checkbox("Include DNF risk adjustment", value=True,
+                                   key="acc_dnf_toggle")
 
-    # Track type filter
-    type_opts = ["All Types"] + sorted(set(TRACK_TYPE_MAP.values()))
-    track_type_filter = st.selectbox("Track Type Filter", type_opts,
-                                      key="acc_tt_filter")
-
-    # Filter races by track type
     test_races = list(completed_races)
     if track_type_filter != "All Types":
         test_races = [
             (i, r) for i, r in test_races
             if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == track_type_filter
         ]
-
-    test_races = test_races[-n_races:]  # most recent N
+    test_races = test_races[-n_races:]
 
     if not test_races:
         st.info("No completed races match the selected filters.")
         return
 
-    race_names = [f"{r.get('track_name', '')}: {r.get('race_name', '')}" for _, r in test_races]
-    st.caption(f"Testing against: {', '.join(race_names)}")
+    race_names = [f"{r.get('track_name', '')}" for _, r in test_races]
+    st.caption(f"Tracks: {', '.join(race_names)}")
 
     if st.button("Run Weight Optimization", type="primary", key="acc_run_opt"):
-        _run_backtest(test_races, series_id, selected_year)
+        _run_backtest(test_races, series_id, selected_year, series_name,
+                      include_dnf)
 
 
-def _run_backtest(test_races, series_id, selected_year):
-    """Run backtest across weight combinations."""
-    from src.data import scrape_track_history
+def _run_backtest(test_races, series_id, selected_year, series_name,
+                  include_dnf=True):
+    """Run full-signal backtest across weight combinations."""
     from src.utils import fuzzy_match_name
 
-    # Weight grid — test combinations in steps of 10%
-    # Each weight: 0, 10, 20, 30, 40, 50
-    weight_options = [0, 10, 20, 30, 40, 50]
+    # Weight grid with minimum 5% floor — no signal fully zeroed out
+    weight_options = [5, 10, 15, 20, 25, 30, 35, 40]
     weight_combos = []
     for odds in weight_options:
         for track in weight_options:
             for qual in weight_options:
                 for prac in weight_options:
-                    # Track type gets whatever is left to make it sum to 100
                     tt = 100 - odds - track - qual - prac
-                    if 0 <= tt <= 50:
+                    if 5 <= tt <= 40:
                         weight_combos.append({
                             "odds": odds, "track": track,
                             "qual": qual, "practice": prac,
                             "track_type": tt,
                         })
 
-    st.caption(f"Testing {len(weight_combos)} weight combinations across {len(test_races)} races...")
+    st.caption(f"Testing {len(weight_combos)} weight combinations across "
+               f"{len(test_races)} races ({series_name})...")
     progress = st.progress(0)
 
-    # Pre-load all race data
+    # Pre-load career DNF data (once for all races)
+    dnf_data = _query_driver_career_dnf(series_id) if include_dnf else {}
+
+    # Pre-load all race data from DB (fast — no API calls for track stats)
     race_data = []
+    total_load_steps = len(test_races)
+
     for idx, (_, race) in enumerate(test_races):
-        progress.progress(idx / (len(test_races) + 1),
-                          text=f"Loading race {idx + 1}/{len(test_races)}...")
+        progress.progress(idx / (total_load_steps + 1),
+                          text=f"Loading race {idx + 1}/{total_load_steps}...")
         race_id = race.get("race_id")
         track_name = race.get("track_name", "")
+        track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
         yr = race.get("race_date", "")[:4]
         try:
             yr = int(yr)
         except Exception:
             yr = selected_year
 
+        # Load actual results (still needs API for race results)
         feed = fetch_weekend_feed(series_id, race_id, yr)
         laps = fetch_lap_times(series_id, race_id, yr)
         if not feed:
@@ -665,94 +863,118 @@ def _run_backtest(test_races, series_id, selected_year):
             lambda r: calc_dk_points(r["Finish Position"], r["Start"],
                                      r["Laps Led"], r["Fastest Laps"]), axis=1)
 
-        # Load track history for this track
-        th_df = scrape_track_history(track_name, series_id)
-        th_data = {}
-        if not th_df.empty:
-            for col in ["Avg Finish", "Avg Rating", "Laps Led", "Races"]:
-                if col in th_df.columns:
-                    th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
-            th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
-            for d in results["Driver"].unique():
-                if d in th_idx.index:
-                    row = th_idx.loc[d]
-                    af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
-                    th_data[d] = af
+        drivers = results["Driver"].unique().tolist()
+
+        # DB-backed track history (instant query, no API)
+        th_data = _query_driver_track_stats(track_name, series_id)
+
+        # DB-backed track type history (instant query)
+        tt_data = _query_driver_track_type_stats(track_type, series_id,
+                                                  exclude_track=track_name)
+
+        # Start positions from actual results (qualifying proxy)
+        start_positions = {}
+        for _, row in results.iterrows():
+            if pd.notna(row.get("Start")):
+                start_positions[row["Driver"]] = int(row["Start"])
+
+        # Load saved odds for this race from DB
+        saved_odds = load_race_odds(race_id)
+        odds_finish = {}
+        if saved_odds:
+            odds_probs = {}
+            for name, odds_str in saved_odds.items():
+                try:
+                    odds_val = int(str(odds_str).replace("+", ""))
+                    if odds_val > 0:
+                        prob = 100 / (odds_val + 100)
+                    else:
+                        prob = abs(odds_val) / (abs(odds_val) + 100)
+                    odds_probs[name] = prob
+                except (ValueError, TypeError):
+                    continue
+            ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
+            field_size = len(drivers)
+            for rank, (name, prob) in enumerate(ranked, 1):
+                matched = fuzzy_match_name(name, drivers)
+                if matched:
+                    odds_finish[matched] = rank * (field_size / len(ranked))
+
+        # Track which signals are available for this race
+        has_signals = {
+            "track": bool(th_data),
+            "track_type": bool(tt_data),
+            "qual": bool(start_positions),
+            "practice": bool(th_data),  # uses speed_score from track history
+            "odds": bool(odds_finish),
+        }
 
         race_data.append({
             "race": race,
             "results": results,
+            "drivers": drivers,
+            "field_size": len(drivers),
             "th_data": th_data,
-            "drivers": results["Driver"].unique().tolist(),
+            "tt_data": tt_data,
+            "start_positions": start_positions,
+            "odds_finish": odds_finish,
+            "has_signals": has_signals,
         })
 
     if not race_data:
         st.warning("Could not load any race results for backtesting.")
         return
 
+    # Show signal availability summary
+    signal_summary = {"track": 0, "track_type": 0, "qual": 0, "practice": 0, "odds": 0}
+    for rd in race_data:
+        for sig, available in rd["has_signals"].items():
+            if available:
+                signal_summary[sig] += 1
+    sig_str = " | ".join(f"{k}: {v}/{len(race_data)}" for k, v in signal_summary.items())
+    st.caption(f"Signal availability across races: {sig_str}")
+
     # Test each weight combination
     combo_results = []
     total_combos = len(weight_combos)
 
     for c_idx, combo in enumerate(weight_combos):
-        if c_idx % 50 == 0:
+        if c_idx % 100 == 0:
             progress.progress(
-                (len(test_races) + c_idx / total_combos) / (len(test_races) + 1),
+                (total_load_steps + c_idx / total_combos) / (total_load_steps + 1),
                 text=f"Testing weight combo {c_idx + 1}/{total_combos}..."
             )
 
-        # Normalize weights
         total_w = sum(combo.values())
         if total_w <= 0:
             continue
-        wn = {k: v / total_w for k, v in combo.items()}
+        nominal_wn = {k: v / total_w for k, v in combo.items()}
 
         all_errors = []
         all_rank_corrs = []
 
         for rd in race_data:
-            results = rd["results"]
-            th_data = rd["th_data"]
             drivers = rd["drivers"]
-            field_size = len(drivers)
+            field_size = rd["field_size"]
+            results = rd["results"]
+            has = rd["has_signals"]
 
-            # Simple projection using available signals
-            driver_scores = {}
-            for d in drivers:
-                signals = []
-                weights = []
+            # Per-race weight redistribution: skip unavailable signals
+            effective = {}
+            for sig in ["track", "track_type", "qual", "practice", "odds"]:
+                effective[sig] = nominal_wn[sig] if has[sig] else 0
+            eff_total = sum(effective.values())
+            if eff_total <= 0:
+                continue
+            wn = {k: v / eff_total for k, v in effective.items()}
 
-                # Track history signal
-                if d in th_data:
-                    signals.append(th_data[d])
-                    weights.append(wn["track"])
-
-                # Qualifying signal (use actual start as proxy for qual)
-                start = results[results["Driver"] == d]["Start"].values
-                if len(start) > 0 and pd.notna(start[0]):
-                    qual_finish = start[0] * 0.85 + field_size * 0.5 * 0.15
-                    signals.append(qual_finish)
-                    weights.append(wn["qual"])
-
-                if signals and sum(weights) > 0:
-                    raw_score = sum(s * w for s, w in zip(signals, weights)) / sum(weights)
-                else:
-                    raw_score = field_size * 0.5
-
-                driver_scores[d] = raw_score
-
-            # Rank-order spreading
-            sorted_d = sorted(driver_scores.items(), key=lambda x: x[1])
-            proj_dk = {}
-            for rank_idx, (d, _) in enumerate(sorted_d):
-                t = rank_idx / max(len(sorted_d) - 1, 1)
-                proj_finish = 1 + (field_size - 1) * (t ** 0.85)
-                proj_finish = max(1, min(40, proj_finish))
-                finish_pts = DK_FINISH_POINTS.get(round(proj_finish), 0)
-                actual_start = results[results["Driver"] == d]["Start"].values
-                s = actual_start[0] if len(actual_start) > 0 and pd.notna(actual_start[0]) else proj_finish
-                diff_pts = (s - proj_finish) * 1.0
-                proj_dk[d] = finish_pts + diff_pts
+            # Run full projection
+            proj_dk = _project_race_backtest(
+                drivers, field_size, wn,
+                rd["th_data"], rd["tt_data"],
+                rd["start_positions"], rd["odds_finish"],
+                dnf_data if include_dnf else {},
+            )
 
             # Compute errors
             for d in drivers:
@@ -762,9 +984,11 @@ def _run_backtest(test_races, series_id, selected_year):
 
             # Rank correlation
             proj_series = pd.Series({d: proj_dk.get(d, 0) for d in drivers})
-            actual_series = pd.Series({d: results[results["Driver"] == d]["DK Pts"].values[0]
-                                       for d in drivers
-                                       if len(results[results["Driver"] == d]["DK Pts"].values) > 0})
+            actual_series = pd.Series({
+                d: results[results["Driver"] == d]["DK Pts"].values[0]
+                for d in drivers
+                if len(results[results["Driver"] == d]["DK Pts"].values) > 0
+            })
             common = proj_series.index.intersection(actual_series.index)
             if len(common) > 5:
                 rc = proj_series[common].rank().corr(actual_series[common].rank())
@@ -790,28 +1014,32 @@ def _run_backtest(test_races, series_id, selected_year):
 
     results_df = pd.DataFrame(combo_results)
 
-    # Sort by best composite score (low MAE + high rank corr)
-    results_df["Score"] = (
-        -results_df["MAE"] / results_df["MAE"].max() * 0.6 +
-        results_df["Rank Corr"] / max(results_df["Rank Corr"].max(), 0.001) * 0.4
-    )
+    # Sort by composite score (low MAE + high rank corr)
+    mae_range = results_df["MAE"].max() - results_df["MAE"].min()
+    rc_range = results_df["Rank Corr"].max() - results_df["Rank Corr"].min()
+    if mae_range > 0 and rc_range > 0:
+        results_df["Score"] = (
+            -(results_df["MAE"] - results_df["MAE"].min()) / mae_range * 0.6 +
+            (results_df["Rank Corr"] - results_df["Rank Corr"].min()) / rc_range * 0.4
+        )
+    else:
+        results_df["Score"] = -results_df["MAE"]
     results_df = results_df.sort_values("Score", ascending=False)
 
-    # Show top 10
-    st.markdown("**Top 10 Weight Combinations**")
-    top10 = results_df.head(10).copy()
-    top10["MAE"] = top10["MAE"].round(1)
-    top10["Rank Corr"] = top10["Rank Corr"].round(3)
-    top10 = top10.drop(columns=["Score"])
-    top10.index = range(1, len(top10) + 1)
-    top10.index.name = "Rank"
+    # Show top 15
+    st.markdown(f"**Top 15 Weight Combinations — {series_name}**")
+    top = results_df.head(15).copy()
+    top["MAE"] = top["MAE"].round(1)
+    top["Rank Corr"] = top["Rank Corr"].round(3)
+    top = top.drop(columns=["Score"])
+    top.index = range(1, len(top) + 1)
+    top.index.name = "Rank"
 
-    st.dataframe(top10, use_container_width=True, hide_index=False)
+    st.dataframe(top, use_container_width=True, hide_index=False)
 
-    # Highlight best
     best = results_df.iloc[0]
     st.success(
-        f"Best weights: Odds **{int(best['Odds'])}%** | "
+        f"**Best weights ({series_name}):** Odds **{int(best['Odds'])}%** | "
         f"Track **{int(best['Track'])}%** | "
         f"Practice **{int(best['Practice'])}%** | "
         f"Qualifying **{int(best['Qualifying'])}%** | "
@@ -838,15 +1066,19 @@ def _run_backtest(test_races, series_id, selected_year):
 
     if not current_match.empty:
         curr = current_match.iloc[0]
-        rank_of_current = results_df.index.get_loc(current_match.index[0]) + 1
+        rank_of_current = (results_df["Score"] > curr["Score"]).sum() + 1
         st.info(
             f"Your current weights rank **#{rank_of_current}** out of "
             f"{len(results_df)} tested — MAE: {curr['MAE']:.1f}, "
             f"Rank Corr: {curr['Rank Corr']:.3f}"
         )
+    else:
+        st.caption("Your current weights weren't in the test grid (some are below the 5% minimum floor).")
 
-    # Export
-    csv = results_df.drop(columns=["Score"]).to_csv(index=False).encode("utf-8")
+    # Export with series label
+    export_df = results_df.drop(columns=["Score"]).copy()
+    export_df.insert(0, "Series", series_name)
+    csv = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("Export All Results CSV", csv,
-                       "weight_optimization.csv", "text/csv",
+                       f"weight_optimization_{series_name}.csv", "text/csv",
                        key="acc_opt_export")

@@ -15,7 +15,7 @@ from src.data import (
     extract_entry_list, extract_qualifying, extract_race_results,
     compute_fastest_laps, detect_prerace, filter_point_races,
     parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
-    sync_dk_salaries_to_db, fetch_nascar_odds,
+    sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
 )
 
 
@@ -234,6 +234,10 @@ with st.expander("Settings & Data Upload", expanded=False):
                         pass
         elif auto_odds:
             odds_data = auto_odds
+
+    # Persist odds to DB for historical backtesting
+    if odds_data and race_id:
+        save_odds_to_db(odds_data, race_id)
 
     # Data population note
     st.caption("Use `python refresh_data.py` locally to populate the database with race results.")

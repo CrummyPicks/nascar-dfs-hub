@@ -811,6 +811,79 @@ def fetch_nascar_odds() -> dict:
 
 
 # ============================================================
+# ODDS PERSISTENCE — save/load odds to/from database
+# ============================================================
+
+def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_network"):
+    """Persist odds dict to the odds table, keyed by race_id.
+
+    Args:
+        odds_data: {driver_name: odds_string} e.g. {"Kyle Larson": "+350"}
+        race_id: NASCAR API race ID
+        sportsbook: source label
+    """
+    if not odds_data or not race_id or not DB_PATH.exists():
+        return 0
+
+    from src.utils import fuzzy_match_name
+
+    conn = sqlite3.connect(str(DB_PATH))
+    # Load all driver names from DB for fuzzy matching
+    db_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
+    name_to_id = {row[1]: row[0] for row in db_drivers}
+    driver_names = list(name_to_id.keys())
+
+    count = 0
+    for name, odds_str in odds_data.items():
+        try:
+            odds_val = float(str(odds_str).replace("+", ""))
+        except (ValueError, TypeError):
+            continue
+
+        matched = fuzzy_match_name(name, driver_names)
+        if not matched:
+            continue
+        driver_id = name_to_id[matched]
+
+        conn.execute('''
+            INSERT OR REPLACE INTO odds
+            (race_id, driver_id, sportsbook, win_odds, scraped_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+        ''', (race_id, driver_id, sportsbook, odds_val))
+        count += 1
+
+    conn.commit()
+    conn.close()
+    return count
+
+
+def load_race_odds(race_id: int) -> dict:
+    """Load saved odds for a race from the DB.
+
+    Returns dict of {driver_name: odds_string} matching the live format.
+    """
+    if not DB_PATH.exists():
+        return {}
+
+    conn = sqlite3.connect(str(DB_PATH))
+    rows = conn.execute('''
+        SELECT d.full_name, o.win_odds
+        FROM odds o
+        JOIN drivers d ON d.id = o.driver_id
+        WHERE o.race_id = ?
+        ORDER BY o.win_odds ASC
+    ''', (race_id,)).fetchall()
+    conn.close()
+
+    result = {}
+    for name, odds_val in rows:
+        if odds_val is not None:
+            ov = int(odds_val) if odds_val == int(odds_val) else odds_val
+            result[name] = f"+{ov}" if ov > 0 else str(ov)
+    return result
+
+
+# ============================================================
 # AUTO-FETCH RACE RESULTS INTO DATABASE
 # ============================================================
 

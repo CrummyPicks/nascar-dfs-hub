@@ -104,12 +104,12 @@ EXHIBITION_KEYWORDS = ["clash", "duel", "all-star", "all star", "exhibition", "o
 # PROJECTION DEFAULTS
 # ----------------------------
 DEFAULT_PROJECTION_WEIGHTS = {
-    "track_history": 0.25,
-    "track_type": 0.20,
+    "odds": 0.25,
+    "track_history": 0.20,
     "practice": 0.20,
-    "odds": 0.15,
-    "qualifying": 0.12,
-    "recent_form": 0.08,
+    "qualifying": 0.15,
+    "track_type": 0.10,
+    "recent_form": 0.10,
 }
 
 # ----------------------------
