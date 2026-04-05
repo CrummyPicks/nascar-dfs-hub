@@ -22,7 +22,6 @@ from src.config import (
 )
 from src.data import (
     query_projections, scrape_track_history,
-    fetch_weekend_feed,
 )
 from src.charts import projection_bar
 from src.utils import safe_fillna, format_display_df, calc_dk_points
@@ -94,44 +93,84 @@ def _dominator_share(laps_led_history, total_laps_history, races):
     return (laps_led_history / races) / max(total_laps_history / races, 1)
 
 
-# Track-type dominator modifiers
-# At superspeedways, laps led are distributed widely; at short/intermediate, dominators emerge
-TRACK_TYPE_DOM_MODIFIER = {
-    "superspeedway": 0.4,   # Laps led spread across many drivers (pack racing)
-    "short": 1.2,           # Dominators can lead 100+ laps
-    "intermediate": 1.0,    # Baseline
-    "road": 0.7,            # Less domination, more passing
-    "dirt": 0.8,            # Moderate domination
+# Fallback track-type concentration exponents
+# Higher = more concentrated (top drivers get more of the pie)
+# Lower = more distributed (laps spread across many drivers)
+TRACK_TYPE_CONCENTRATION = {
+    "superspeedway": 0.6,   # Very distributed — pack racing
+    "road": 1.0,            # Moderate
+    "dirt": 1.2,            # Moderate-high
+    "intermediate": 1.5,    # Concentrated
+    "short": 2.0,           # Very concentrated — single driver can dominate
 }
 
-# How much of a driver's fastest laps come from their laps led vs general speed
-FL_FROM_LED_RATIO = 0.5  # 50% of fastest laps correlate with laps led
+
+def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
+    """Pull historical domination stats from DB for this track.
+
+    Returns dict with:
+        avg_top_leader: average laps led by the race leader per race
+        max_single: highest single-race laps led at this track
+        concentration: exponent for score distribution
+    """
+    defaults = {
+        "avg_top_leader": 80,
+        "max_single": 200,
+        "concentration": TRACK_TYPE_CONCENTRATION.get(track_type, 1.5),
+    }
+    if not os.path.exists(PROJ_DB):
+        return defaults
+
+    try:
+        conn = sqlite3.connect(PROJ_DB)
+        # Get max laps led by a single driver per race at this track, then average
+        rows = conn.execute('''
+            SELECT MAX(rr.laps_led) as top_led
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name LIKE ?
+            GROUP BY r.id
+        ''', (f"%{track_name}%",)).fetchall()
+        conn.close()
+
+        if rows and len(rows) >= 1:
+            top_leaders = [r[0] for r in rows if r[0] and r[0] > 0]
+            if top_leaders:
+                avg_top = np.mean(top_leaders)
+                max_single = max(top_leaders)
+                # Derive concentration from how skewed the distribution is
+                # Higher avg_top relative to field = more concentrated
+                concentration = TRACK_TYPE_CONCENTRATION.get(track_type, 1.5)
+                return {
+                    "avg_top_leader": avg_top,
+                    "max_single": max_single,
+                    "concentration": concentration,
+                }
+    except Exception:
+        pass
+
+    return defaults
 
 
-def _allocate_laps_led(driver_scores: dict, race_laps: int, track_type: str) -> dict:
-    """Allocate projected laps led across the field as a zero-sum problem.
+def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
+                        track_type: str) -> dict:
+    """Allocate projected laps led across the field using DB-calibrated data.
 
-    Total laps led across all drivers = race_laps (every lap has exactly one leader).
-    Drivers with higher dominator scores get a proportionally larger share.
-    Track type modifies how concentrated vs distributed the laps are.
+    Uses historical data to determine how concentrated laps led should be.
+    At short tracks, the top driver can lead 200+ laps (50%+).
+    At superspeedways, the top leader averages only ~35 laps.
     """
     if not driver_scores or race_laps <= 0:
         return {}
 
-    modifier = TRACK_TYPE_DOM_MODIFIER.get(track_type, 1.0)
+    calibration = _get_track_dominator_calibration(track_name, track_type)
+    concentration = calibration["concentration"]
 
-    # Apply modifier — at superspeedways, compress scores toward the mean
-    # At short tracks, amplify the spread
+    # Apply concentration exponent — higher exponent = more to the top scorer
     scores = {}
-    mean_score = np.mean(list(driver_scores.values())) if driver_scores else 1
     for d, s in driver_scores.items():
-        if modifier < 1.0:
-            # Compress toward mean (superspeedways)
-            scores[d] = mean_score + (s - mean_score) * modifier
-        else:
-            # Amplify away from mean (short tracks)
-            scores[d] = mean_score + (s - mean_score) * modifier
-        scores[d] = max(0.01, scores[d])  # floor at tiny positive
+        scores[d] = max(0.01, s) ** concentration
 
     total = sum(scores.values())
     if total <= 0:
@@ -140,16 +179,28 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_type: str) -> 
     return {d: (s / total) * race_laps for d, s in scores.items()}
 
 
-def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int) -> dict:
+def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
+                            track_type: str) -> dict:
     """Allocate projected fastest laps across the field (zero-sum).
 
-    Total fastest laps across all drivers = race_laps.
+    Uses a lower concentration than laps led — fastest laps are more
+    distributed since even mid-pack drivers can post a fastest lap.
     """
     if not driver_fl_scores or race_laps <= 0:
         return {}
 
-    total = sum(max(0.01, s) for s in driver_fl_scores.values())
-    return {d: (max(0.01, s) / total) * race_laps for d, s in driver_fl_scores.items()}
+    # Fastest laps are less concentrated than laps led
+    concentration = max(0.5, TRACK_TYPE_CONCENTRATION.get(track_type, 1.5) * 0.7)
+
+    scores = {}
+    for d, s in driver_fl_scores.items():
+        scores[d] = max(0.01, s) ** concentration
+
+    total = sum(scores.values())
+    if total <= 0:
+        return {}
+
+    return {d: (s / total) * race_laps for d, s in scores.items()}
 
 
 # ── Main Render ──────────────────────────────────────────────────────────────
@@ -167,19 +218,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.warning("Entry list not available for this race.")
         return
 
-    # Get race laps for dominator calculations (feed first, then scheduled_laps fallback)
-    feed = fetch_weekend_feed(series_id, race_id)
-    race_laps = _get_race_laps(feed) or scheduled_laps or 0
+    # Get race laps for dominator calculations
+    race_laps = scheduled_laps or 0
 
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
         st.caption("Adjust signal weights — auto-normalizes to 100%")
         w_cols = st.columns(5)
-        w_track = w_cols[0].number_input("Track History", 0, 100, 30, 5, key="pw_track")
-        w_type = w_cols[1].number_input("Track Type", 0, 100, 20, 5, key="pw_type")
-        w_qual = w_cols[2].number_input("Qualifying", 0, 100, 15, 5, key="pw_qual")
-        w_prac = w_cols[3].number_input("Practice", 0, 100, 20, 5, key="pw_prac")
-        w_odds = w_cols[4].number_input("Odds", 0, 100, 15, 5, key="pw_odds")
+        w_odds = w_cols[0].number_input("Odds", 0, 100, 25, 5, key="pw_odds")
+        w_track = w_cols[1].number_input("Track History", 0, 100, 20, 5, key="pw_track")
+        w_prac = w_cols[2].number_input("Practice", 0, 100, 20, 5, key="pw_prac")
+        w_qual = w_cols[3].number_input("Qualifying", 0, 100, 15, 5, key="pw_qual")
+        w_type = w_cols[4].number_input("Track Type", 0, 100, 10, 5, key="pw_type")
 
     # Smart weight handling: if odds not available, redistribute that weight
     has_odds = bool(odds_data)
@@ -350,6 +400,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     dom_raw_scores = {}      # d -> raw dominator score (for allocation)
     fl_raw_scores = {}       # d -> raw fastest lap score (for allocation)
 
+    # Get dominator calibration from DB for this track
+    calibration = _get_track_dominator_calibration(track_name, track_type)
+
     for d in drivers:
         th = th_data.get(d)
         tt = tt_data.get(d)
@@ -358,32 +411,43 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         od = odds_finish.get(d)
 
         # --- Project expected finish position ---
+        # Each signal contributes a finish position estimate, weighted by user sliders
         finish_signals = []
         signal_weights = []
 
+        # Track history: strongest direct predictor of finish at this track
         if th:
             finish_signals.append(th["avg_finish"])
             signal_weights.append(wn["track"])
+
+        # Track type: how driver performs at similar tracks
         if tt:
             finish_signals.append(tt["avg_finish"])
             signal_weights.append(wn["track_type"])
+
+        # Qualifying: strong predictor, regress slightly toward field mean
         if qp:
-            # Qualifying position is a strong predictor of finish
-            finish_signals.append(qp * 0.85 + field_size * 0.15)  # regress slightly
+            qual_finish = qp * 0.80 + field_size * 0.20  # regress 20% to mean
+            finish_signals.append(qual_finish)
             signal_weights.append(wn["qual"])
+
+        # Practice: weaker predictor, regress more heavily
         if pr:
-            # Practice rank as a weak finish predictor
-            finish_signals.append(pr * 0.7 + field_size * 0.3)
+            prac_finish = pr * 0.6 + field_size * 0.4  # regress 40% to mean
+            finish_signals.append(prac_finish)
             signal_weights.append(wn["practice"] * 0.5)
+
+        # Odds: market-implied finish — often the best single predictor
+        # Weight heavily since the market prices in info we can't see
         if od and wn.get("odds", 0) > 0:
             finish_signals.append(od)
-            signal_weights.append(wn["odds"])
+            signal_weights.append(wn["odds"] * 1.2)  # boost odds influence
 
         if finish_signals:
             total_w = sum(signal_weights)
             proj_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
-            proj_finish = field_size * 0.6  # default to mid-field
+            proj_finish = field_size * 0.6  # default to slightly below mid-field
 
         proj_finish = max(1, min(40, proj_finish))
 
@@ -392,36 +456,43 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         proj_diff = start_pos - proj_finish
 
         # --- Build raw dominator score (laps led potential) ---
-        # Combines track history laps led, track type laps led, qualifying, odds
+        # Multi-signal scoring: who is likely to lead laps?
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
             dom_weights_list = []
 
-            # Track history: laps led per race at this track
+            # Track history: laps led per race at this track (strongest signal)
             if th and th["races"] >= 1 and th["laps_led"] > 0:
                 ll_per_race = th["laps_led"] / th["races"]
                 dom_signals.append(ll_per_race)
-                dom_weights_list.append(0.35)
+                dom_weights_list.append(0.30)
 
-            # Track type history: laps led per race at similar tracks
+            # Track type: laps led per race at similar tracks
             if tt and tt.get("laps_led_per_race", 0) > 0:
                 dom_signals.append(tt["laps_led_per_race"])
-                dom_weights_list.append(0.20)
+                dom_weights_list.append(0.15)
 
-            # Qualifying: pole sitters and front-row starters lead more laps
-            if qp and qp <= 10:
-                # Front row = high dominator potential
-                qual_dom = max(0, (11 - qp) / 10) * 20  # 0-20 scale
+            # Qualifying: pole sitters lead more laps, especially at short tracks
+            if qp and qp <= field_size:
+                # Front row gets exponential boost
+                qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 30
                 dom_signals.append(qual_dom)
-                dom_weights_list.append(0.25)
-
-            # Odds: favorites are more likely to dominate
-            if od and wn.get("odds", 0) > 0:
-                # Lower odds_finish = higher probability = more domination
-                odds_dom = max(0, (field_size - od) / field_size) * 25  # 0-25 scale
-                dom_signals.append(odds_dom)
                 dom_weights_list.append(0.20)
+
+            # Odds: favorites dominate — strongest predictor of laps led
+            if od and wn.get("odds", 0) > 0:
+                # Lower odds_finish = better odds = more domination potential
+                odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
+                dom_signals.append(odds_dom)
+                dom_weights_list.append(0.30)
+
+            # Practice pace as dominator signal
+            if pr:
+                max_p = max(practice_data.values()) if practice_data else field_size
+                prac_dom = max(0, (max_p + 1 - pr) / max_p) * 15
+                dom_signals.append(prac_dom)
+                dom_weights_list.append(0.05)
 
             if dom_signals:
                 total_dw = sum(dom_weights_list)
@@ -436,28 +507,34 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             fl_signals = []
             fl_signal_weights = []
 
-            # Laps led potential (leaders have many fastest laps)
+            # Laps led potential (leaders post many fastest laps)
             if dom_score > 0:
-                fl_signals.append(dom_score * FL_FROM_LED_RATIO)
-                fl_signal_weights.append(0.35)
+                fl_signals.append(dom_score * 0.5)
+                fl_signal_weights.append(0.30)
 
-            # Qualifying speed (fast cars stay fast)
+            # Qualifying speed (fast cars stay fast throughout race)
             if qp and qp <= field_size:
                 qual_fl = max(0, (field_size + 1 - qp) / field_size) * 15
                 fl_signals.append(qual_fl)
-                fl_signal_weights.append(0.30)
+                fl_signal_weights.append(0.25)
 
-            # Practice pace
+            # Practice long-run pace
             if pr:
                 max_p = max(practice_data.values()) if practice_data else field_size
                 prac_fl = max(0, (max_p + 1 - pr) / max_p) * 12
                 fl_signals.append(prac_fl)
                 fl_signal_weights.append(0.20)
 
+            # Odds-implied speed
+            if od and wn.get("odds", 0) > 0:
+                odds_fl = max(0, (field_size + 1 - od) / field_size) * 12
+                fl_signals.append(odds_fl)
+                fl_signal_weights.append(0.15)
+
             # Projected finish (top finishers earn more fastest laps)
             finish_fl = max(0, (field_size - proj_finish) / field_size) * 10
             fl_signals.append(finish_fl)
-            fl_signal_weights.append(0.15)
+            fl_signal_weights.append(0.10)
 
             if fl_signals:
                 total_fw = sum(fl_signal_weights)
@@ -485,9 +562,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "tt_score": tt_score,
         }
 
-    # ── PASS 2: Allocate laps led and fastest laps (zero-sum across field) ──
-    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_type) if race_laps > 0 else {}
-    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps) if race_laps > 0 else {}
+    # ── PASS 2: Allocate laps led and fastest laps (zero-sum, DB-calibrated) ──
+    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type) if race_laps > 0 else {}
+    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type) if race_laps > 0 else {}
 
     # ── PASS 3: Compute final DK points ─────────────────────────────────────
     rows = []

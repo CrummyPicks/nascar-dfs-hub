@@ -22,7 +22,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
 
     # --- Mode selector ---
     mode = st.radio("Analysis Mode",
-                    ["Single Race", "Season Summary", "Driver Lookup", "Driver Comparison"],
+                    ["Single Race", "Season Summary", "By Track Type", "Driver Lookup", "Driver Comparison"],
                     horizontal=True, label_visibility="collapsed", key="ra_mode")
 
     # --- Filters default to top-bar selection ---
@@ -96,6 +96,8 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         _render_single_race(ra_completed, ra_series_id, years_to_fetch)
     elif mode == "Season Summary":
         _render_season_summary(ra_completed, ra_series_id, year_label, years_to_fetch)
+    elif mode == "By Track Type":
+        _render_by_track_type(ra_completed, ra_series_id, year_label, years_to_fetch, ra_track_type)
     elif mode == "Driver Lookup":
         _render_driver_lookup(ra_completed, ra_series_id, year_label, years_to_fetch)
     elif mode == "Driver Comparison":
@@ -330,6 +332,164 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
     csv = agg.to_csv(index=True).encode("utf-8")
     st.download_button("Export Season CSV", csv,
                        f"season_{series_id}_{year_label}.csv", "text/csv", key="ra_season_export")
+
+
+def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch,
+                          selected_track_type="All Types"):
+    """Aggregate driver stats across all tracks of a selected type."""
+    # Track type selector (dedicated for this view, overrides filter)
+    track_types = sorted(set(TRACK_TYPE_MAP.values()))
+    type_badges = {
+        "superspeedway": "🔴", "intermediate": "🟡",
+        "short": "🟢", "road": "🔵", "dirt": "🟤",
+    }
+
+    # Default to filter selection if a specific type was already chosen
+    default_idx = 0
+    if selected_track_type != "All Types" and selected_track_type in track_types:
+        default_idx = track_types.index(selected_track_type)
+
+    chosen_type = st.selectbox(
+        "Track Type",
+        track_types,
+        index=default_idx,
+        format_func=lambda t: f"{type_badges.get(t, '')} {t.title()}",
+        key="ra_tt_type_select",
+    )
+
+    # Filter completed races to only those at matching track type
+    type_races = [
+        (i, r) for i, r in completed_races
+        if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == chosen_type
+    ]
+
+    # Show which tracks are included
+    included_tracks = sorted(set(r.get("track_name", "") for _, r in type_races))
+    if included_tracks:
+        st.caption(f"**{chosen_type.title()}** tracks: {', '.join(included_tracks)}")
+    else:
+        st.info(f"No completed races at {chosen_type} tracks for the selected filters.")
+        return
+
+    if not type_races:
+        st.info(f"No completed races at {chosen_type} tracks.")
+        return
+
+    with st.spinner(f"Loading {len(type_races)} {chosen_type} races..."):
+        season_df = _build_season_data(type_races, series_id, years_to_fetch)
+
+    if season_df.empty:
+        st.info("No race data available.")
+        return
+
+    # Aggregate by driver
+    agg = season_df.groupby(["Driver", "Car"]).agg(
+        Races=("Finish", "count"),
+        **{"Avg Finish": ("Finish", "mean")},
+        **{"Avg Start": ("Start", "mean")},
+        **{"Best Finish": ("Finish", "min")},
+        Wins=("Finish", lambda x: (x == 1).sum()),
+        T5=("Finish", lambda x: (x <= 5).sum()),
+        T10=("Finish", lambda x: (x <= 10).sum()),
+        **{"Laps Led": ("Laps Led", "sum")},
+        **{"Fast Laps": ("Fastest Laps", "sum")},
+        **{"Avg DK": ("DK Pts", "mean")},
+        **{"Avg FD": ("FD Pts", "mean")},
+    ).reset_index()
+
+    # Add avg running position if available
+    if "Avg Run" in season_df.columns and season_df["Avg Run"].notna().any():
+        avg_run_agg = season_df.dropna(subset=["Avg Run"]).groupby("Driver").agg(
+            **{"Avg Run": ("Avg Run", "mean")}
+        ).round(1)
+        agg = agg.merge(avg_run_agg, on="Driver", how="left")
+
+    # Compute driver rating per-driver
+    field_avg = len(season_df["Driver"].unique())
+    agg["Rating"] = agg.apply(
+        lambda r: round(
+            max(0, (40 - r["Avg Finish"]) / 39 * 60 +
+                r["Laps Led"] / max(r["Races"], 1) * 0.3 +
+                r["Fast Laps"] / max(r["Races"], 1) * 0.5 +
+                (r["Avg Start"] - r["Avg Finish"]) * 1.5 +
+                r["Wins"] / max(r["Races"], 1) * 20 +
+                r["T5"] / max(r["Races"], 1) * 8), 1), axis=1)
+
+    # Add avg salary if available
+    if "DK Salary" in season_df.columns and season_df["DK Salary"].notna().any():
+        sal_agg = season_df.dropna(subset=["DK Salary"]).groupby("Driver").agg(
+            **{"Avg Salary": ("DK Salary", "mean")}
+        ).round(0)
+        agg = agg.merge(sal_agg, on="Driver", how="left")
+        if "Avg Salary" in agg.columns:
+            agg["Avg Salary"] = agg["Avg Salary"].astype("Int64")
+
+    # Format numeric columns
+    for col in ["Avg Finish", "Avg Start", "Avg DK", "Avg FD"]:
+        if col in agg.columns:
+            agg[col] = agg[col].round(1)
+    for col in ["Wins", "T5", "T10", "Laps Led", "Fast Laps", "Best Finish"]:
+        if col in agg.columns:
+            agg[col] = agg[col].astype(int)
+
+    agg = agg.sort_values("Avg DK", ascending=False).reset_index(drop=True)
+    agg.index = agg.index + 1
+    agg.index.name = "Rank"
+
+    # Search
+    search = st.text_input("Search...", "", placeholder="Filter drivers...",
+                           label_visibility="collapsed", key="ra_tt_search")
+
+    st.caption(f"{len(agg)} drivers across {len(type_races)} {chosen_type} races — {year_label}")
+
+    disp = format_display_df(agg.copy())
+    if search:
+        mask = disp.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
+        disp = disp[mask]
+
+    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=False, height=550)
+
+    # Avg Running Pos vs Rating scatter chart
+    if "Avg Run" in agg.columns and agg["Avg Run"].notna().any():
+        scatter_data = agg.dropna(subset=["Avg Run"])[["Driver", "Car", "Avg Run", "Rating"]].copy()
+        scatter_data = scatter_data.rename(columns={
+            "Avg Run": "Avg Running Pos",
+            "Rating": "Avg Driver Rating",
+        })
+        from src.charts import season_scatter
+        fig = season_scatter(scatter_data)
+        if fig:
+            fig.update_layout(title=f"Avg Running Pos vs Rating — {chosen_type.title()} Tracks")
+            st.plotly_chart(fig, use_container_width=True, key="ra_tt_scatter")
+    else:
+        # Fallback: plot Avg Finish vs Avg DK
+        import plotly.graph_objects as go
+        from src.charts import DARK_LAYOUT
+        plot_df = agg[agg["Races"] >= 2].head(40).copy()
+        if not plot_df.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=plot_df["Avg Finish"], y=plot_df["Avg DK"],
+                mode="markers+text", text=plot_df["Car"],
+                textposition="top right", textfont=dict(size=9, color="#8892a4"),
+                marker=dict(size=10, color="#4a7dfc", opacity=0.8),
+                hovertemplate="<b>%{customdata[0]}</b><br>Avg Finish: %{x:.1f}<br>Avg DK: %{y:.1f}",
+                customdata=plot_df[["Driver"]].values,
+            ))
+            fig.update_layout(
+                **DARK_LAYOUT, height=450,
+                title=f"Avg Finish vs Avg DK — {chosen_type.title()} Tracks",
+                xaxis_title="Avg Finish Position",
+                yaxis_title="Avg DK Points",
+                xaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="ra_tt_fallback_scatter")
+
+    # Export
+    csv = agg.to_csv(index=True).encode("utf-8")
+    st.download_button("Export Track Type CSV", csv,
+                       f"track_type_{chosen_type}_{year_label}.csv", "text/csv",
+                       key="ra_tt_export")
 
 
 def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch):
