@@ -7,16 +7,21 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
-from src.config import (
-    SERIES_OPTIONS, SERIES_LABELS, TRACK_TYPE_MAP, TRACK_TYPE_COLORS,
-)
-from src.data import (
-    fetch_race_list, fetch_weekend_feed, fetch_lap_times, fetch_lap_averages,
-    extract_entry_list, extract_qualifying, extract_race_results,
-    compute_fastest_laps, detect_prerace, filter_point_races,
-    parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
-    sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
-)
+try:
+    from src.config import (
+        SERIES_OPTIONS, SERIES_LABELS, TRACK_TYPE_MAP, TRACK_TYPE_COLORS,
+    )
+    from src.data import (
+        fetch_race_list, fetch_weekend_feed, fetch_lap_times, fetch_lap_averages,
+        extract_entry_list, extract_qualifying, extract_race_results,
+        compute_fastest_laps, detect_prerace, filter_point_races,
+        parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
+        sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
+    )
+except ImportError as e:
+    import streamlit as st
+    st.error(f"Import failed: {e}")
+    st.stop()
 
 
 # ============================================================
