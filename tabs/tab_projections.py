@@ -305,12 +305,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         entry_list_df, qualifying_df, lap_averages_df,
         practice_data, wn, track_name, series_id, dk_df, race_laps,
         odds_data=odds_data or {}, calibration=calibration,
+        race_id=race_id, race_name=race_name,
     )
 
 
 def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                             practice_data, wn, track_name, series_id, dk_df,
-                            race_laps, odds_data=None, calibration=None):
+                            race_laps, odds_data=None, calibration=None,
+                            race_id=None, race_name=""):
     """Build DFS-aware projections that estimate actual DK point components."""
     if odds_data is None:
         odds_data = {}
@@ -680,7 +682,24 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     if fig:
         st.plotly_chart(fig, use_container_width=True)
 
-    # Export
-    csv = proj[avail].to_csv(index=True).encode("utf-8")
-    st.download_button("Export Projections CSV", csv,
-                       "projections.csv", "text/csv", key="proj_export")
+    # Export and Save
+    exp_cols = st.columns([1, 1, 3])
+    with exp_cols[0]:
+        csv = proj[avail].to_csv(index=True).encode("utf-8")
+        st.download_button("Export CSV", csv,
+                           "projections.csv", "text/csv", key="proj_export")
+    with exp_cols[1]:
+        if st.button("Save Projections", key="proj_save", type="secondary",
+                      help="Save to DB for accuracy tracking in the Accuracy tab"):
+            from tabs.tab_accuracy import save_projections_to_db
+            # Detect season from race_name or current year
+            from datetime import datetime
+            season = datetime.now().year
+            count = save_projections_to_db(
+                proj, race_id, race_name, track_name,
+                series_id, season, wn
+            )
+            if count > 0:
+                st.success(f"Saved {count} projections for accuracy tracking")
+            else:
+                st.warning("Could not save projections")

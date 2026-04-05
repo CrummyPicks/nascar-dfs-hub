@@ -281,8 +281,8 @@ if not dk_df.empty and is_prerace:
 # ============================================================
 # TABS
 # ============================================================
-tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj, tab_optimizer = st.tabs([
-    "Race Data", "Practice", "Track History", "Race Analyzer", "Projections", "Optimizer"
+tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj, tab_optimizer, tab_acc = st.tabs([
+    "Race Data", "Practice", "Track History", "Race Analyzer", "Projections", "Optimizer", "Accuracy"
 ])
 
 from tabs import tab_data as td
@@ -291,6 +291,7 @@ from tabs import tab_track_history as tth
 from tabs import tab_race_analyzer as tra
 from tabs import tab_projections as tproj
 from tabs import tab_optimizer as topt
+from tabs import tab_accuracy as tacc
 
 with tab_data:
     td.render(
@@ -337,4 +338,10 @@ with tab_optimizer:
         is_prerace=is_prerace, race_name=race_name, race_id=race_id,
         track_name=track_name, series_id=series_id, dk_df=dk_df,
         odds_data=odds_data,
+    )
+
+with tab_acc:
+    tacc.render(
+        completed_races=completed_races, series_id=series_id,
+        selected_year=selected_year, series_name=series_name,
     )
