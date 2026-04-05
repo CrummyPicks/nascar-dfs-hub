@@ -41,7 +41,7 @@ EXPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exports")
 
 # ── Scoring rates (for converting raw metrics → DFS-point adjustments) ───────
 # DraftKings NASCAR Classic
-DK_PLACE_DIFF_RATE = 0.50     # pts per position gained/lost
+DK_PLACE_DIFF_RATE = 1.00     # pts per position gained/lost
 DK_FINISH_PTS = {
     1: 40, 2: 35, 3: 33, 4: 31, 5: 29, 6: 27, 7: 25, 8: 23, 9: 21, 10: 20,
     11: 19, 12: 18, 13: 17, 14: 16, 15: 15, 16: 14, 17: 13, 18: 12, 19: 11,
