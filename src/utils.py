@@ -1,0 +1,156 @@
+"""NASCAR DFS Hub — Utility Functions."""
+
+import pandas as pd
+import numpy as np
+from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS
+
+
+def calc_dk_points(finish, start, laps_led, fastest_laps):
+    """Calculate DraftKings NASCAR Classic DFS points."""
+    try:
+        place_pts = DK_FINISH_POINTS.get(int(finish), 0)
+        diff_pts = (int(start) - int(finish)) * 1.0
+        led_pts = int(laps_led) * 0.25
+        fl_pts = int(fastest_laps) * 0.45
+        return round(place_pts + diff_pts + led_pts + fl_pts, 2)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def calc_fd_points(finish, start, laps_led, fastest_laps):
+    """Calculate FanDuel NASCAR DFS points."""
+    try:
+        place_pts = FD_FINISH_POINTS.get(int(finish), 0)
+        diff_pts = (int(start) - int(finish)) * 0.5
+        led_pts = int(laps_led) * 0.1
+        fl_pts = int(fastest_laps) * 0.5
+        return round(place_pts + diff_pts + led_pts + fl_pts, 2)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def normalize_driver_name(name: str) -> str:
+    """Normalize a driver name for matching (lowercase, strip suffixes)."""
+    if not name:
+        return ""
+    name = name.strip().lower()
+    # Remove common suffixes
+    for suffix in [" jr.", " jr", " sr.", " sr", " iii", " ii", " iv"]:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)].strip()
+            break
+    return name
+
+
+def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> str:
+    """Find best fuzzy match for a driver name in a list of candidates."""
+    from difflib import SequenceMatcher
+
+    norm = normalize_driver_name(name)
+    best_match, best_score = None, 0.0
+
+    for candidate in candidates:
+        norm_c = normalize_driver_name(candidate)
+        # Exact match
+        if norm == norm_c:
+            return candidate
+        # Last name match
+        last_name = norm.split()[-1] if norm.split() else ""
+        last_name_c = norm_c.split()[-1] if norm_c.split() else ""
+        if last_name and last_name == last_name_c:
+            return candidate
+        # Fuzzy
+        score = SequenceMatcher(None, norm, norm_c).ratio()
+        if score > best_score:
+            best_score = score
+            best_match = candidate
+
+    return best_match if best_score >= threshold else None
+
+
+def int_col(series: pd.Series) -> pd.Series:
+    """Convert a pandas Series to nullable integer type, safely handling any input."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    # Force to float64 first to avoid object-dtype cast issues
+    numeric = numeric.astype("float64")
+    return numeric.astype("Int64")
+
+
+def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply smart number formatting to a DataFrame for display.
+    Rounds columns based on their name/type to remove excessive decimals.
+    """
+    result = df.copy()
+
+    # Exact integer columns (no decimals)
+    int_patterns = {"Rank", "Races", "Wins", "Top 5", "Top 10", "Top 20",
+                    "Laps Led", "Fastest Laps", "Fast Laps", "DNF", "Laps",
+                    "TH Races", "TH Wins", "TH T5", "TH T10", "TH T20",
+                    "TH Laps Led", "TH DNF", "TH Best", "TH Worst",
+                    "Races (Trk)", "Wins (Trk)", "T5 (Trk)", "T10 (Trk)", "T20 (Trk)",
+                    "Laps Led (Trk)", "DNF (Trk)",
+                    "GFS Races", "Finish Position", "Start", "Qual",
+                    "Qualifying Position", "Finish", "Pos Diff",
+                    "Position Differential", "Projected Finish",
+                    "Proj Laps Led", "Proj Fast Laps", "Count",
+                    "Best Finish", "Worst Finish", "DK Salary"}
+
+    # 1-decimal columns
+    one_dec_patterns = {"Avg Finish", "Avg Start", "Avg Rating", "Rating",
+                        "Avg Run", "Avg Running Position", "DFS Points", "DK Pts",
+                        "FD Pts", "FD Points", "Proj Score", "Projected Score",
+                        "Track Score", "Qual Score", "Practice Score",
+                        "Weighted Score", "Score", "TH Avg Finish",
+                        "TH Avg Start", "TH Rating",
+                        "Avg Finish (Trk)", "Avg Start (Trk)", "Rating (Trk)",
+                        "Avg DFS", "Best DFS",
+                        "Worst DFS", "GFS Avg DK Pts", "GFS Avg FD Pts",
+                        "Avg Laps Led", "Avg Fastest Laps", "Avg Fast Laps",
+                        "Penn Rank", "Proj DK", "Proj Finish",
+                        "Finish Pts", "Diff Pts", "Led Pts", "FL Pts",
+                        "Track", "Track Type", "Avg DK", "Avg FD",
+                        "Avg_Proj", "Avg_Value"}
+
+    # 2-decimal columns
+    two_dec_patterns = {"Value", "DFS Value"}
+
+    # 3-decimal columns (lap times)
+    three_dec_patterns = {"Overall Avg", "Best Lap", "Best Lap Time",
+                          "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap",
+                          "Qual Speed", "Best Lap Speed"}
+
+    for col in result.columns:
+        # Handle MultiIndex columns
+        col_name = col[-1] if isinstance(col, tuple) else col
+        dtype_str = str(result[col].dtype)
+
+        if col_name in int_patterns or col_name.endswith("Rank"):
+            if dtype_str not in ("object", "str", "string", "StringDtype"):
+                try:
+                    result[col] = pd.to_numeric(result[col], errors="coerce").astype("float64").astype("Int64")
+                except (TypeError, ValueError):
+                    pass  # Skip if conversion fails
+        elif col_name in one_dec_patterns:
+            result[col] = pd.to_numeric(result[col], errors="coerce").round(1)
+        elif col_name in two_dec_patterns:
+            result[col] = pd.to_numeric(result[col], errors="coerce").round(2)
+        elif col_name in three_dec_patterns:
+            result[col] = pd.to_numeric(result[col], errors="coerce").round(3)
+
+    return result
+
+
+def safe_fillna(df: pd.DataFrame, fill_value="") -> pd.DataFrame:
+    """Fill NaN values safely, converting nullable int/float columns to object first.
+    Uses empty string by default to keep Arrow serialization happy.
+    """
+    result = df.copy()
+    for col in result.columns:
+        dtype_str = str(result[col].dtype)
+        if dtype_str in ("Int64", "Int32", "Int16", "Int8"):
+            result[col] = result[col].astype(object).where(result[col].notna(), fill_value)
+        elif dtype_str.startswith("float"):
+            result[col] = result[col].astype(object).where(result[col].notna(), fill_value)
+        else:
+            result[col] = result[col].fillna(fill_value)
+    return result

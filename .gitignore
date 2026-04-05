@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+*.fuse_hidden*
+
+# Project — keep out of repo
+legacy/
+dev/
+exports/
+cache/
+.claude/
+
+# Logs
+*.log

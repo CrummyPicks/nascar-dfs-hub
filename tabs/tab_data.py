@@ -1,0 +1,270 @@
+"""Tab 1: Consolidated Data Hub — unified view for all races."""
+
+import pandas as pd
+import streamlit as st
+
+from src.config import SERIES_LABELS
+from src.data import (
+    scrape_track_history,
+    compute_fastest_laps, compute_avg_running_position,
+)
+from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df
+from src.charts import (
+    dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
+)
+
+
+def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
+           results_df, is_prerace, series_id, race_name, track_name, track_type,
+           dk_df, fd_df, completed_races, selected_year, fl_counts, odds_data=None):
+    """Render the consolidated Data tab — same wide table for pre and post race."""
+
+    series_name = SERIES_LABELS.get(series_id, "Cup")
+    st.markdown(f"### NASCAR — {series_name} Data")
+
+    # Toggle: Table | Charts
+    view_mode = st.radio("View", ["Table", "Charts"], horizontal=True,
+                         label_visibility="collapsed", key="data_view_mode")
+
+    if view_mode == "Charts":
+        _render_charts_view(completed_races, series_id, selected_year, results_df,
+                            lap_data, fl_counts, is_prerace)
+        return
+
+    # --- Determine base driver list ---
+    # For completed races, use results as base (has finish data)
+    # For upcoming races, use entry list or lap averages
+    if not is_prerace and not results_df.empty:
+        avg_run_pos = compute_avg_running_position(lap_data) if lap_data else {}
+        res = results_df.copy()
+        res = res.sort_values("Finish Position", na_position="last").reset_index(drop=True)
+        res["Fastest Laps"] = res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")
+        res["Avg Run"] = res["Driver"].map(lambda d: avg_run_pos.get(d))
+        res["DK Pts"] = res.apply(
+            lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+        res["FD Pts"] = res.apply(
+            lambda r: calc_fd_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+        res["Pos Diff"] = (res["Start"] - res["Finish Position"]).astype("Int64")
+        want = ["Driver", "Finish Position", "Start", "Car", "Team", "Manufacturer",
+                "Crew Chief", "Laps Led", "Fastest Laps", "Avg Run",
+                "DK Pts", "FD Pts", "Pos Diff", "Status"]
+        master = res[[c for c in want if c in res.columns]].copy()
+    elif not entry_list_df.empty:
+        master = entry_list_df.copy()
+    elif not lap_averages_df.empty:
+        master = lap_averages_df[["Driver", "Car"]].copy()
+    elif not qualifying_df.empty:
+        master = qualifying_df[["Driver"]].copy()
+    else:
+        st.info("Race weekend data not yet available. Check back closer to race day.")
+        return
+
+    # --- Merge additional data sources (dedup right side to prevent row multiplication) ---
+
+    # DK/FD Salary
+    if not dk_df.empty:
+        master = master.merge(dk_df.drop_duplicates("Driver"), on="Driver", how="left")
+    if not fd_df.empty:
+        master = master.merge(fd_df.drop_duplicates("Driver"), on="Driver", how="left")
+
+    # Betting odds
+    if odds_data:
+        master["Win Odds"] = master["Driver"].map(odds_data)
+
+    # Qualifying
+    if not qualifying_df.empty and "Qualifying Position" not in master.columns:
+        qual_want = ["Driver", "Qualifying Position", "Best Lap Speed"]
+        qual_cols = qualifying_df[[c for c in qual_want if c in qualifying_df.columns]].copy()
+        qual_cols = qual_cols.drop_duplicates("Driver")
+        qual_cols = qual_cols.rename(columns={"Qualifying Position": "Qual", "Best Lap Speed": "Qual Speed"})
+        master = master.merge(qual_cols, on="Driver", how="left")
+
+    # Sponsor from lap averages
+    if not lap_averages_df.empty and "Sponsor" in lap_averages_df.columns and "Sponsor" not in master.columns:
+        sponsor_map = lap_averages_df.drop_duplicates("Driver").set_index("Driver")["Sponsor"].to_dict()
+        master["Sponsor"] = master["Driver"].map(sponsor_map)
+
+    # Practice lap average ranks
+    if not lap_averages_df.empty:
+        prac_cols = ["Driver"]
+        for col in ["Overall Avg", "Overall Rank", "Best Lap",
+                     "1 Lap Rank", "5 Lap Rank", "10 Lap Rank", "15 Lap Rank",
+                     "20 Lap Rank", "25 Lap Rank", "30 Lap Rank"]:
+            if col in lap_averages_df.columns:
+                prac_cols.append(col)
+        master = master.merge(lap_averages_df[prac_cols].drop_duplicates("Driver"), on="Driver", how="left")
+
+    # Track History
+    with st.spinner(f"Loading {track_name} history..."):
+        th_df = scrape_track_history(track_name, series_id)
+    if not th_df.empty:
+        # Prefix needed to avoid column name clashes with Results columns
+        th_rename = {
+            "Races": "Races (Trk)", "Avg Finish": "Avg Finish (Trk)", "Avg Start": "Avg Start (Trk)",
+            "Avg Rating": "Rating (Trk)", "Wins": "Wins (Trk)", "Top 5": "T5 (Trk)",
+            "Top 10": "T10 (Trk)", "Top 20": "T20 (Trk)", "Laps Led": "Laps Led (Trk)",
+            "DNF": "DNF (Trk)",
+        }
+        th_merge = th_df.rename(columns=th_rename)
+        th_cols = ["Driver"] + [v for v in th_rename.values() if v in th_merge.columns]
+        master = master.merge(th_merge[th_cols].drop_duplicates("Driver"), on="Driver", how="left")
+
+    # Search
+    search = st.text_input("Search driver / team / make...", "", placeholder="Type to filter...",
+                           label_visibility="collapsed", key="data_search")
+
+    # --- Build column groups for display ---
+    driver_info = ["Driver"]
+    for c in ["DK Salary", "FD Salary", "Win Odds"]:
+        if c in master.columns:
+            driver_info.append(c)
+
+    # Results columns (postrace only)
+    results_group = []
+    if not is_prerace:
+        for c in ["Finish Position", "Start", "Laps Led", "Fastest Laps",
+                   "DK Pts", "FD Pts", "Avg Run", "Pos Diff", "Status"]:
+            if c in master.columns:
+                results_group.append(c)
+
+    qualifying = []
+    for c in ["Qual", "Qual Speed"]:
+        if c in master.columns:
+            qualifying.append(c)
+
+    car_info = []
+    for c in ["Car", "Manufacturer", "Team", "Sponsor", "Crew Chief"]:
+        if c in master.columns:
+            car_info.append(c)
+
+    practice = []
+    for c in ["Overall Avg", "Overall Rank", "1 Lap Rank",
+              "5 Lap Rank", "10 Lap Rank", "15 Lap Rank",
+              "20 Lap Rank", "25 Lap Rank", "30 Lap Rank"]:
+        if c in master.columns:
+            practice.append(c)
+
+    track_history = []
+    for c in ["Races (Trk)", "Avg Finish (Trk)", "Avg Start (Trk)", "Rating (Trk)",
+              "Wins (Trk)", "T5 (Trk)", "T10 (Trk)", "T20 (Trk)", "Laps Led (Trk)", "DNF (Trk)"]:
+        if c in master.columns:
+            track_history.append(c)
+
+    # Flat column order
+    col_order = driver_info + results_group + qualifying + car_info + practice + track_history
+    avail = [c for c in col_order if c in master.columns]
+    display_df = master[avail].copy()
+
+    # Apply smart formatting
+    display_df = format_display_df(display_df)
+
+    if search:
+        mask = display_df.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
+        display_df = display_df[mask]
+
+    # Sort: by Finish Position if postrace, by Qual if prerace
+    if not is_prerace and "Finish Position" in display_df.columns:
+        display_df = display_df.sort_values("Finish Position", na_position="last")
+    elif "Qual" in display_df.columns:
+        display_df = display_df.sort_values("Qual", na_position="last")
+
+    # Build MultiIndex columns for grouped headers
+    group_map = {}
+    for c in driver_info:
+        group_map[c] = "Driver Info"
+    for c in results_group:
+        group_map[c] = "Results"
+    for c in qualifying:
+        group_map[c] = "Qualifying"
+    for c in car_info:
+        group_map[c] = "Car Info"
+    for c in practice:
+        group_map[c] = "Practice"
+    for c in track_history:
+        group_map[c] = "Track History"
+
+    multi_tuples = [(group_map.get(c, ""), c) for c in display_df.columns]
+    display_df.columns = pd.MultiIndex.from_tuples(multi_tuples)
+
+    field_count = len(display_df)
+    status = "Post-race" if not is_prerace else "Pre-race"
+    st.caption(f"{field_count} drivers  •  {status}")
+
+    st.dataframe(safe_fillna(display_df), use_container_width=True, hide_index=True, height=600)
+
+    # Export
+    if not master.empty:
+        csv_data = master[avail].to_csv(index=False).encode("utf-8")
+        st.download_button("Export CSV", csv_data,
+                           f"{race_name.replace(' ', '_')}_data.csv", "text/csv", key="export_data")
+
+
+def _render_charts_view(completed_races, series_id, selected_year,
+                        results_df, lap_data, fl_counts, is_prerace):
+    """Render the Charts view."""
+
+    # If postrace, show DFS histogram and start vs finish (full width, stacked)
+    if not is_prerace and not results_df.empty:
+        avg_run_pos = compute_avg_running_position(lap_data) if lap_data else {}
+        res = results_df.copy()
+        res["Fastest Laps"] = res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")
+        res["DFS Points"] = res.apply(
+            lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+
+        fig = dfs_histogram(res)
+        st.plotly_chart(fig, use_container_width=True)
+
+        fig = start_vs_finish_scatter(res)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Race lap-by-lap chart (from race lap-times data)
+    if not is_prerace and lap_data:
+        import numpy as np
+        st.markdown("---")
+        st.caption("Race lap-by-lap times")
+
+        # Build driver list from lap data
+        all_drivers = sorted([d.get("FullName", d.get("NickName", "")) for d in lap_data.get("laps", [])])
+        default_top = all_drivers[:10] if len(all_drivers) > 10 else all_drivers
+
+        ctrl1, ctrl2 = st.columns([3, 1])
+        with ctrl1:
+            sel_drivers = st.multiselect("Select drivers", all_drivers, default=default_top, key="race_lap_drivers")
+        with ctrl2:
+            outlier_pct = st.slider("Outlier filter (x median)", 1.05, 1.40, 1.15, 0.05, key="race_lap_outlier",
+                                    help="Hide laps slower than this multiple of driver's median (pit stops, cautions)")
+
+        if sel_drivers:
+            # Filter outliers from lap data before charting
+            filtered_data = {"laps": []}
+            for d in lap_data.get("laps", []):
+                driver = d.get("FullName", d.get("NickName", ""))
+                if driver not in sel_drivers:
+                    continue
+                laps = d.get("Laps", [])
+                times = [l["LapTime"] for l in laps if l.get("LapTime") and l["LapTime"] > 0]
+                if not times:
+                    continue
+                median_t = np.median(times)
+                cutoff = median_t * outlier_pct
+                clean_laps = [l for l in laps if l.get("LapTime") and 0 < l["LapTime"] <= cutoff]
+                if clean_laps:
+                    filtered_data["laps"].append({**d, "Laps": clean_laps})
+
+            fig = race_lap_chart(filtered_data, sel_drivers)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+
+    # Single race scatter — Avg Running Pos vs DK Points for THIS race
+    if not is_prerace and not results_df.empty and lap_data:
+        st.markdown("---")
+        avg_run_data = compute_avg_running_position(lap_data)
+        race_res = results_df.copy()
+        race_res["Fastest Laps"] = race_res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")
+        race_res["DK Pts"] = race_res.apply(
+            lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+        race_res["Avg Run"] = race_res["Driver"].map(lambda d: avg_run_data.get(d))
+
+        fig = race_scatter(race_res)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True, key="data_race_scatter")
