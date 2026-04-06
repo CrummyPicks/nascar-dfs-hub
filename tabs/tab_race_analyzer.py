@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-from src.config import SERIES_OPTIONS, TRACK_TYPE_MAP
+from src.config import SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps, compute_avg_running_position,
@@ -42,7 +42,10 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                                             index=default_year_idx, key="ra_year")
         with f_cols[2]:
             # Track type filter
-            type_options = ["All Types"] + sorted(set(TRACK_TYPE_MAP.values()))
+            # Subtypes + parent groups (e.g. "All Short" includes short + short_concrete + short_flat)
+            subtypes = sorted(set(TRACK_TYPE_MAP.values()))
+            parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
+            type_options = ["All Types"] + parent_groups + subtypes
             ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type")
         with f_cols[3]:
             # Build track list from the first year for filtering
@@ -52,7 +55,12 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
             tracks = sorted(set(r.get("track_name", "") for r in ra_point_races if r.get("track_name")))
             # Filter track list by track type if selected
             if ra_track_type != "All Types":
-                tracks = [t for t in tracks if TRACK_TYPE_MAP.get(t, "intermediate") == ra_track_type]
+                if ra_track_type.startswith("All "):
+                    parent = ra_track_type.replace("All ", "").lower()
+                    tracks = [t for t in tracks
+                              if TRACK_TYPE_PARENT.get(TRACK_TYPE_MAP.get(t, "intermediate"), "intermediate") == parent]
+                else:
+                    tracks = [t for t in tracks if TRACK_TYPE_MAP.get(t, "intermediate") == ra_track_type]
             ra_track = st.selectbox("Track Filter", ["All Tracks"] + tracks, key="ra_track")
 
     # Build completed races based on filters
@@ -83,8 +91,16 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
 
     # Filter by track type if selected
     if ra_track_type != "All Types":
-        ra_completed = [(i, r) for i, r in ra_completed
-                        if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == ra_track_type]
+        if ra_track_type.startswith("All "):
+            parent = ra_track_type.replace("All ", "").lower()
+            ra_completed = [(i, r) for i, r in ra_completed
+                            if TRACK_TYPE_PARENT.get(
+                                TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate"),
+                                "intermediate"
+                            ) == parent]
+        else:
+            ra_completed = [(i, r) for i, r in ra_completed
+                            if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == ra_track_type]
 
     # Filter by specific track if selected
     if ra_track != "All Tracks":
@@ -337,12 +353,22 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
 def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch,
                           selected_track_type="All Types"):
     """Aggregate driver stats across all tracks of a selected type."""
-    # Track type selector (dedicated for this view, overrides filter)
-    track_types = sorted(set(TRACK_TYPE_MAP.values()))
+    # Track type selector — subtypes + parent groups
+    subtypes = sorted(set(TRACK_TYPE_MAP.values()))
+    parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
+    track_types = parent_groups + subtypes
     type_badges = {
         "superspeedway": "🔴", "intermediate": "🟡",
         "short": "🟢", "road": "🔵", "dirt": "🟤",
     }
+
+    def _format_type(t):
+        if t.startswith("All "):
+            parent = t.replace("All ", "").lower()
+            badge = type_badges.get(parent, "")
+            return f"{badge} {t}"
+        badge = type_badges.get(TRACK_TYPE_PARENT.get(t, t), "")
+        return f"{badge} {t.replace('_', ' ').title()}"
 
     # Default to filter selection if a specific type was already chosen
     default_idx = 0
@@ -353,22 +379,33 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
         "Track Type",
         track_types,
         index=default_idx,
-        format_func=lambda t: f"{type_badges.get(t, '')} {t.title()}",
+        format_func=_format_type,
         key="ra_tt_type_select",
     )
 
-    # Filter completed races to only those at matching track type
-    type_races = [
-        (i, r) for i, r in completed_races
-        if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == chosen_type
-    ]
+    # Filter completed races to matching track type (parent or subtype)
+    if chosen_type.startswith("All "):
+        parent = chosen_type.replace("All ", "").lower()
+        type_races = [
+            (i, r) for i, r in completed_races
+            if TRACK_TYPE_PARENT.get(
+                TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate"),
+                "intermediate"
+            ) == parent
+        ]
+    else:
+        type_races = [
+            (i, r) for i, r in completed_races
+            if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == chosen_type
+        ]
 
     # Show which tracks are included
     included_tracks = sorted(set(r.get("track_name", "") for _, r in type_races))
+    display_name = chosen_type.replace("_", " ").title()
     if included_tracks:
-        st.caption(f"**{chosen_type.title()}** tracks: {', '.join(included_tracks)}")
+        st.caption(f"**{display_name}** tracks: {', '.join(included_tracks)}")
     else:
-        st.info(f"No completed races at {chosen_type} tracks for the selected filters.")
+        st.info(f"No completed races at {display_name} tracks for the selected filters.")
         return
 
     if not type_races:
