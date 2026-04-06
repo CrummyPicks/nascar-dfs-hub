@@ -1290,7 +1290,7 @@ def _display_backtest_results(results_df, series_name):
         top15 = results_df.head(15)
         combo_labels = []
         for idx, row in top15.iterrows():
-            lbl = (f"#{combo_labels.__len__() + 1}: "
+            lbl = (f"#{len(combo_labels) + 1}: "
                    f"Odds {int(row['Odds'])}% | Track {int(row['Track'])}% | "
                    f"Prac {int(row['Practice'])}% | Qual {int(row['Qualifying'])}% | "
                    f"Type {int(row['Track Type'])}% — "

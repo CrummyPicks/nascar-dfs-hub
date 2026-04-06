@@ -897,15 +897,45 @@ def estimate_odds_from_salaries(dk_df: pd.DataFrame) -> dict:
 # ODDS PERSISTENCE — save/load odds to/from database
 # ============================================================
 
+def _resolve_db_race_id(api_race_id: int):
+    """Resolve a NASCAR API race_id to the internal DB race_id.
+
+    Looks up via the api_race_id column on the races table.
+    Returns None if not found.
+    """
+    if not api_race_id or not DB_PATH.exists():
+        return None
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        row = conn.execute(
+            "SELECT id FROM races WHERE api_race_id = ?", (api_race_id,)
+        ).fetchone()
+    except Exception:
+        # Column may not exist yet — add it
+        try:
+            conn.execute("ALTER TABLE races ADD COLUMN api_race_id INTEGER")
+            conn.commit()
+        except Exception:
+            pass
+        row = None
+    conn.close()
+    return row[0] if row else None
+
+
 def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_network"):
     """Persist odds dict to the odds table, keyed by race_id.
 
     Args:
         odds_data: {driver_name: odds_string} e.g. {"Kyle Larson": "+350"}
-        race_id: NASCAR API race ID
+        race_id: NASCAR API race ID (will be resolved to internal DB race_id)
         sportsbook: source label
     """
     if not odds_data or not race_id or not DB_PATH.exists():
+        return 0
+
+    # Resolve API race_id to internal DB race_id
+    db_race_id = _resolve_db_race_id(race_id)
+    if not db_race_id:
         return 0
 
     from src.utils import fuzzy_match_name
@@ -932,7 +962,7 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
             INSERT OR REPLACE INTO odds
             (race_id, driver_id, sportsbook, win_odds, scraped_at)
             VALUES (?, ?, ?, ?, datetime('now'))
-        ''', (race_id, driver_id, sportsbook, odds_val))
+        ''', (db_race_id, driver_id, sportsbook, odds_val))
         count += 1
 
     conn.commit()
@@ -943,9 +973,17 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
 def load_race_odds(race_id: int) -> dict:
     """Load saved odds for a race from the DB.
 
+    Args:
+        race_id: NASCAR API race ID (will be resolved to internal DB race_id)
+
     Returns dict of {driver_name: odds_string} matching the live format.
     """
     if not DB_PATH.exists():
+        return {}
+
+    # Resolve API race_id to internal DB race_id
+    db_race_id = _resolve_db_race_id(race_id)
+    if not db_race_id:
         return {}
 
     conn = sqlite3.connect(str(DB_PATH))
@@ -955,7 +993,7 @@ def load_race_odds(race_id: int) -> dict:
         JOIN drivers d ON d.id = o.driver_id
         WHERE o.race_id = ?
         ORDER BY o.win_odds ASC
-    ''', (race_id,)).fetchall()
+    ''', (db_race_id,)).fetchall()
     conn.close()
 
     result = {}
@@ -1067,15 +1105,15 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
             db_race_id = race_row["id"]
             # Update metadata in case it was a placeholder
             conn.execute(
-                "UPDATE races SET race_name=?, race_date=?, track_id=?, laps=? WHERE id=?",
-                (race_name, race_date, track_id, total_laps, db_race_id),
+                "UPDATE races SET race_name=?, race_date=?, track_id=?, laps=?, api_race_id=? WHERE id=?",
+                (race_name, race_date, track_id, total_laps, race_id, db_race_id),
             )
         else:
             conn.execute(
                 """INSERT INTO races (series_id, track_id, season, race_num,
-                   race_name, race_date, laps)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (series_id, track_id, year, race_num, race_name, race_date, total_laps),
+                   race_name, race_date, laps, api_race_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (series_id, track_id, year, race_num, race_name, race_date, total_laps, race_id),
             )
             db_race_id = conn.execute(
                 "SELECT id FROM races WHERE series_id=? AND season=? AND race_num=?",

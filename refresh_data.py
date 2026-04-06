@@ -154,6 +154,99 @@ def fetch_and_save_odds(series_id: int, year: int):
         print("No DK salary data available")
 
 
+def backfill_api_race_ids():
+    """Backfill api_race_id for races that don't have one yet."""
+    import sqlite3
+    from difflib import get_close_matches
+    from src.config import DB_PATH
+
+    if not DB_PATH.exists():
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+
+    # Ensure column exists
+    try:
+        conn.execute("SELECT api_race_id FROM races LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE races ADD COLUMN api_race_id INTEGER")
+        conn.commit()
+
+    null_count = conn.execute(
+        "SELECT COUNT(*) FROM races WHERE api_race_id IS NULL"
+    ).fetchone()[0]
+    if null_count == 0:
+        conn.close()
+        return
+
+    print(f"\n  Backfilling api_race_id for {null_count} races...")
+
+    combos = conn.execute(
+        "SELECT DISTINCT series_id, season FROM races WHERE api_race_id IS NULL"
+    ).fetchall()
+
+    used_ids = set(
+        r[0] for r in conn.execute(
+            "SELECT api_race_id FROM races WHERE api_race_id IS NOT NULL"
+        ).fetchall()
+    )
+
+    updated = 0
+    for sid, season in combos:
+        races_list = fetch_race_list(sid, season)
+        if not races_list:
+            continue
+
+        # Build name -> api_race_id and date -> api_race_id maps
+        api_by_name = {}
+        api_by_date = {}
+        for r in races_list:
+            name = (r.get("race_name", "") or "").strip()
+            rid = r.get("race_id")
+            date = (r.get("race_date", "") or "")[:10]
+            if name and rid:
+                api_by_name[name] = rid
+            if date and rid:
+                api_by_date.setdefault(date, []).append(rid)
+
+        db_races = conn.execute(
+            "SELECT id, race_name, race_date FROM races "
+            "WHERE series_id=? AND season=? AND api_race_id IS NULL",
+            (sid, season),
+        ).fetchall()
+
+        api_names = list(api_by_name.keys())
+
+        for db_id, db_name, db_date in db_races:
+            api_rid = None
+            # Try exact name match
+            if db_name and db_name in api_by_name:
+                api_rid = api_by_name[db_name]
+            # Try fuzzy name match
+            if not api_rid and db_name:
+                matches = get_close_matches(db_name, api_names, n=1, cutoff=0.6)
+                if matches:
+                    api_rid = api_by_name[matches[0]]
+            # Try date match
+            if not api_rid and db_date:
+                date_key = db_date[:10]
+                candidates = api_by_date.get(date_key, [])
+                candidates = [c for c in candidates if c not in used_ids]
+                if len(candidates) == 1:
+                    api_rid = candidates[0]
+
+            if api_rid and api_rid not in used_ids:
+                conn.execute(
+                    "UPDATE races SET api_race_id=? WHERE id=?", (api_rid, db_id)
+                )
+                used_ids.add(api_rid)
+                updated += 1
+
+    conn.commit()
+    conn.close()
+    print(f"  Backfilled {updated} races with api_race_id")
+
+
 def main():
     parser = argparse.ArgumentParser(description="NASCAR DFS Hub — Data Refresh")
     parser.add_argument("--series", type=str, default="cup",
@@ -186,6 +279,9 @@ def main():
     else:
         series_id = SERIES_MAP.get(args.series.lower(), 1)
         fetch_season(series_id, args.year)
+
+    # Backfill api_race_id for any races missing it
+    backfill_api_race_ids()
 
     # Fetch odds if requested or during normal refresh
     if args.odds or not args.race:

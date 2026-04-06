@@ -83,15 +83,16 @@ def create_database():
 
     -- ── RACES ───────────────────────────────────────────────────
     CREATE TABLE IF NOT EXISTS races (
-        id          INTEGER PRIMARY KEY,
-        series_id   INTEGER NOT NULL REFERENCES series(id),
-        track_id    INTEGER REFERENCES tracks(id),
-        season      INTEGER NOT NULL,
-        race_num    INTEGER NOT NULL,
-        race_name   TEXT,
-        race_date   TEXT,   -- ISO-8601
-        laps        INTEGER,
-        miles       REAL,
+        id            INTEGER PRIMARY KEY,
+        series_id     INTEGER NOT NULL REFERENCES series(id),
+        track_id      INTEGER REFERENCES tracks(id),
+        season        INTEGER NOT NULL,
+        race_num      INTEGER NOT NULL,
+        race_name     TEXT,
+        race_date     TEXT,   -- ISO-8601
+        laps          INTEGER,
+        miles         REAL,
+        api_race_id   INTEGER,   -- NASCAR API race_id for cross-reference
         UNIQUE(series_id, season, race_num)
     );
 
