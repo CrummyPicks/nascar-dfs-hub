@@ -23,7 +23,7 @@ from src.config import (
 from src.data import (
     query_projections, scrape_track_history,
 )
-from src.charts import projection_bar
+# projection_bar no longer used — replaced with inline stacked bar
 from src.utils import safe_fillna, format_display_df, calc_dk_points
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
@@ -184,6 +184,9 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     Uses historical data to determine how concentrated laps led should be.
     At short tracks, the top driver can lead 200+ laps (50%+).
     At superspeedways, the top leader averages only ~35 laps.
+
+    Applies a realistic cutoff: historically only ~15-25% of the field leads
+    any laps (except superspeedways ~60%).  Drivers below the cutoff get 0.
     """
     if not driver_scores or race_laps <= 0:
         return {}
@@ -191,9 +194,24 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     calibration = _get_track_dominator_calibration(track_name, track_type)
     concentration = calibration["concentration"]
 
+    # What fraction of the field typically leads laps at this track type
+    LEADER_FRAC = {
+        "superspeedway": 0.60,   # Pack racing — many leaders
+        "road": 0.22,
+        "dirt": 0.20,
+        "intermediate": 0.22,
+        "short": 0.18,           # Dominated by 1-2 drivers
+    }
+    frac = LEADER_FRAC.get(track_type, 0.22)
+    n_leaders = max(3, int(len(driver_scores) * frac))
+
+    # Rank drivers by raw score, only top N get any laps led
+    sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
+    top_drivers = dict(sorted_drivers[:n_leaders])
+
     # Apply concentration exponent — higher exponent = more to the top scorer
     scores = {}
-    for d, s in driver_scores.items():
+    for d, s in top_drivers.items():
         scores[d] = max(0.01, s) ** concentration
 
     total = sum(scores.values())
@@ -209,15 +227,34 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
 
     Uses a lower concentration than laps led — fastest laps are more
     distributed since even mid-pack drivers can post a fastest lap.
+
+    Applies a realistic cutoff: historically ~40-60% of the field earns at
+    least one fastest lap (superspeedways ~90%, championship races ~40%).
+    Drivers below the cutoff get 0.
     """
     if not driver_fl_scores or race_laps <= 0:
         return {}
+
+    # What fraction of the field typically gets fastest laps
+    FL_FRAC = {
+        "superspeedway": 0.85,   # Almost everyone in pack racing
+        "road": 0.55,
+        "dirt": 0.50,
+        "intermediate": 0.65,
+        "short": 0.55,
+    }
+    frac = FL_FRAC.get(track_type, 0.55)
+    n_with_fl = max(5, int(len(driver_fl_scores) * frac))
+
+    # Rank drivers by raw FL score, only top N get any fastest laps
+    sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
+    top_drivers = dict(sorted_drivers[:n_with_fl])
 
     # Fastest laps are less concentrated than laps led
     concentration = max(0.5, TRACK_TYPE_CONCENTRATION.get(track_type, 1.5) * 0.7)
 
     scores = {}
-    for d, s in driver_fl_scores.items():
+    for d, s in top_drivers.items():
         scores[d] = max(0.01, s) ** concentration
 
     total = sum(scores.values())
@@ -609,12 +646,16 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         tt = tt_data.get(d)
         track_score = 0
         if th:
-            track_score = round(max(0, (40 - th["avg_finish"]) / 39 * 100 * 0.5 +
-                                min(100, th["avg_rating"] / 1.5) * 0.3 +
-                                min(30, th["laps_led"] / max(th["races"], 1) * 0.5) * 0.2), 1)
+            finish_comp = max(0, (40 - th["avg_finish"]) / 39 * 100)
+            rating_comp = min(100, th["avg_rating"] / 1.5) if th["avg_rating"] else 0
+            ll_per_race = th["laps_led"] / max(th["races"], 1)
+            ll_comp = min(100, ll_per_race * 2.5)  # ~40 ll/race = 100
+            track_score = round(finish_comp * 0.45 + rating_comp * 0.30 + ll_comp * 0.25, 1)
         tt_score = 0
         if tt:
-            tt_score = round(max(0, (40 - tt["avg_finish"]) / 39 * 100), 1)
+            finish_comp = max(0, (40 - tt["avg_finish"]) / 39 * 100)
+            ll_comp = min(100, tt.get("laps_led_per_race", 0) * 2.5)
+            tt_score = round(finish_comp * 0.70 + ll_comp * 0.30, 1)
 
         rows.append({
             "Driver": d,
@@ -671,18 +712,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]
 
-    disp = format_display_df(proj[avail].copy())
-    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=False, height=550)
-
-    # Chart
-    chart_df = proj.head(20).copy()
-    if "Proj DK" in chart_df.columns:
-        chart_df = chart_df.rename(columns={"Proj DK": "Proj Score"})
-    fig = projection_bar(chart_df)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Export and Save
+    # Export and Save — above the table for easy access
     exp_cols = st.columns([1, 1, 3])
     with exp_cols[0]:
         csv = proj[avail].to_csv(index=True).encode("utf-8")
@@ -692,7 +722,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         if st.button("Save Projections", key="proj_save", type="secondary",
                       help="Save to DB for accuracy tracking in the Accuracy tab"):
             from tabs.tab_accuracy import save_projections_to_db
-            # Detect season from race_name or current year
             from datetime import datetime
             season = datetime.now().year
             count = save_projections_to_db(
@@ -703,3 +732,80 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 st.success(f"Saved {count} projections for accuracy tracking")
             else:
                 st.warning("Could not save projections")
+
+    disp = format_display_df(proj[avail].copy())
+    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=False, height=550)
+
+    # Chart — all drivers, stacked bar with component breakdown on hover
+    import plotly.graph_objects as go
+    chart_df = proj.copy()
+    chart_df = chart_df.sort_values("Proj DK", ascending=True)  # horizontal bar: bottom = best
+
+    # Build stacked horizontal bar with DK scoring components
+    component_cols = {
+        "Finish Pts": "#4a7dfc",
+        "Diff Pts": "#36b37e",
+        "Led Pts": "#ff9f43",
+        "FL Pts": "#f5365c",
+    }
+
+    fig = go.Figure()
+    for comp, color in component_cols.items():
+        if comp in chart_df.columns:
+            fig.add_trace(go.Bar(
+                y=chart_df["Driver"],
+                x=chart_df[comp].clip(lower=0),
+                name=comp,
+                orientation="h",
+                marker_color=color,
+                hovertemplate=(
+                    "%{y}<br>"
+                    + comp + ": %{x:.1f}<br>"
+                    + "<extra></extra>"
+                ),
+            ))
+
+    # Custom hover with all components
+    custom_hover = []
+    for _, row in chart_df.iterrows():
+        text = (
+            f"<b>{row['Driver']}</b><br>"
+            f"Proj DK: {row.get('Proj DK', 0):.1f}<br>"
+            f"Proj Finish: {row.get('Proj Finish', 0):.1f}<br>"
+            f"Finish Pts: {row.get('Finish Pts', 0):.1f}<br>"
+            f"Diff Pts: {row.get('Diff Pts', 0):+.1f}<br>"
+            f"Led Pts: {row.get('Led Pts', 0):.1f}<br>"
+            f"FL Pts: {row.get('FL Pts', 0):.1f}<br>"
+            f"Laps Led: {row.get('Proj Laps Led', 0):.0f}<br>"
+            f"Fast Laps: {row.get('Proj Fast Laps', 0):.0f}<br>"
+            f"Track: {row.get('Track', 0):.1f} | Type: {row.get('Track Type', 0):.1f}"
+        )
+        custom_hover.append(text)
+
+    # Add invisible scatter trace for rich hover
+    fig.add_trace(go.Scatter(
+        y=chart_df["Driver"],
+        x=chart_df["Proj DK"],
+        mode="markers",
+        marker=dict(size=1, opacity=0),
+        hovertext=custom_hover,
+        hoverinfo="text",
+        showlegend=False,
+    ))
+
+    n_drivers = len(chart_df)
+    fig.update_layout(
+        barmode="stack",
+        title="All Drivers — Projected DK Points Breakdown",
+        xaxis_title="Projected DK Points",
+        yaxis_title="",
+        height=max(400, n_drivers * 22),
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(size=11, color="#c9d1d9"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=10, r=10, t=40, b=30),
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    st.plotly_chart(fig, use_container_width=True)
