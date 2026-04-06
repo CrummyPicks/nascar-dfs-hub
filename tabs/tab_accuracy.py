@@ -1199,9 +1199,11 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         results_df["Score"] = -results_df["MAE"]
     results_df = results_df.sort_values("Score", ascending=False)
 
-    # Store results in session state so export doesn't reset
+    # Store results + race data in session state for drill-down
     st.session_state["acc_opt_results"] = results_df
     st.session_state["acc_opt_series"] = series_name
+    st.session_state["acc_opt_race_data"] = race_data
+    st.session_state["acc_opt_dnf_data"] = dnf_data if include_dnf else {}
 
     _display_backtest_results(results_df, series_name)
 
@@ -1265,6 +1267,243 @@ def _display_backtest_results(results_df, series_name):
     st.download_button("Export All Results CSV", csv,
                        f"weight_optimization_{series_name}.csv", "text/csv",
                        key="acc_opt_export")
+
+    # ── Drill-down: select a weight combo to see driver-level detail ──
+    st.markdown("---")
+    st.markdown("**Drill Into Weight Combo**")
+    st.caption("Select a weight combination to see projected vs actual driver details")
+
+    race_data = st.session_state.get("acc_opt_race_data", [])
+    dnf_data = st.session_state.get("acc_opt_dnf_data", {})
+
+    if race_data and len(results_df) > 0:
+        # Build selectable labels from top 15
+        top15 = results_df.head(15)
+        combo_labels = []
+        for idx, row in top15.iterrows():
+            lbl = (f"#{combo_labels.__len__() + 1}: "
+                   f"Odds {int(row['Odds'])}% | Track {int(row['Track'])}% | "
+                   f"Prac {int(row['Practice'])}% | Qual {int(row['Qualifying'])}% | "
+                   f"Type {int(row['Track Type'])}% — "
+                   f"MAE {row['MAE']:.1f}, Rank Corr {row['Rank Corr']:.3f}")
+            combo_labels.append((lbl, row))
+
+        selected_lbl = st.selectbox(
+            "Weight combo", [c[0] for c in combo_labels],
+            key="acc_drill_combo"
+        )
+
+        # Find the selected combo
+        selected_row = None
+        for lbl, row in combo_labels:
+            if lbl == selected_lbl:
+                selected_row = row
+                break
+
+        if selected_row is not None:
+            # Also let user pick which race to view
+            race_labels = [f"{rd['race'].get('track_name', '')} — {rd['race'].get('race_name', '')}"
+                           for rd in race_data]
+            race_labels.insert(0, "All Races (combined)")
+            selected_race_lbl = st.selectbox("Race", race_labels, key="acc_drill_race")
+
+            # Build the normalized weights
+            combo = {
+                "odds": int(selected_row["Odds"]),
+                "track": int(selected_row["Track"]),
+                "practice": int(selected_row["Practice"]),
+                "qual": int(selected_row["Qualifying"]),
+                "track_type": int(selected_row["Track Type"]),
+            }
+            total_w = sum(combo.values())
+            nominal_wn = {k: v / total_w for k, v in combo.items()}
+
+            # Determine which races to show
+            if selected_race_lbl == "All Races (combined)":
+                show_races = race_data
+            else:
+                race_idx = race_labels.index(selected_race_lbl) - 1  # offset for "All" option
+                show_races = [race_data[race_idx]]
+
+            all_rows = []
+            for rd in show_races:
+                drivers = rd["drivers"]
+                field_size = rd["field_size"]
+                results = rd["results"]
+                has = rd["has_signals"]
+                race_name = rd["race"].get("race_name", "")
+                track_name = rd["race"].get("track_name", "")
+
+                # Per-race weight redistribution
+                effective = {}
+                for sig in ["track", "track_type", "qual", "practice", "odds"]:
+                    effective[sig] = nominal_wn[sig] if has[sig] else 0
+                eff_total = sum(effective.values())
+                if eff_total <= 0:
+                    continue
+                wn = {k: v / eff_total for k, v in effective.items()}
+
+                # Run the full projection with laps led + fastest laps
+                # We need detailed output, so we'll inline the key parts
+                proj_dk_totals = _project_race_backtest(
+                    drivers, field_size, wn,
+                    rd["th_data"], rd["tt_data"],
+                    rd["start_positions"], rd["odds_finish"],
+                    dnf_data,
+                    race_laps=rd.get("race_laps", 0),
+                    track_type=rd.get("track_type", "intermediate"),
+                )
+
+                # Re-derive per-driver details for display
+                # (Re-run core logic to get finish/LL/FL breakdowns)
+                raw_scores = {}
+                dom_scores = {}
+                fl_scores_dict = {}
+                for d in drivers:
+                    th = rd["th_data"].get(d)
+                    tt = rd["tt_data"].get(d)
+                    sp = rd["start_positions"].get(d)
+                    od = rd["odds_finish"].get(d)
+
+                    finish_signals = []
+                    signal_weights = []
+                    if th and wn.get("track", 0) > 0:
+                        finish_signals.append(th["avg_finish"])
+                        signal_weights.append(wn["track"])
+                    if tt and wn.get("track_type", 0) > 0:
+                        finish_signals.append(tt["avg_finish"])
+                        signal_weights.append(wn["track_type"])
+                    if sp and wn.get("qual", 0) > 0:
+                        finish_signals.append(sp * 0.85 + (field_size * 0.5) * 0.15)
+                        signal_weights.append(wn["qual"])
+                    if th and th.get("speed_score", 0) > 0 and wn.get("practice", 0) > 0:
+                        max_spd = max((t.get("speed_score", 0) for t in rd["th_data"].values()), default=1)
+                        if max_spd > 0:
+                            finish_signals.append(max(1, field_size * (1 - th["speed_score"] / max_spd * 0.8)))
+                            signal_weights.append(wn["practice"] * 0.5)
+                    if od and wn.get("odds", 0) > 0:
+                        finish_signals.append(od)
+                        signal_weights.append(wn["odds"] * 1.2)
+                    if finish_signals:
+                        raw_scores[d] = sum(f * w for f, w in zip(finish_signals, signal_weights)) / sum(signal_weights)
+                    else:
+                        raw_scores[d] = field_size * 0.65
+
+                    # Dom score
+                    dom_s = []
+                    dom_w = []
+                    if th and th.get("laps_led_per_race", 0) > 0:
+                        dom_s.append(th["laps_led_per_race"]); dom_w.append(0.30)
+                    if tt and tt.get("laps_led_per_race", 0) > 0:
+                        dom_s.append(tt["laps_led_per_race"]); dom_w.append(0.15)
+                    if sp and sp <= field_size:
+                        dom_s.append(max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30); dom_w.append(0.20)
+                    if od and wn.get("odds", 0) > 0:
+                        dom_s.append(max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35); dom_w.append(0.30)
+                    dom_scores[d] = sum(s * w for s, w in zip(dom_s, dom_w)) / sum(dom_w) if dom_s else 0
+
+                # Rank-order finish spreading
+                sorted_d = sorted(raw_scores.items(), key=lambda x: x[1])
+                n = len(sorted_d)
+                proj_finishes = {}
+                for rank_idx, (d, _) in enumerate(sorted_d):
+                    if n > 1:
+                        t = rank_idx / (n - 1)
+                        proj_finishes[d] = max(1, min(field_size, 1 + (field_size - 1) * (t ** 0.85)))
+                    else:
+                        proj_finishes[d] = field_size * 0.5
+
+                # Allocate LL/FL using same logic as backtest
+                race_laps = rd.get("race_laps", 0)
+                parent = TRACK_TYPE_PARENT.get(rd.get("track_type", "intermediate"), "intermediate")
+                LEADER_FRAC = {"superspeedway": 0.60, "road": 0.22, "short": 0.18, "intermediate": 0.22}
+                CONC = {"superspeedway": 0.6, "road": 1.0, "short": 2.0, "intermediate": 1.5}
+                ll_conc = CONC.get(parent, 1.5)
+
+                allocated_ll = {}
+                if race_laps > 0 and dom_scores:
+                    n_leaders = max(3, int(field_size * LEADER_FRAC.get(parent, 0.22)))
+                    top_dom = sorted(dom_scores.items(), key=lambda x: x[1], reverse=True)[:n_leaders]
+                    ll_s = {d: max(0.01, s) ** ll_conc for d, s in top_dom}
+                    ll_t = sum(ll_s.values())
+                    if ll_t > 0:
+                        allocated_ll = {d: (s / ll_t) * race_laps for d, s in ll_s.items()}
+
+                FL_FRAC = {"superspeedway": 0.85, "road": 0.55, "short": 0.55, "intermediate": 0.65}
+                fl_conc = max(0.5, ll_conc * 0.7)
+                allocated_fl = {}
+                if race_laps > 0:
+                    # Simple FL allocation based on dom + finish
+                    fl_raw = {}
+                    for d in drivers:
+                        fl_raw[d] = dom_scores.get(d, 0) * 0.5 + max(0, (field_size - raw_scores.get(d, 20)) / field_size) * 10
+                    n_fl = max(5, int(field_size * FL_FRAC.get(parent, 0.55)))
+                    top_fl = sorted(fl_raw.items(), key=lambda x: x[1], reverse=True)[:n_fl]
+                    fl_s = {d: max(0.01, s) ** fl_conc for d, s in top_fl}
+                    fl_t = sum(fl_s.values())
+                    if fl_t > 0:
+                        allocated_fl = {d: (s / fl_t) * race_laps for d, s in fl_s.items()}
+
+                # Build output rows
+                for d in drivers:
+                    pf = proj_finishes.get(d, 20)
+                    sp = rd["start_positions"].get(d)
+                    start = sp if sp else round(pf)
+                    p_ll = allocated_ll.get(d, 0)
+                    p_fl = allocated_fl.get(d, 0)
+
+                    finish_pts = DK_FINISH_POINTS.get(round(pf), 0)
+                    diff_pts = (start - pf) * 1.0
+                    led_pts = p_ll * 0.25
+                    fl_pts = p_fl * 0.45
+                    proj_total = finish_pts + diff_pts + led_pts + fl_pts
+
+                    # Actual results
+                    act_row = results[results["Driver"] == d]
+                    actual_dk = act_row["DK Pts"].values[0] if len(act_row) > 0 else None
+                    actual_finish = act_row["Finish Position"].values[0] if len(act_row) > 0 else None
+                    actual_ll = act_row["Laps Led"].values[0] if len(act_row) > 0 else 0
+                    actual_fl = act_row["Fastest Laps"].values[0] if len(act_row) > 0 else 0
+
+                    row_data = {
+                        "Driver": d,
+                        "Start": start,
+                        "Proj Finish": round(pf, 1),
+                        "Actual Finish": actual_finish,
+                        "Proj LL": round(p_ll),
+                        "Actual LL": actual_ll,
+                        "Proj FL": round(p_fl),
+                        "Actual FL": actual_fl,
+                        "Proj DK": round(proj_total, 1),
+                        "Actual DK": round(actual_dk, 1) if actual_dk is not None else None,
+                        "Error": round(proj_total - actual_dk, 1) if actual_dk is not None else None,
+                    }
+                    if len(show_races) > 1:
+                        row_data["Race"] = f"{track_name}"
+                    all_rows.append(row_data)
+
+            if all_rows:
+                detail_df = pd.DataFrame(all_rows)
+                detail_df = detail_df.sort_values("Actual DK", ascending=False, na_position="last")
+                detail_df.index = range(1, len(detail_df) + 1)
+                detail_df.index.name = "Rank"
+
+                st.dataframe(safe_fillna(format_display_df(detail_df)),
+                             use_container_width=True, hide_index=False, height=500)
+
+                # Summary metrics for this combo
+                valid = detail_df.dropna(subset=["Actual DK"])
+                if len(valid) > 5:
+                    mc = st.columns(4)
+                    mc[0].metric("MAE", f"{valid['Error'].abs().mean():.1f}")
+                    mc[1].metric("Avg Error", f"{valid['Error'].mean():+.1f}")
+                    mc[2].metric("LL MAE", f"{(valid['Proj LL'] - valid['Actual LL']).abs().mean():.1f}")
+                    mc[3].metric("FL MAE", f"{(valid['Proj FL'] - valid['Actual FL']).abs().mean():.1f}")
+
+                csv_detail = detail_df.to_csv(index=True).encode("utf-8")
+                st.download_button("Export Detail CSV", csv_detail,
+                                   f"weight_detail_{series_name}.csv", "text/csv",
+                                   key="acc_drill_export")
 
     # Clear saved projections button (separate from export)
     st.markdown("---")
