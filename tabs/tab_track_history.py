@@ -21,11 +21,31 @@ TRACK_TYPE_BADGES = {
 }
 
 
+def _format_type_label(t):
+    """Human-readable label for track type options."""
+    if t == "This Track":
+        return t
+    if t.startswith("All "):
+        return t
+    return t.replace("_", " — ").title() if "_" in t else t.title()
+
+
+def _tracks_for_type(track_type: str) -> list:
+    """Get track names belonging to a type or parent group."""
+    if track_type.startswith("All "):
+        parent = track_type.replace("All ", "").lower()
+        return sorted(t for t, tt in TRACK_TYPE_MAP.items()
+                      if TRACK_TYPE_PARENT.get(tt, tt) == parent)
+    return sorted(t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type)
+
+
 def render(*, track_name, track_type, series_id):
     """Render the Track History tab."""
-    badge = TRACK_TYPE_BADGES.get(track_type, "")
+    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
+    badge = TRACK_TYPE_BADGES.get(parent_type, "")
+    display_type = track_type.replace("_", " ").title()
     st.markdown(f"### {track_name} — Driver History")
-    st.caption(f"Track type: {badge} **{track_type.title()}**")
+    st.caption(f"Track type: {badge} **{display_type}**")
 
     # Track type filter
     filter_cols = st.columns([2, 3])
@@ -35,7 +55,14 @@ def render(*, track_name, track_type, series_id):
         ))
         type_filter = st.selectbox("Track Type Filter", type_options,
                                     key="th_type_filter", label_visibility="collapsed",
+                                    format_func=_format_type_label,
                                     help="Filter to show stats for a specific track type")
+    with filter_cols[1]:
+        # Show which tracks are in the selected type
+        if type_filter != "This Track":
+            desc_tracks = _tracks_for_type(type_filter)
+            if desc_tracks:
+                st.caption(f"**{_format_type_label(type_filter)}**: {', '.join(desc_tracks)}")
 
     hist_view = st.radio("View", ["Recent Races", "All-Time", "By Track Type", "2026 Season"],
                          horizontal=True, label_visibility="collapsed")
@@ -74,13 +101,29 @@ def render(*, track_name, track_type, series_id):
             st.info(f"No all-time data found for {track_name}")
 
     elif hist_view == "By Track Type":
-        st.caption(f"Track type: **{track_type}** — stats from database")
+        # Show stats for this track's type from database
+        type_tracks = _tracks_for_type(track_type)
+        parent_tracks = _tracks_for_type(f"All {parent_type.title()}")
+        display_type = track_type.replace("_", " ").title()
+        st.caption(f"Track type: **{display_type}** — stats from database")
+        if type_tracks:
+            st.caption(f"Includes: {', '.join(type_tracks)}")
         tt_df = query_track_type_stats(track_type)
         if not tt_df.empty:
             display = format_display_df(tt_df)
             st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
         else:
-            st.info("No track-type data available.")
+            # Try parent type as fallback
+            if track_type != parent_type:
+                st.caption(f"No data for subtype '{display_type}' — showing parent type '{parent_type.title()}'")
+                parent_df = query_track_type_stats(parent_type)
+                if not parent_df.empty:
+                    display = format_display_df(parent_df)
+                    st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+                else:
+                    st.info(f"No track-type data in database. Run `python refresh_data.py` to populate race data.")
+            else:
+                st.info(f"No track-type data in database. Run `python refresh_data.py` to populate race data.")
 
     elif hist_view == "2026 Season":
         st.caption("Aggregated from all 2026 races in database")
@@ -144,18 +187,24 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
             st.info(f"No data found for {track_type_filter} tracks.")
 
     elif hist_view == "By Track Type":
+        desc_tracks = _tracks_for_type(track_type_filter)
+        if desc_tracks:
+            st.caption(f"**{_format_type_label(track_type_filter)}**: {', '.join(desc_tracks)}")
         tt_df = query_track_type_stats(track_type_filter)
         if not tt_df.empty:
             display = format_display_df(tt_df)
             st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
         else:
-            st.info(f"No {track_type_filter} track-type data available.")
+            st.info(f"No data for {_format_type_label(track_type_filter)} in database. "
+                    f"Run `python refresh_data.py` to populate race data.")
 
     elif hist_view == "2026 Season":
-        st.caption(f"Season data filtered to {track_type_filter} tracks")
-        season_df = query_season_stats()
+        st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks")
+        # Use track type query to filter season data to this type
+        season_df = query_track_type_stats(track_type_filter)
         if not season_df.empty:
             display = format_display_df(season_df)
             st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
         else:
-            st.info("No season data available.")
+            st.info(f"No season data for {_format_type_label(track_type_filter)}. "
+                    f"Run `python refresh_data.py` to populate race data.")

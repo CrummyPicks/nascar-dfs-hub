@@ -123,7 +123,7 @@ if races:
         try:
             race_date = datetime.fromisoformat(
                 race_date_str.replace("Z", "+00:00").split("+")[0].split("T")[0])
-            if race_date.date() < now.date():
+            if race_date.date() <= now.date():
                 completed_races.append((race_num_idx, race))
             else:
                 upcoming_races.append((race_num_idx, race))
@@ -247,8 +247,12 @@ with st.expander("Settings & Data Upload", expanded=False):
                         pass
     with s_cols[3]:
         st.markdown("**Betting Odds**")
-        if auto_odds:
+        # Action Network only has Cup odds — don't show for other series
+        is_cup = (series_id == 1)
+        if is_cup and auto_odds:
             st.caption(f"✅ Auto: {len(auto_odds)} drivers from Action Network")
+        elif not is_cup:
+            st.caption(f"⚠️ Auto odds not available for {series_name} series (Cup only)")
         else:
             st.caption("⚠️ No odds — Action Network may be down, or no upcoming race listed")
         odds_text = st.text_area("Odds", placeholder="Chase Elliott, +1200\nDenny Hamlin, +800",
@@ -266,7 +270,8 @@ with st.expander("Settings & Data Upload", expanded=False):
                     except (ValueError, IndexError):
                         pass
             odds_source = "manual"
-        elif auto_odds:
+        elif is_cup and auto_odds:
+            # Only use auto-fetched odds for Cup series
             odds_data = auto_odds
             odds_source = "action_network"
         # Fallback: estimate odds from DK salary when no real odds available

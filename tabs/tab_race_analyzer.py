@@ -15,40 +15,54 @@ from src.components import render_driver_race_log
 from src.charts import race_scatter
 
 
+def _format_track_type_label(t: str) -> str:
+    """Human-readable label for track type dropdown."""
+    if t == "All Types":
+        return t
+    if t.startswith("All "):
+        return t
+    return t.replace("_", " — ").title() if "_" in t else t.title()
+
+
+def _get_tracks_for_type(track_type: str) -> list:
+    """Get list of track names that belong to a given type or parent group."""
+    if track_type.startswith("All "):
+        parent = track_type.replace("All ", "").lower()
+        return sorted(t for t, tt in TRACK_TYPE_MAP.items()
+                      if TRACK_TYPE_PARENT.get(tt, tt) == parent)
+    return sorted(t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type)
+
+
 def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     """Render the Race Analyzer tab."""
     st.markdown("### Race Analyzer")
-    st.caption("Cross-race analysis — use the Race Data tab for individual race results")
+    st.caption(f"Analyzing **{series_name}** — {selected_year} (change series/year in the top bar)")
 
     # --- Mode selector ---
     mode = st.radio("Analysis Mode",
                     ["Single Race", "Season Summary", "By Track Type", "Driver Lookup", "Driver Comparison"],
                     horizontal=True, label_visibility="collapsed", key="ra_mode")
 
-    # --- Filters default to top-bar selection ---
-    series_list = list(SERIES_OPTIONS.keys())
-    default_series_idx = series_list.index(series_name) if series_name in series_list else 0
+    # Use global series/year from top bar. Only offer track-level filters here.
+    ra_series_id = series_id
+    ra_series_name = series_name
 
     with st.expander("Filters", expanded=False):
         f_cols = st.columns(4)
         with f_cols[0]:
-            ra_series_name = st.selectbox("Series", series_list,
-                                          index=default_series_idx, key="ra_series")
-            ra_series_id = SERIES_OPTIONS[ra_series_name]
-        with f_cols[1]:
             year_options = ["All Years", 2026, 2025, 2024, 2023, 2022]
             default_year_idx = year_options.index(selected_year) if selected_year in year_options else 1
             ra_year_selection = st.selectbox("Year", year_options,
                                             index=default_year_idx, key="ra_year")
-        with f_cols[2]:
+        with f_cols[1]:
             # Track type filter
-            # Subtypes + parent groups (e.g. "All Short" includes short + short_concrete + short_flat)
             subtypes = sorted(set(TRACK_TYPE_MAP.values()))
             parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
             type_options = ["All Types"] + parent_groups + subtypes
-            ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type")
-        with f_cols[3]:
-            # Build track list from the first year for filtering
+            ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type",
+                                         format_func=_format_track_type_label)
+        with f_cols[2]:
+            # Build track list for filtering
             sample_year = selected_year if ra_year_selection == "All Years" else ra_year_selection
             ra_races = fetch_race_list(ra_series_id, sample_year)
             ra_point_races = filter_point_races(ra_races) if ra_races else []
@@ -62,6 +76,12 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                 else:
                     tracks = [t for t in tracks if TRACK_TYPE_MAP.get(t, "intermediate") == ra_track_type]
             ra_track = st.selectbox("Track Filter", ["All Tracks"] + tracks, key="ra_track")
+        with f_cols[3]:
+            # Show track type description
+            if ra_track_type != "All Types":
+                desc_tracks = _get_tracks_for_type(ra_track_type)
+                if desc_tracks:
+                    st.caption(f"**{_format_track_type_label(ra_track_type)}**: {', '.join(desc_tracks)}")
 
     # Build completed races based on filters
     if ra_year_selection == "All Years":
@@ -69,7 +89,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     else:
         years_to_fetch = [ra_year_selection]
 
-    # If series/year matches top bar, reuse pre-loaded data
+    # Build completed races for each year
     ra_completed = []
     for yr in years_to_fetch:
         if ra_series_id == series_id and yr == selected_year:
