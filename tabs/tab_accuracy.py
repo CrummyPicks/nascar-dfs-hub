@@ -310,9 +310,11 @@ def _query_driver_career_dnf(series_id):
 # ── Full projection engine for backtesting ───────────────────────────────────
 
 def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
-                           start_positions, odds_finish, dnf_data):
+                           start_positions, odds_finish, dnf_data,
+                           race_laps=0, track_type="intermediate"):
     """Run the full projection model for a single race.
 
+    Matches the live projection engine: finish pts + diff pts + laps led + fastest laps.
     Uses all 5 signals with weight redistribution when data is missing.
     Returns dict of {driver: proj_dk_points}
 
@@ -320,13 +322,17 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         drivers: list of driver names
         field_size: number of drivers in field
         wn: normalized weights dict {track, track_type, qual, practice, odds}
-        th_data: {driver: {avg_finish, speed_score, ...}} from track history
-        tt_data: {driver: {avg_finish, ...}} from track type history
+        th_data: {driver: {avg_finish, speed_score, laps_led_per_race, ...}}
+        tt_data: {driver: {avg_finish, laps_led_per_race, ...}}
         start_positions: {driver: start_pos} (qualifying proxy)
         odds_finish: {driver: implied_finish} from odds
         dnf_data: {driver: {dnf_rate, crash_rate, speed_score}} career DNF info
+        race_laps: scheduled laps for the race (needed for LL/FL allocation)
+        track_type: track type string for concentration lookup
     """
     driver_raw_scores = {}
+    dom_raw_scores = {}
+    fl_raw_scores = {}
 
     for d in drivers:
         th = th_data.get(d)
@@ -334,7 +340,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         sp = start_positions.get(d)
         od = odds_finish.get(d)
 
-        # Collect finish signals with per-driver weight redistribution
+        # ── Finish composite (same as live engine) ──
         finish_signals = []
         signal_weights = []
 
@@ -351,10 +357,8 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             finish_signals.append(qual_finish)
             signal_weights.append(wn["qual"])
 
-        # Practice: use track history speed_score as proxy for pace
+        # Practice: use speed_score as proxy (laps_led + fastest_laps per race)
         if th and th.get("speed_score", 0) > 0 and wn.get("practice", 0) > 0:
-            # Convert speed_score to finish-like metric
-            # Higher speed = lower (better) finish estimate
             max_speed = max((t.get("speed_score", 0) for t in th_data.values()), default=1)
             if max_speed > 0:
                 speed_pct = th["speed_score"] / max_speed
@@ -372,43 +376,139 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         else:
             raw_finish = field_size * 0.65
 
-        # Apply DNF risk adjustment
+        # DNF risk adjustment
         dnf = dnf_data.get(d)
         if dnf and dnf["races"] >= 10:
             crash_rate = dnf["crash_rate"]
             speed = dnf["speed_score"]
             max_speed_all = max((v["speed_score"] for v in dnf_data.values()), default=1)
-            # Fast drivers get smaller penalty (crashes are more likely bad luck)
             speed_factor = speed / max(max_speed_all, 1)
             penalty_weight = max(0.05, 0.3 - speed_factor * 0.2)
             mech_rate = dnf["dnf_rate"] - crash_rate
-            # Crashes penalized 3x more than mechanical
             risk_penalty = crash_rate * penalty_weight + mech_rate * (penalty_weight * 0.3)
-            # Shift finish worse by up to ~3 positions for very high risk
             raw_finish = raw_finish + risk_penalty * 10
 
         driver_raw_scores[d] = raw_finish
 
-    # Rank-order finish spreading
+        # ── Dominator score (laps led potential) — mirrors live engine ──
+        dom_score = 0.0
+        if race_laps > 0:
+            dom_signals = []
+            dom_w = []
+
+            if th and th.get("laps_led_per_race", 0) > 0:
+                dom_signals.append(th["laps_led_per_race"])
+                dom_w.append(0.30)
+
+            if tt and tt.get("laps_led_per_race", 0) > 0:
+                dom_signals.append(tt["laps_led_per_race"])
+                dom_w.append(0.15)
+
+            if sp and sp <= field_size:
+                qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30
+                dom_signals.append(qual_dom)
+                dom_w.append(0.20)
+
+            if od and wn.get("odds", 0) > 0:
+                odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
+                dom_signals.append(odds_dom)
+                dom_w.append(0.30)
+
+            if dom_signals:
+                total_dw = sum(dom_w)
+                dom_score = sum(s * w for s, w in zip(dom_signals, dom_w)) / total_dw
+            else:
+                dom_score = max(0, (field_size - raw_finish) / field_size) * 5
+
+        dom_raw_scores[d] = dom_score
+
+        # ── Fastest laps score — mirrors live engine ──
+        fl_score = 0.0
+        if race_laps > 0:
+            fl_signals = []
+            fl_w = []
+
+            if dom_score > 0:
+                fl_signals.append(dom_score * 0.5)
+                fl_w.append(0.30)
+
+            if sp and sp <= field_size:
+                qual_fl = max(0, (field_size + 1 - sp) / field_size) * 15
+                fl_signals.append(qual_fl)
+                fl_w.append(0.25)
+
+            if od and wn.get("odds", 0) > 0:
+                odds_fl = max(0, (field_size + 1 - od) / field_size) * 12
+                fl_signals.append(odds_fl)
+                fl_w.append(0.15)
+
+            finish_fl = max(0, (field_size - raw_finish) / field_size) * 10
+            fl_signals.append(finish_fl)
+            fl_w.append(0.10)
+
+            if fl_signals:
+                total_fw = sum(fl_w)
+                fl_score = sum(s * w for s, w in zip(fl_signals, fl_w)) / total_fw
+
+        fl_raw_scores[d] = fl_score
+
+    # ── Rank-order finish spreading ──
     sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
     n = len(sorted_drivers)
 
-    proj_dk = {}
+    driver_proj_finish = {}
     for rank_idx, (d, _) in enumerate(sorted_drivers):
         if n > 1:
             t = rank_idx / (n - 1)
             proj_finish = 1 + (field_size - 1) * (t ** 0.85)
         else:
             proj_finish = field_size * 0.5
+        driver_proj_finish[d] = max(1, min(field_size, proj_finish))
 
-        proj_finish = max(1, min(40, proj_finish))
+    # ── Allocate laps led (zero-sum with cutoff) ──
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    LEADER_FRAC = {"superspeedway": 0.60, "road": 0.22, "short": 0.18, "intermediate": 0.22}
+    ll_frac = LEADER_FRAC.get(parent, 0.22)
+    n_leaders = max(3, int(field_size * ll_frac))
+    CONC = {"superspeedway": 0.6, "road": 1.0, "short": 2.0, "intermediate": 1.5}
+    ll_conc = CONC.get(parent, 1.5)
+
+    allocated_ll = {}
+    if race_laps > 0 and dom_raw_scores:
+        top_dom = sorted(dom_raw_scores.items(), key=lambda x: x[1], reverse=True)[:n_leaders]
+        ll_scores = {d: max(0.01, s) ** ll_conc for d, s in top_dom}
+        ll_total = sum(ll_scores.values())
+        if ll_total > 0:
+            allocated_ll = {d: (s / ll_total) * race_laps for d, s in ll_scores.items()}
+
+    # ── Allocate fastest laps (zero-sum with cutoff) ──
+    FL_FRAC = {"superspeedway": 0.85, "road": 0.55, "short": 0.55, "intermediate": 0.65}
+    fl_frac = FL_FRAC.get(parent, 0.55)
+    n_with_fl = max(5, int(field_size * fl_frac))
+    fl_conc = max(0.5, ll_conc * 0.7)
+
+    allocated_fl = {}
+    if race_laps > 0 and fl_raw_scores:
+        top_fl = sorted(fl_raw_scores.items(), key=lambda x: x[1], reverse=True)[:n_with_fl]
+        fl_scores = {d: max(0.01, s) ** fl_conc for d, s in top_fl}
+        fl_total = sum(fl_scores.values())
+        if fl_total > 0:
+            allocated_fl = {d: (s / fl_total) * race_laps for d, s in fl_scores.items()}
+
+    # ── Compute full DK points: finish + diff + laps led + fastest laps ──
+    proj_dk = {}
+    for d in drivers:
+        proj_finish = driver_proj_finish[d]
         finish_pts = DK_FINISH_POINTS.get(round(proj_finish), 0)
 
         sp = start_positions.get(d)
         start = sp if sp else round(proj_finish)
-        diff_pts = (start - proj_finish) * 1.0  # DK: ±1.0 per position
+        diff_pts = (start - proj_finish) * 1.0
 
-        proj_dk[d] = finish_pts + diff_pts
+        led_pts = allocated_ll.get(d, 0) * 0.25
+        fl_pts = allocated_fl.get(d, 0) * 0.45
+
+        proj_dk[d] = finish_pts + diff_pts + led_pts + fl_pts
 
     return proj_dk
 
@@ -959,6 +1059,13 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             "odds": bool(odds_finish),
         }
 
+        # Get scheduled laps from race object
+        race_laps = race.get("scheduled_laps", 0)
+        try:
+            race_laps = int(race_laps) if race_laps else 0
+        except (ValueError, TypeError):
+            race_laps = 0
+
         race_data.append({
             "race": race,
             "results": results,
@@ -969,6 +1076,8 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             "start_positions": start_positions,
             "odds_finish": odds_finish,
             "has_signals": has_signals,
+            "race_laps": race_laps,
+            "track_type": track_type,
         })
 
     if not race_data:
@@ -1023,12 +1132,14 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 continue
             wn = {k: v / eff_total for k, v in effective.items()}
 
-            # Run full projection
+            # Run full projection (including laps led + fastest laps)
             proj_dk = _project_race_backtest(
                 drivers, field_size, wn,
                 rd["th_data"], rd["tt_data"],
                 rd["start_positions"], rd["odds_finish"],
                 dnf_data if include_dnf else {},
+                race_laps=rd.get("race_laps", 0),
+                track_type=rd.get("track_type", "intermediate"),
             )
 
             # Compute errors
