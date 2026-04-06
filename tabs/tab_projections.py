@@ -18,7 +18,7 @@ import os
 
 from src.config import (
     DEFAULT_PROJECTION_WEIGHTS, DB_PATH, TRACK_TYPE_MAP,
-    DK_FINISH_POINTS,
+    TRACK_TYPE_PARENT, DK_FINISH_POINTS,
 )
 from src.data import (
     query_projections, scrape_track_history,
@@ -101,16 +101,28 @@ TRACK_TYPE_CONCENTRATION = {
     "road": 1.0,            # Moderate
     "dirt": 1.2,            # Moderate-high
     "intermediate": 1.5,    # Concentrated
+    "intermediate_narrow": 1.6,  # Darlington — slightly more concentrated
+    "intermediate_worn": 1.5,
+    "intermediate_fast": 1.3,    # Michigan/Indy — more spread
+    "intermediate_unique": 1.4,  # Pocono
     "short": 2.0,           # Very concentrated — single driver can dominate
+    "short_concrete": 2.2,  # Bristol/Dover concrete — even more concentrated
+    "short_flat": 1.8,      # New Hampshire — flatter, slightly more spread
 }
 
 # Fallback dominator ceilings by track type (max laps led, max fastest laps)
 TRACK_TYPE_DOM_DEFAULTS = {
-    "superspeedway": {"max_ll": 70,  "max_fl": 40},
-    "road":          {"max_ll": 60,  "max_fl": 30},
-    "dirt":          {"max_ll": 100, "max_fl": 50},
-    "intermediate":  {"max_ll": 200, "max_fl": 80},
-    "short":         {"max_ll": 350, "max_fl": 120},
+    "superspeedway":        {"max_ll": 70,  "max_fl": 40},
+    "road":                 {"max_ll": 60,  "max_fl": 30},
+    "dirt":                 {"max_ll": 100, "max_fl": 50},
+    "intermediate":         {"max_ll": 200, "max_fl": 80},
+    "intermediate_narrow":  {"max_ll": 200, "max_fl": 80},
+    "intermediate_worn":    {"max_ll": 200, "max_fl": 80},
+    "intermediate_fast":    {"max_ll": 180, "max_fl": 70},
+    "intermediate_unique":  {"max_ll": 150, "max_fl": 60},
+    "short":                {"max_ll": 350, "max_fl": 120},
+    "short_concrete":       {"max_ll": 400, "max_fl": 130},
+    "short_flat":           {"max_ll": 300, "max_fl": 100},
 }
 
 
@@ -196,13 +208,16 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
     # What fraction of the field typically leads laps at this track type
     LEADER_FRAC = {
-        "superspeedway": 0.60,   # Pack racing — many leaders
+        "superspeedway": 0.60,
         "road": 0.22,
         "dirt": 0.20,
-        "intermediate": 0.22,
-        "short": 0.18,           # Dominated by 1-2 drivers
+        "intermediate": 0.22, "intermediate_narrow": 0.20,
+        "intermediate_worn": 0.22, "intermediate_fast": 0.25,
+        "intermediate_unique": 0.22,
+        "short": 0.18, "short_concrete": 0.16, "short_flat": 0.20,
     }
-    frac = LEADER_FRAC.get(track_type, 0.22)
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.22))
     n_leaders = max(3, int(len(driver_scores) * frac))
 
     # Rank drivers by raw score, only top N get any laps led
@@ -237,13 +252,16 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
 
     # What fraction of the field typically gets fastest laps
     FL_FRAC = {
-        "superspeedway": 0.85,   # Almost everyone in pack racing
+        "superspeedway": 0.85,
         "road": 0.55,
         "dirt": 0.50,
-        "intermediate": 0.65,
-        "short": 0.55,
+        "intermediate": 0.65, "intermediate_narrow": 0.60,
+        "intermediate_worn": 0.65, "intermediate_fast": 0.70,
+        "intermediate_unique": 0.60,
+        "short": 0.55, "short_concrete": 0.50, "short_flat": 0.55,
     }
-    frac = FL_FRAC.get(track_type, 0.55)
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    frac = FL_FRAC.get(track_type, FL_FRAC.get(parent, 0.55))
     n_with_fl = max(5, int(len(driver_fl_scores) * frac))
 
     # Rank drivers by raw FL score, only top N get any fastest laps
@@ -396,14 +414,22 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 }
 
     # ── 2. Track Type Signal ─────────────────────────────────────────────────
+    # First try exact subtype (e.g. "short_concrete"), then fall back to
+    # parent type (e.g. "short") if subtype has fewer than 2 comparable tracks.
     tt_data = {}
+    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
                         if tt == track_type and t != track_name]
+    if len(same_type_tracks) < 2 and parent_type != track_type:
+        # Subtype too small — include all parent type tracks
+        same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                            if TRACK_TYPE_PARENT.get(tt, tt) == parent_type
+                            and t != track_name]
     if same_type_tracks:
         with st.spinner(f"Loading {track_type} track type data..."):
             type_finishes = {}
             type_laps_led = {}
-            for sim_track in same_type_tracks[:4]:
+            for sim_track in same_type_tracks[:6]:
                 sim_th = scrape_track_history(sim_track, series_id)
                 if sim_th.empty:
                     continue
@@ -451,27 +477,35 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     odds_finish = {}
     if odds_data and wn.get("odds", 0) > 0:
         from src.utils import fuzzy_match_name
+        # Filter out null/empty odds before processing
+        clean_odds = {k: v for k, v in odds_data.items()
+                      if v is not None and str(v).strip() not in ("", "None", "null", "N/A")}
+
         # Convert odds to implied probability, then rank → finish estimate
         odds_probs = {}
-        for name, odds_str in odds_data.items():
+        for name, odds_str in clean_odds.items():
             try:
                 odds_val = int(str(odds_str).replace("+", ""))
                 if odds_val > 0:
                     prob = 100 / (odds_val + 100)
-                else:
+                elif odds_val < 0:
                     prob = abs(odds_val) / (abs(odds_val) + 100)
+                else:
+                    continue  # odds_val == 0 is invalid
                 odds_probs[name] = prob
             except (ValueError, TypeError):
                 continue
 
-        # Rank by probability (higher prob = better expected finish)
-        ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-        for rank, (name, prob) in enumerate(ranked, 1):
-            # Match odds driver name to entry list driver name
-            matched = fuzzy_match_name(name, drivers)
-            if matched:
-                # Convert rank to projected finish (spread across field)
-                odds_finish[matched] = rank * (field_size / len(ranked))
+        # Only use odds if we have data for a meaningful fraction of the field
+        if len(odds_probs) >= field_size * 0.3:
+            ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
+            for rank, (name, prob) in enumerate(ranked, 1):
+                matched = fuzzy_match_name(name, drivers)
+                if matched:
+                    odds_finish[matched] = rank * (field_size / len(ranked))
+        elif odds_probs:
+            st.caption(f"Odds data only covers {len(odds_probs)} drivers "
+                       f"({len(odds_probs)}/{field_size}) — skipping odds signal")
 
     # ── PROJECT EACH DRIVER — Raw composite finish score ─────────────────────
     driver_raw_scores = {}  # d -> raw weighted score (higher = better driver)

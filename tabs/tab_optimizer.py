@@ -7,7 +7,7 @@ import streamlit as st
 import sqlite3
 import os
 
-from src.config import SALARY_CAP, ROSTER_SIZE, TRACK_TYPE_MAP
+from src.config import SALARY_CAP, ROSTER_SIZE, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.utils import safe_fillna, format_display_df, fuzzy_match_name
 
 
@@ -78,8 +78,13 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
     # ── 2. Track Type Score ─────────────────────────────────────────────────
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
+    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
                         if tt == track_type and t != track_name]
+    if len(same_type_tracks) < 2:
+        same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                            if TRACK_TYPE_PARENT.get(tt, tt) == parent_type
+                            and t != track_name]
     tt_scores = {}
     if same_type_tracks:
         type_finishes = {}

@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 
 from src.config import (
-    SERIES_OPTIONS, TRACK_TYPE_MAP, DK_FINISH_POINTS,
+    SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, DK_FINISH_POINTS,
 )
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
@@ -777,7 +777,10 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
         n_races = st.slider("Races to backtest", 1, max_races,
                              min(5, max_races), key="acc_n_races")
     with f_cols[1]:
-        type_opts = ["All Types"] + sorted(set(TRACK_TYPE_MAP.values()))
+        # Show parent types for filtering (group subtypes together)
+        parent_types = sorted(set(TRACK_TYPE_PARENT.get(v, v)
+                                   for v in TRACK_TYPE_MAP.values()))
+        type_opts = ["All Types"] + parent_types
         track_type_filter = st.selectbox("Track Type Filter", type_opts,
                                           key="acc_tt_filter")
     with f_cols[2]:
@@ -788,7 +791,10 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
     if track_type_filter != "All Types":
         test_races = [
             (i, r) for i, r in test_races
-            if TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate") == track_type_filter
+            if TRACK_TYPE_PARENT.get(
+                TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate"),
+                "intermediate"
+            ) == track_type_filter
         ]
     test_races = test_races[-n_races:]
 
@@ -799,33 +805,69 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
     race_names = [f"{r.get('track_name', '')}" for _, r in test_races]
     st.caption(f"Tracks: {', '.join(race_names)}")
 
-    if st.button("Run Weight Optimization", type="primary", key="acc_run_opt"):
+    btn_cols = st.columns([1, 1, 4])
+    with btn_cols[0]:
+        run_clicked = st.button("Run Weight Optimization", type="primary",
+                                 key="acc_run_opt")
+    with btn_cols[1]:
+        cancel_clicked = st.button("Cancel", key="acc_cancel_opt",
+                                    type="secondary")
+
+    if cancel_clicked:
+        st.session_state["acc_cancel"] = True
+        st.info("Cancelling...")
+        return
+
+    if run_clicked:
+        st.session_state["acc_cancel"] = False
         _run_backtest(test_races, series_id, selected_year, series_name,
                       include_dnf)
+    elif "acc_opt_results" in st.session_state:
+        # Show previous results without re-running
+        _display_backtest_results(
+            st.session_state["acc_opt_results"],
+            st.session_state.get("acc_opt_series", series_name),
+        )
 
 
 def _run_backtest(test_races, series_id, selected_year, series_name,
-                  include_dnf=True):
+                  include_dnf=True, grid_step=5):
     """Run full-signal backtest across weight combinations."""
     from src.utils import fuzzy_match_name
 
-    # Weight grid with minimum 5% floor — no signal fully zeroed out
-    weight_options = [5, 10, 15, 20, 25, 30, 35, 40]
+    # ── Per-signal weight constraints ──────────────────────────────────────
+    # These define the realistic min/max for each signal.
+    # Rationale:
+    #   track_history (15-40%): strongest predictor, actual results at this track
+    #   odds (10-40%): Vegas pricing is very efficient, reflects overall form
+    #   qualifying (10-30%): direct weekend speed, but can mislead (trims, fuel)
+    #   practice (5-25%): noisy — teams sandbag, run diff programs
+    #   track_type (5-25%): useful supplement but less predictive than track-specific
+    SIGNAL_RANGES = {
+        "odds":       (10, 40),
+        "track":      (15, 40),
+        "qual":       (10, 30),
+        "practice":   (5, 25),
+        "track_type": (5, 25),
+    }
+
     weight_combos = []
-    for odds in weight_options:
-        for track in weight_options:
-            for qual in weight_options:
-                for prac in weight_options:
+    for odds in range(SIGNAL_RANGES["odds"][0], SIGNAL_RANGES["odds"][1] + 1, grid_step):
+        for track in range(SIGNAL_RANGES["track"][0], SIGNAL_RANGES["track"][1] + 1, grid_step):
+            for qual in range(SIGNAL_RANGES["qual"][0], SIGNAL_RANGES["qual"][1] + 1, grid_step):
+                for prac in range(SIGNAL_RANGES["practice"][0], SIGNAL_RANGES["practice"][1] + 1, grid_step):
                     tt = 100 - odds - track - qual - prac
-                    if 5 <= tt <= 40:
+                    if SIGNAL_RANGES["track_type"][0] <= tt <= SIGNAL_RANGES["track_type"][1]:
                         weight_combos.append({
                             "odds": odds, "track": track,
                             "qual": qual, "practice": prac,
                             "track_type": tt,
                         })
 
-    st.caption(f"Testing {len(weight_combos)} weight combinations across "
-               f"{len(test_races)} races ({series_name})...")
+    ranges_str = " | ".join(f"{k}: {v[0]}-{v[1]}%" for k, v in SIGNAL_RANGES.items())
+    st.caption(f"Testing **{len(weight_combos)}** weight combinations across "
+               f"{len(test_races)} races ({series_name})")
+    st.caption(f"Signal constraints: {ranges_str}")
     progress = st.progress(0)
 
     # Pre-load career DNF data (once for all races)
@@ -868,8 +910,9 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         # DB-backed track history (instant query, no API)
         th_data = _query_driver_track_stats(track_name, series_id)
 
-        # DB-backed track type history (instant query)
-        tt_data = _query_driver_track_type_stats(track_type, series_id,
+        # DB-backed track type history — use parent type for broader data
+        parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
+        tt_data = _query_driver_track_type_stats(parent_type, series_id,
                                                   exclude_track=track_name)
 
         # Start positions from actual results (qualifying proxy)
@@ -882,23 +925,30 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         saved_odds = load_race_odds(race_id)
         odds_finish = {}
         if saved_odds:
+            # Filter null/empty odds
+            clean_odds = {k: v for k, v in saved_odds.items()
+                          if v is not None and str(v).strip() not in ("", "None", "null")}
             odds_probs = {}
-            for name, odds_str in saved_odds.items():
+            for name, odds_str in clean_odds.items():
                 try:
                     odds_val = int(str(odds_str).replace("+", ""))
                     if odds_val > 0:
                         prob = 100 / (odds_val + 100)
-                    else:
+                    elif odds_val < 0:
                         prob = abs(odds_val) / (abs(odds_val) + 100)
+                    else:
+                        continue
                     odds_probs[name] = prob
                 except (ValueError, TypeError):
                     continue
-            ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
+            # Only use odds if meaningful coverage
             field_size = len(drivers)
-            for rank, (name, prob) in enumerate(ranked, 1):
-                matched = fuzzy_match_name(name, drivers)
-                if matched:
-                    odds_finish[matched] = rank * (field_size / len(ranked))
+            if len(odds_probs) >= field_size * 0.3:
+                ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
+                for rank, (name, prob) in enumerate(ranked, 1):
+                    matched = fuzzy_match_name(name, drivers)
+                    if matched:
+                        odds_finish[matched] = rank * (field_size / len(ranked))
 
         # Track which signals are available for this race
         has_signals = {
@@ -937,9 +987,14 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
     # Test each weight combination
     combo_results = []
     total_combos = len(weight_combos)
+    cancelled = False
 
     for c_idx, combo in enumerate(weight_combos):
-        if c_idx % 100 == 0:
+        # Check for cancel every 50 combos
+        if c_idx % 50 == 0:
+            if st.session_state.get("acc_cancel", False):
+                cancelled = True
+                break
             progress.progress(
                 (total_load_steps + c_idx / total_combos) / (total_load_steps + 1),
                 text=f"Testing weight combo {c_idx + 1}/{total_combos}..."
@@ -1006,7 +1061,14 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 "Rank Corr": np.mean(all_rank_corrs) if all_rank_corrs else 0,
             })
 
-    progress.progress(1.0, text="Complete!")
+    if cancelled:
+        progress.progress(1.0, text="Cancelled!")
+        st.warning(f"Cancelled after testing {len(combo_results)} of {total_combos} combinations.")
+        st.session_state["acc_cancel"] = False
+        if not combo_results:
+            return
+    else:
+        progress.progress(1.0, text="Complete!")
 
     if not combo_results:
         st.warning("No valid results from backtesting.")
@@ -1026,12 +1088,22 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         results_df["Score"] = -results_df["MAE"]
     results_df = results_df.sort_values("Score", ascending=False)
 
+    # Store results in session state so export doesn't reset
+    st.session_state["acc_opt_results"] = results_df
+    st.session_state["acc_opt_series"] = series_name
+
+    _display_backtest_results(results_df, series_name)
+
+
+def _display_backtest_results(results_df, series_name):
+    """Display backtest results (separated so export doesn't re-run)."""
     # Show top 15
     st.markdown(f"**Top 15 Weight Combinations — {series_name}**")
     top = results_df.head(15).copy()
     top["MAE"] = top["MAE"].round(1)
     top["Rank Corr"] = top["Rank Corr"].round(3)
-    top = top.drop(columns=["Score"])
+    if "Score" in top.columns:
+        top = top.drop(columns=["Score"])
     top.index = range(1, len(top) + 1)
     top.index.name = "Rank"
 
@@ -1075,10 +1147,24 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
     else:
         st.caption("Your current weights weren't in the test grid (some are below the 5% minimum floor).")
 
-    # Export with series label
-    export_df = results_df.drop(columns=["Score"]).copy()
+    # Export (does NOT re-run backtest)
+    export_df = results_df.drop(columns=["Score"], errors="ignore").copy()
     export_df.insert(0, "Series", series_name)
     csv = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("Export All Results CSV", csv,
                        f"weight_optimization_{series_name}.csv", "text/csv",
                        key="acc_opt_export")
+
+    # Clear saved projections button (separate from export)
+    st.markdown("---")
+    if st.button("Clear Saved Projections", key="acc_clear_proj",
+                  type="secondary",
+                  help="Delete all saved projection data from the database"):
+        if os.path.exists(PROJ_DB):
+            conn = sqlite3.connect(PROJ_DB)
+            conn.execute("DELETE FROM saved_projections")
+            conn.commit()
+            conn.close()
+            st.success("Cleared all saved projections.")
+        else:
+            st.warning("No database found.")

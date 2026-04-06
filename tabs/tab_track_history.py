@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from src.config import TRACK_TYPE_MAP
+from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.data import (
     scrape_track_history, scrape_track_history_alltime,
     query_track_type_stats, query_season_stats,
@@ -30,7 +30,9 @@ def render(*, track_name, track_type, series_id):
     # Track type filter
     filter_cols = st.columns([2, 3])
     with filter_cols[0]:
-        type_options = ["This Track"] + sorted(set(TRACK_TYPE_MAP.values()))
+        type_options = ["This Track"] + sorted(set(TRACK_TYPE_MAP.values())) + sorted(set(
+            f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())
+        ))
         type_filter = st.selectbox("Track Type Filter", type_options,
                                     key="th_type_filter", label_visibility="collapsed",
                                     help="Filter to show stats for a specific track type")
@@ -93,7 +95,13 @@ def render(*, track_name, track_type, series_id):
 def _render_track_type_filtered(track_type_filter, hist_view, series_id):
     """Render filtered view for a specific track type across all tracks."""
     # Get all tracks of this type
-    type_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type_filter]
+    # Handle "All Short", "All Intermediate" etc. parent type filters
+    if track_type_filter.startswith("All "):
+        parent = track_type_filter.replace("All ", "").lower()
+        type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                        if TRACK_TYPE_PARENT.get(tt, tt) == parent]
+    else:
+        type_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type_filter]
 
     if hist_view in ("Recent Races", "All-Time"):
         import pandas as pd
