@@ -68,6 +68,48 @@ def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> st
     return best_match if best_score >= threshold else None
 
 
+def short_name(full_name: str, all_names: list = None) -> str:
+    """Abbreviate a driver name for chart labels.
+
+    Returns last name only ("Larson"), or "First Initial. Last" when there
+    are duplicate last names in *all_names* ("K. Busch" vs "Ky. Busch").
+    If car number is provided as "#9 Chase Elliott", strips it and adds back.
+    """
+    if not full_name or not isinstance(full_name, str):
+        return str(full_name) if full_name else ""
+
+    name = full_name.strip()
+    parts = name.split()
+    if len(parts) <= 1:
+        return name
+
+    last = parts[-1]
+
+    if all_names:
+        # Check for duplicate last names
+        dup_lasts = [n for n in all_names
+                     if isinstance(n, str) and n.strip().split()[-1] == last and n.strip() != name]
+        if dup_lasts:
+            # Use enough of first name to disambiguate
+            first = parts[0]
+            # Check if single initial is enough
+            initials_needed = 1
+            for dup in dup_lasts:
+                dup_first = dup.strip().split()[0]
+                while (initials_needed < len(first) and initials_needed < len(dup_first)
+                       and first[:initials_needed].lower() == dup_first[:initials_needed].lower()):
+                    initials_needed += 1
+            abbrev = first[:max(1, initials_needed)]
+            return f"{abbrev}. {last}"
+
+    return last
+
+
+def short_name_series(names: list) -> list:
+    """Abbreviate a list of driver names, handling duplicates automatically."""
+    return [short_name(n, names) for n in names]
+
+
 def int_col(series: pd.Series) -> pd.Series:
     """Convert a pandas Series to nullable integer type, safely handling any input."""
     numeric = pd.to_numeric(series, errors="coerce")
@@ -110,7 +152,7 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                         "Penn Rank", "Proj DK", "Proj Finish",
                         "Finish Pts", "Diff Pts", "Led Pts", "FL Pts",
                         "Track", "Track Type", "Avg DK", "Avg FD",
-                        "Avg_Proj", "Avg_Value"}
+                        "Avg_Proj", "Avg_Value", "Impl %"}
 
     # 2-decimal columns
     two_dec_patterns = {"Value", "DFS Value"}

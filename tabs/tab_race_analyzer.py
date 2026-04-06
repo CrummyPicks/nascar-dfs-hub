@@ -333,6 +333,49 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
 
     st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=False, height=550)
 
+    # Season charts
+    import plotly.graph_objects as go
+    from src.charts import DARK_LAYOUT, season_scatter
+    from src.utils import short_name_series
+
+    # Top 25 Avg DK Points bar chart
+    top_dk = agg.head(25).copy()
+    if not top_dk.empty:
+        top_dk = top_dk.sort_values("Avg DK", ascending=True)
+        top_dk["Short"] = short_name_series(top_dk["Driver"].tolist())
+        fig_dk = go.Figure(go.Bar(
+            y=top_dk["Short"],
+            x=top_dk["Avg DK"],
+            orientation="h",
+            marker=dict(color=top_dk["Avg DK"], colorscale="Viridis",
+                        showscale=True, colorbar=dict(title="Avg DK")),
+            hovertemplate="<b>%{customdata[0]}</b><br>Avg DK: %{x:.1f}<extra></extra>",
+            customdata=top_dk[["Driver"]].values,
+        ))
+        fig_dk.update_layout(**DARK_LAYOUT, height=max(400, len(top_dk) * 18),
+                             title=f"Top 25 Avg DK Points — {year_label}",
+                             xaxis_title="Avg DK Points", yaxis_title="")
+        st.plotly_chart(fig_dk, use_container_width=True, key="ra_season_dk_bar")
+
+    # Top 25 Avg Finish bar chart
+    top_finish = agg.nsmallest(25, "Avg Finish").copy()
+    if not top_finish.empty:
+        top_finish = top_finish.sort_values("Avg Finish", ascending=False)
+        top_finish["Short"] = short_name_series(top_finish["Driver"].tolist())
+        fig_fin = go.Figure(go.Bar(
+            y=top_finish["Short"],
+            x=top_finish["Avg Finish"],
+            orientation="h",
+            marker=dict(color=top_finish["Avg Finish"], colorscale="RdYlGn_r",
+                        showscale=True, colorbar=dict(title="Avg Finish")),
+            hovertemplate="<b>%{customdata[0]}</b><br>Avg Finish: %{x:.1f}<extra></extra>",
+            customdata=top_finish[["Driver"]].values,
+        ))
+        fig_fin.update_layout(**DARK_LAYOUT, height=max(400, len(top_finish) * 18),
+                              title=f"Top 25 Avg Finish — {year_label}",
+                              xaxis_title="Avg Finish Position", yaxis_title="")
+        st.plotly_chart(fig_fin, use_container_width=True, key="ra_season_fin_bar")
+
     # Season scatter
     if not season_df.empty and "Avg Run" in season_df.columns:
         avg_data = season_df.dropna(subset=["Avg Run"]).groupby(["Driver", "Car"]).agg(
@@ -340,7 +383,6 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
                "Avg Driver Rating": ("DK Pts", "mean")}
         ).round(1).reset_index()
 
-        from src.charts import season_scatter
         fig = season_scatter(avg_data)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
@@ -530,7 +572,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
 
 
 def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch):
-    """Driver lookup — race-by-race log for a specific driver."""
+    """Driver lookup — race-by-race log with summary stats and charts."""
     if not completed_races:
         st.info("No completed races found.")
         return
@@ -561,8 +603,108 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
     else:
         driver_pick = matched_drivers[0]
 
-    driver_rows = matches.sort_values("Date").to_dict("records")
-    render_driver_race_log(driver_pick, driver_rows)
+    matches = matches.sort_values("Date")
+
+    # ── Summary Stats Row ──────────────────────────────────────────────────
+    m = matches
+    m_cols = st.columns(6)
+    m_cols[0].metric("Races", len(m))
+    m_cols[1].metric("Avg Finish", f"{m['Finish'].mean():.1f}" if not m.empty else "—")
+    m_cols[2].metric("Avg DK Pts", f"{m['DK Pts'].mean():.1f}" if not m.empty else "—")
+    m_cols[3].metric("Wins", int((m["Finish"] == 1).sum()))
+    m_cols[4].metric("Top 5s", int((m["Finish"] <= 5).sum()))
+    m_cols[5].metric("Top 10s", int((m["Finish"] <= 10).sum()))
+
+    m2_cols = st.columns(6)
+    m2_cols[0].metric("Avg Start", f"{m['Start'].mean():.1f}" if not m.empty else "—")
+    m2_cols[1].metric("Best Finish", int(m["Finish"].min()) if not m.empty else "—")
+    m2_cols[2].metric("Total Laps Led", int(m["Laps Led"].sum()))
+    m2_cols[3].metric("Total Fast Laps", int(m["Fastest Laps"].sum()))
+    if "DK Salary" in m.columns and m["DK Salary"].notna().any():
+        m2_cols[4].metric("Avg Salary", f"${m['DK Salary'].mean():,.0f}")
+    if m["DK Pts"].notna().any():
+        m2_cols[5].metric("Best DK", f"{m['DK Pts'].max():.1f}")
+
+    # ── Track Type Breakdown ───────────────────────────────────────────────
+    if "Track" in m.columns:
+        m_with_type = m.copy()
+        m_with_type["Track Type"] = m_with_type["Track"].map(
+            lambda t: TRACK_TYPE_MAP.get(t, "intermediate"))
+        m_with_type["Parent Type"] = m_with_type["Track Type"].map(
+            lambda t: TRACK_TYPE_PARENT.get(t, t))
+        type_agg = m_with_type.groupby("Parent Type").agg(
+            Races=("Finish", "count"),
+            **{"Avg Finish": ("Finish", "mean")},
+            **{"Avg DK": ("DK Pts", "mean")},
+        ).round(1).sort_values("Avg DK", ascending=False)
+        if len(type_agg) > 1:
+            with st.expander("Performance by Track Type", expanded=False):
+                st.dataframe(safe_fillna(format_display_df(type_agg)),
+                             use_container_width=True, hide_index=False)
+
+    # ── Race Log Table ─────────────────────────────────────────────────────
+    st.markdown(f"#### {driver_pick} — Race Log")
+    show_cols = ["Date", "Race", "Track", "Start", "Finish", "Laps Led",
+                 "Fastest Laps", "DK Pts", "FD Pts", "Status"]
+    if "DK Salary" in m.columns:
+        show_cols.insert(6, "DK Salary")
+    avail = [c for c in show_cols if c in m.columns]
+    disp = format_display_df(m[avail].copy())
+    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=True, height=400)
+
+    # ── Charts ─────────────────────────────────────────────────────────────
+    import plotly.graph_objects as go
+    from src.charts import DARK_LAYOUT
+
+    # DK Points trend line
+    if len(m) >= 2 and "DK Pts" in m.columns:
+        fig_dk = go.Figure()
+        fig_dk.add_trace(go.Scatter(
+            x=m["Date"], y=m["DK Pts"],
+            mode="lines+markers",
+            marker=dict(size=8, color="#4a7dfc"),
+            line=dict(color="#4a7dfc", width=2),
+            hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>DK Pts: %{y:.1f}<extra></extra>",
+            customdata=m[["Race", "Track"]].values,
+        ))
+        # Add rolling average if enough races
+        if len(m) >= 4:
+            rolling = m["DK Pts"].rolling(3, min_periods=2).mean()
+            fig_dk.add_trace(go.Scatter(
+                x=m["Date"], y=rolling,
+                mode="lines", name="3-Race Avg",
+                line=dict(color="#ff9f43", width=2, dash="dash"),
+            ))
+        fig_dk.update_layout(**DARK_LAYOUT, height=350,
+                             title=f"{driver_pick} — DK Points Trend",
+                             xaxis_title="", yaxis_title="DK Points",
+                             showlegend=len(m) >= 4,
+                             xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
+        st.plotly_chart(fig_dk, use_container_width=True, key="ra_lookup_dk_trend")
+
+    # Finish Position trend
+    if len(m) >= 2 and "Finish" in m.columns:
+        fig_fin = go.Figure()
+        fig_fin.add_trace(go.Scatter(
+            x=m["Date"], y=m["Finish"],
+            mode="lines+markers",
+            marker=dict(size=8, color="#36b37e"),
+            line=dict(color="#36b37e", width=2),
+            hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>Finish: %{y}<extra></extra>",
+            customdata=m[["Race", "Track"]].values,
+        ))
+        fig_fin.update_layout(**DARK_LAYOUT, height=300,
+                              title=f"{driver_pick} — Finish Position Trend",
+                              xaxis_title="", yaxis_title="Finish Position",
+                              yaxis=dict(autorange="reversed"),
+                              xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
+        st.plotly_chart(fig_fin, use_container_width=True, key="ra_lookup_fin_trend")
+
+    # Export
+    csv = m[avail].to_csv(index=False).encode("utf-8")
+    st.download_button("Export Driver CSV", csv,
+                       f"driver_{driver_pick.replace(' ', '_')}.csv", "text/csv",
+                       key="ra_lookup_export")
 
 
 def _render_driver_comparison(completed_races, series_id, year_label, years_to_fetch):

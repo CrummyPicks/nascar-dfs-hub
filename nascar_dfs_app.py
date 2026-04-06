@@ -17,6 +17,7 @@ try:
         compute_fastest_laps, detect_prerace, filter_point_races,
         parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
         sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
+        estimate_odds_from_salaries,
     )
 except ImportError as e:
     import streamlit as st
@@ -178,11 +179,54 @@ else:
 # SETTINGS EXPANDER (DK/FD upload, weights)
 # ============================================================
 with st.expander("Settings & Data Upload", expanded=False):
+    # ── Auto-fetch status row ──────────────────────────────────────────────
+    auto_odds = fetch_nascar_odds()
+    dk_auto = fetch_dk_salaries_live()
+
+    # Persist last good odds — never lose data from a failed refresh
+    if auto_odds:
+        st.session_state["last_good_odds"] = auto_odds
+    elif "last_good_odds" in st.session_state:
+        auto_odds = st.session_state["last_good_odds"]
+
+    # Status summary at top
+    status_parts = []
+    if not dk_auto.empty:
+        status_parts.append(f"✅ DK Salary: {len(dk_auto)} drivers")
+    else:
+        status_parts.append("⚠️ DK Salary: unavailable")
+    if auto_odds:
+        status_parts.append(f"✅ Odds: {len(auto_odds)} drivers")
+    else:
+        status_parts.append("⚠️ Odds: unavailable")
+    st.caption(" | ".join(status_parts))
+
+    # Refresh All button
+    ref_cols = st.columns([1, 1, 4])
+    with ref_cols[0]:
+        if st.button("Refresh All Data", key="refresh_all_btn", type="primary"):
+            fetch_nascar_odds.clear()
+            fetch_dk_salaries_live.clear()
+            fresh_odds = fetch_nascar_odds()
+            fresh_dk = fetch_dk_salaries_live()
+            msgs = []
+            if fresh_odds:
+                auto_odds = fresh_odds
+                st.session_state["last_good_odds"] = fresh_odds
+                msgs.append(f"Odds: {len(fresh_odds)} drivers")
+            else:
+                msgs.append("Odds: failed")
+            if not fresh_dk.empty:
+                dk_auto = fresh_dk
+                msgs.append(f"DK Salary: {len(fresh_dk)} drivers")
+            else:
+                msgs.append("DK Salary: failed")
+            st.success(f"Refreshed — {' | '.join(msgs)}")
+
     s_cols = st.columns([1, 1, 1, 1])
     with s_cols[0]:
         st.markdown("**DK Salary**")
         dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed", key="dk_upload")
-        dk_auto = fetch_dk_salaries_live()
         if not dk_auto.empty:
             st.caption(f"Auto: {len(dk_auto)} drivers from DK API")
     with s_cols[1]:
@@ -203,31 +247,15 @@ with st.expander("Settings & Data Upload", expanded=False):
                         pass
     with s_cols[3]:
         st.markdown("**Betting Odds**")
-        # Auto-fetch odds on load (cached 30 min)
-        auto_odds = fetch_nascar_odds()
-        # Persist last good odds — never lose data from a failed refresh
         if auto_odds:
-            st.session_state["last_good_odds"] = auto_odds
-        elif "last_good_odds" in st.session_state:
-            auto_odds = st.session_state["last_good_odds"]
-        if auto_odds:
-            st.caption(f"Auto: {len(auto_odds)} drivers from Action Network")
+            st.caption(f"✅ Auto: {len(auto_odds)} drivers from Action Network")
         else:
-            st.caption("No odds available (no upcoming race?)")
-        # Refresh button (clears 30-min cache)
-        if st.button("Refresh Odds", key="fetch_odds_btn", type="secondary"):
-            fetch_nascar_odds.clear()
-            fresh_odds = fetch_nascar_odds()
-            if fresh_odds:
-                auto_odds = fresh_odds
-                st.session_state["last_good_odds"] = fresh_odds
-                st.success(f"Refreshed odds for {len(fresh_odds)} drivers")
-            else:
-                st.warning("Could not fetch new odds. Keeping previous data.")
+            st.caption("⚠️ No odds — Action Network may be down, or no upcoming race listed")
         odds_text = st.text_area("Odds", placeholder="Chase Elliott, +1200\nDenny Hamlin, +800",
                                  height=80, label_visibility="collapsed",
                                  help="Paste to override auto-fetched odds (American format)")
         odds_data = {}
+        odds_source = ""
         # Manual text overrides auto if provided
         if odds_text.strip():
             for line in odds_text.strip().split("\n"):
@@ -237,15 +265,20 @@ with st.expander("Settings & Data Upload", expanded=False):
                         odds_data[parts[0]] = parts[1]
                     except (ValueError, IndexError):
                         pass
+            odds_source = "manual"
         elif auto_odds:
             odds_data = auto_odds
+            odds_source = "action_network"
+        # Fallback: estimate odds from DK salary when no real odds available
+        if not odds_data and not dk_auto.empty:
+            odds_data = estimate_odds_from_salaries(dk_auto)
+            if odds_data:
+                odds_source = "salary_estimate"
+                st.caption("📊 Using salary-estimated odds (Action Network unavailable)")
 
     # Persist odds to DB for historical backtesting
     if odds_data and race_id:
         save_odds_to_db(odds_data, race_id)
-
-    # Data population note
-    st.caption("Use `python refresh_data.py` locally to populate the database with race results.")
 
 
 # ============================================================
@@ -281,8 +314,8 @@ else:
     dk_df = pd.DataFrame()
 fd_df = parse_fd_csv(fd_file) if fd_file else pd.DataFrame()
 
-# Auto-sync DK salaries to DB for projection engine
-if not dk_df.empty and is_prerace:
+# Auto-sync DK salaries to DB for projection engine and historical tracking
+if not dk_df.empty:
     synced = sync_dk_salaries_to_db(dk_auto if not dk_auto.empty else dk_df,
                                      race_id, series_id, race_name)
 

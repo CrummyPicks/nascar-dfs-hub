@@ -15,7 +15,7 @@ from src.data import (
     extract_race_results, compute_fastest_laps,
     filter_point_races, query_salaries, load_race_odds,
 )
-from src.utils import calc_dk_points, safe_fillna, format_display_df
+from src.utils import calc_dk_points, safe_fillna, format_display_df, short_name_series
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
@@ -678,7 +678,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     fig.add_trace(go.Scatter(
         x=comp["Actual DK"], y=comp["Proj DK"],
         mode="markers+text",
-        text=comp["Driver"].apply(lambda d: d.split()[-1]),
+        text=short_name_series(comp["Driver"].tolist()),
         textposition="top right",
         textfont=dict(size=8, color="#8892a4"),
         marker=dict(size=9, color=colors, opacity=0.8),
@@ -706,7 +706,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     fig2.add_trace(go.Scatter(
         x=comp["Actual Finish"], y=comp["Proj Finish"],
         mode="markers+text",
-        text=comp["Driver"].apply(lambda d: d.split()[-1]),
+        text=short_name_series(comp["Driver"].tolist()),
         textposition="top right",
         textfont=dict(size=8, color="#8892a4"),
         marker=dict(size=9, color=colors2, opacity=0.8),
@@ -1066,6 +1066,11 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         except (ValueError, TypeError):
             race_laps = 0
 
+        # Pre-index actual DK pts per driver for fast lookup in combo loop
+        actual_dk = {}
+        for _, row in results.iterrows():
+            actual_dk[row["Driver"]] = row["DK Pts"]
+
         race_data.append({
             "race": race,
             "results": results,
@@ -1078,6 +1083,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             "has_signals": has_signals,
             "race_laps": race_laps,
             "track_type": track_type,
+            "actual_dk": actual_dk,
         })
 
     if not race_data:
@@ -1092,6 +1098,10 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 signal_summary[sig] += 1
     sig_str = " | ".join(f"{k}: {v}/{len(race_data)}" for k, v in signal_summary.items())
     st.caption(f"Signal availability across races: {sig_str}")
+    if signal_summary["odds"] < len(race_data) * 0.5:
+        missing = len(race_data) - signal_summary["odds"]
+        st.caption(f"⚠️ Odds missing for {missing}/{len(race_data)} races — "
+                   f"run `python refresh_data.py --odds` before each race to save odds for backtesting")
 
     # Test each weight combination
     combo_results = []
@@ -1142,22 +1152,21 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 track_type=rd.get("track_type", "intermediate"),
             )
 
-            # Compute errors
+            # Compute errors using pre-indexed actual_dk dict
+            actual_dk = rd["actual_dk"]
+            proj_vals = []
+            actual_vals = []
             for d in drivers:
-                actual = results[results["Driver"] == d]["DK Pts"].values
-                if len(actual) > 0 and d in proj_dk:
-                    all_errors.append(abs(proj_dk[d] - actual[0]))
+                if d in proj_dk and d in actual_dk:
+                    all_errors.append(abs(proj_dk[d] - actual_dk[d]))
+                    proj_vals.append(proj_dk[d])
+                    actual_vals.append(actual_dk[d])
 
-            # Rank correlation
-            proj_series = pd.Series({d: proj_dk.get(d, 0) for d in drivers})
-            actual_series = pd.Series({
-                d: results[results["Driver"] == d]["DK Pts"].values[0]
-                for d in drivers
-                if len(results[results["Driver"] == d]["DK Pts"].values) > 0
-            })
-            common = proj_series.index.intersection(actual_series.index)
-            if len(common) > 5:
-                rc = proj_series[common].rank().corr(actual_series[common].rank())
+            # Rank correlation (vectorized)
+            if len(proj_vals) > 5:
+                proj_s = pd.Series(proj_vals)
+                actual_s = pd.Series(actual_vals)
+                rc = proj_s.rank().corr(actual_s.rank())
                 if pd.notna(rc):
                     all_rank_corrs.append(rc)
 

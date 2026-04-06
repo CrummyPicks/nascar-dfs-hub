@@ -19,6 +19,8 @@ from datetime import datetime
 from src.config import SERIES_OPTIONS
 from src.data import (
     fetch_race_list, filter_point_races, fetch_and_store_race,
+    fetch_nascar_odds, save_odds_to_db,
+    fetch_dk_salaries_live, sync_dk_salaries_to_db,
 )
 
 
@@ -92,6 +94,66 @@ def fetch_single_race(race_id: int, series_id: int = 1, year: int = 2026):
         print(f"FAILED: {result.get('message', result.get('error', 'unknown'))}")
 
 
+def fetch_and_save_odds(series_id: int, year: int):
+    """Fetch current odds from Action Network and save for the next upcoming race."""
+    series_name = SERIES_NAMES.get(series_id, f"Series {series_id}")
+    print(f"\n  Fetching odds for {series_name}...", end=" ", flush=True)
+
+    # We need streamlit cache disabled for CLI — call the raw function
+    try:
+        odds = fetch_nascar_odds.__wrapped__()
+    except AttributeError:
+        odds = fetch_nascar_odds()
+
+    if not odds:
+        print("No odds available (no upcoming race or Action Network down)")
+        return
+
+    print(f"Got odds for {len(odds)} drivers")
+
+    # Find the next upcoming race to associate odds with
+    races = fetch_race_list(series_id, year)
+    if not races:
+        print("  Could not fetch race list to find upcoming race")
+        return
+
+    point_races = filter_point_races(races)
+    now = datetime.now()
+    upcoming = None
+    for race in point_races:
+        rd = race.get("race_date", "")
+        try:
+            d = datetime.fromisoformat(rd.replace("Z", "+00:00").split("+")[0].split("T")[0])
+            if d.date() >= now.date():
+                upcoming = race
+                break
+        except Exception:
+            pass
+
+    if not upcoming:
+        print("  No upcoming race found to associate odds with")
+        return
+
+    race_id = upcoming.get("race_id")
+    race_name = upcoming.get("race_name", "Unknown")
+    track = upcoming.get("track_name", "")
+    count = save_odds_to_db(odds, race_id)
+    print(f"  Saved {count} odds for {race_name} @ {track} (race_id={race_id})")
+
+    # Also try to fetch and save DK salaries
+    print(f"  Fetching DK salaries...", end=" ", flush=True)
+    try:
+        dk_df = fetch_dk_salaries_live.__wrapped__()
+    except AttributeError:
+        dk_df = fetch_dk_salaries_live()
+
+    if not dk_df.empty:
+        sal_count = sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
+        print(f"Saved {sal_count} salaries")
+    else:
+        print("No DK salary data available")
+
+
 def main():
     parser = argparse.ArgumentParser(description="NASCAR DFS Hub — Data Refresh")
     parser.add_argument("--series", type=str, default="cup",
@@ -102,6 +164,8 @@ def main():
                         help="Fetch all series and years (2022-2026)")
     parser.add_argument("--race", type=int, default=None,
                         help="Fetch a specific race ID")
+    parser.add_argument("--odds", action="store_true",
+                        help="Also fetch and save current odds for the next upcoming race")
     args = parser.parse_args()
 
     print("\n" + "="*60)
@@ -122,6 +186,11 @@ def main():
     else:
         series_id = SERIES_MAP.get(args.series.lower(), 1)
         fetch_season(series_id, args.year)
+
+    # Fetch odds if requested or during normal refresh
+    if args.odds or not args.race:
+        series_id = SERIES_MAP.get(args.series.lower(), 1)
+        fetch_and_save_odds(series_id, args.year)
 
     print("\nDone! Start the app with: streamlit run nascar_dfs_app.py\n")
 

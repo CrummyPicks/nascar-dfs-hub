@@ -810,6 +810,51 @@ def fetch_nascar_odds() -> dict:
         return {}
 
 
+def estimate_odds_from_salaries(dk_df: pd.DataFrame) -> dict:
+    """Derive estimated American win odds from DK salary as a fallback.
+
+    Higher salary → lower (better) odds. Uses a log-linear mapping
+    calibrated roughly to real NASCAR odds distributions:
+    - $11,000+ salary ≈ +300 to +600 (favorites)
+    - $8,000-$11,000 ≈ +800 to +2000
+    - $6,000-$8,000 ≈ +2500 to +5000
+    - Below $6,000 ≈ +6000 to +15000
+
+    Returns dict {driver_name: odds_string} in the same format as fetch_nascar_odds.
+    """
+    if dk_df.empty or "DK Salary" not in dk_df.columns:
+        return {}
+
+    import math
+    result = {}
+    df = dk_df[dk_df["DK Salary"].notna()].copy()
+    if df.empty:
+        return {}
+
+    max_sal = df["DK Salary"].max()
+    min_sal = df["DK Salary"].min()
+    if max_sal <= min_sal:
+        return {}
+
+    for _, row in df.iterrows():
+        name = row.get("Driver", "")
+        salary = row["DK Salary"]
+        if not name or salary <= 0:
+            continue
+
+        # Normalized 0-1 (1 = highest salary)
+        norm = (salary - min_sal) / (max_sal - min_sal)
+
+        # Map to American odds: top salary ≈ +350, bottom ≈ +12000
+        # Using exponential decay: odds = base * e^(-k * norm)
+        odds = int(350 * math.exp(3.5 * (1 - norm)))
+        odds = max(150, min(20000, odds))  # clamp
+
+        result[name] = f"+{odds}"
+
+    return result
+
+
 # ============================================================
 # ODDS PERSISTENCE — save/load odds to/from database
 # ============================================================

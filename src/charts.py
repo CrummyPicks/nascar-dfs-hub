@@ -5,6 +5,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+from src.utils import short_name_series
+
 
 DARK_LAYOUT = dict(
     template="plotly_dark",
@@ -46,8 +48,10 @@ def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
             f"Fastest Laps: {fl} ({fl_pts:.1f} pts)"
         )
 
+    short_names = short_name_series(df["Driver"].tolist())
+
     fig = go.Figure(go.Bar(
-        y=df["Driver"],
+        y=short_names,
         x=df["DFS Points"],
         orientation="h",
         marker=dict(
@@ -83,7 +87,11 @@ def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 500) -> go.F
         sorted_by_pts.head(15)["Driver"].tolist() +
         sorted_by_pts.tail(5)["Driver"].tolist()
     )
-    df["Label"] = df["Driver"].where(df["Driver"].isin(labeled_drivers), "")
+    from src.utils import short_name
+    all_names = df["Driver"].tolist()
+    df["Label"] = df["Driver"].apply(
+        lambda d: short_name(d, all_names) if d in labeled_drivers else ""
+    )
 
     fig = px.scatter(df, x="Start", y="Finish Position",
                      text="Label", color="DFS Points",
@@ -126,8 +134,10 @@ def practice_bar_chart(lap_averages_df: pd.DataFrame, metric_col: str = "Overall
     # Dynamic height based on number of drivers
     bar_height = max(height, len(chart_df) * 18)
 
+    chart_df["Short"] = short_name_series(chart_df["Driver"].tolist())
+
     fig = go.Figure(go.Bar(
-        y=chart_df["Driver"],
+        y=chart_df["Short"],
         x=chart_df["Delta"],
         orientation="h",
         marker=dict(
@@ -188,8 +198,12 @@ def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
     fig = go.Figure()
     all_times = []
 
+    from src.utils import short_name
+    all_driver_names = [e["driver"] for e in practice_laps]
+
     for entry in practice_laps:
         driver = entry["driver"]
+        short = short_name(driver, all_driver_names)
         laps = sorted(entry["laps"], key=lambda x: x["lap_num"])
         lap_nums = [l["lap_num"] for l in laps]
         lap_times = [l["lap_time"] for l in laps]
@@ -202,7 +216,7 @@ def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=lap_nums, y=lap_times,
             mode="lines",
-            name=f"{driver} — avg {avg_time:.2f} • best {best_time:.2f} • {n_laps} laps",
+            name=f"{short} — avg {avg_time:.2f} • best {best_time:.2f} • {n_laps} laps",
             hovertemplate=f"{driver}<br>Lap %{{x}}: %{{y:.3f}}s<extra></extra>",
         ))
 

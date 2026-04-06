@@ -327,7 +327,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         wn = {"track": 0.30, "track_type": 0.20, "qual": 0.15, "practice": 0.20, "odds": 0.15}
 
     if not has_odds:
-        st.caption("Odds data not available — odds weight redistributed to other signals")
+        st.caption("⚠️ No odds data — odds weight redistributed to other signals. "
+                   "Paste odds manually or check Action Network availability.")
 
     # ── Dynamic dominator ceiling from DB ────────────────────────────────────
     calibration = _get_track_dominator_calibration(track_name, track_type)
@@ -504,8 +505,35 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 if matched:
                     odds_finish[matched] = rank * (field_size / len(ranked))
         elif odds_probs:
-            st.caption(f"Odds data only covers {len(odds_probs)} drivers "
-                       f"({len(odds_probs)}/{field_size}) — skipping odds signal")
+            pct = len(odds_probs) / field_size * 100
+            st.caption(f"⚠️ Odds cover only {len(odds_probs)}/{field_size} drivers "
+                       f"({pct:.0f}%) — need ≥30% to use as signal. "
+                       f"Odds weight redistributed to other signals.")
+
+    # ── Build odds display lookup for the projections table ──────────────────
+    driver_odds_display = {}  # d -> {"odds_str": "+350", "impl_pct": 22.2}
+    if odds_data:
+        from src.utils import fuzzy_match_name as _fmn
+        for name, odds_str in odds_data.items():
+            if odds_str is None or str(odds_str).strip() in ("", "None", "null", "N/A"):
+                continue
+            try:
+                oval = int(str(odds_str).replace("+", ""))
+                if oval > 0:
+                    impl = 100 / (oval + 100) * 100
+                elif oval < 0:
+                    impl = abs(oval) / (abs(oval) + 100) * 100
+                else:
+                    continue
+                matched = _fmn(name, drivers)
+                if matched:
+                    sign = "+" if oval > 0 else ""
+                    driver_odds_display[matched] = {
+                        "odds_str": f"{sign}{oval}",
+                        "impl_pct": round(impl, 1),
+                    }
+            except (ValueError, TypeError):
+                continue
 
     # ── PROJECT EACH DRIVER — Raw composite finish score ─────────────────────
     driver_raw_scores = {}  # d -> raw weighted score (higher = better driver)
@@ -691,10 +719,14 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             ll_comp = min(100, tt.get("laps_led_per_race", 0) * 2.5)
             tt_score = round(finish_comp * 0.70 + ll_comp * 0.30, 1)
 
+        odds_info = driver_odds_display.get(d, {})
+
         rows.append({
             "Driver": d,
             "Proj DK": proj_dk,
             "Proj Finish": proj_finish,
+            "Win Odds": odds_info.get("odds_str", ""),
+            "Impl %": odds_info.get("impl_pct", None),
             "Finish Pts": round(finish_pts, 1),
             "Diff Pts": round(diff_pts, 1),
             "Led Pts": round(led_pts, 1),
@@ -735,6 +767,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     display_cols = ["Driver"]
     if "Car" in proj.columns:
         display_cols.append("Car")
+    if "Win Odds" in proj.columns and proj["Win Odds"].astype(bool).any():
+        display_cols.append("Win Odds")
+    if "Impl %" in proj.columns and proj["Impl %"].notna().any():
+        display_cols.append("Impl %")
     if "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
     if "Qual Pos" in proj.columns:
@@ -783,11 +819,14 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         "FL Pts": "#f5365c",
     }
 
+    from src.utils import short_name_series
+    chart_df["Short"] = short_name_series(chart_df["Driver"].tolist())
+
     fig = go.Figure()
     for comp, color in component_cols.items():
         if comp in chart_df.columns:
             fig.add_trace(go.Bar(
-                y=chart_df["Driver"],
+                y=chart_df["Short"],
                 x=chart_df[comp].clip(lower=0),
                 name=comp,
                 orientation="h",
@@ -818,7 +857,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     # Add invisible scatter trace for rich hover
     fig.add_trace(go.Scatter(
-        y=chart_df["Driver"],
+        y=chart_df["Short"],
         x=chart_df["Proj DK"],
         mode="markers",
         marker=dict(size=1, opacity=0),
