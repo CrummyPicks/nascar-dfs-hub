@@ -474,7 +474,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # ── 5. Odds Signal — convert American odds to implied finish position ────
     odds_finish = {}
     if odds_data and wn.get("odds", 0) > 0:
-        from src.utils import fuzzy_match_name
         # Filter out null/empty odds before processing
         clean_odds = {k: v for k, v in odds_data.items()
                       if v is not None and str(v).strip() not in ("", "None", "null", "N/A")}
@@ -510,7 +509,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # ── Build odds display lookup for the projections table ──────────────────
     driver_odds_display = {}  # d -> {"odds_str": "+350", "impl_pct": 22.2}
     if odds_data:
-        from src.utils import fuzzy_match_name as _fmn
         for name, odds_str in odds_data.items():
             if odds_str is None or str(odds_str).strip() in ("", "None", "null", "N/A"):
                 continue
@@ -522,7 +520,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     impl = abs(oval) / (abs(oval) + 100) * 100
                 else:
                     continue
-                matched = _fmn(name, drivers)
+                matched = fuzzy_match_name(name, drivers)
                 if matched:
                     sign = "+" if oval > 0 else ""
                     driver_odds_display[matched] = {
