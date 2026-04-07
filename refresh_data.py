@@ -247,6 +247,172 @@ def backfill_api_race_ids():
     print(f"  Backfilled {updated} races with api_race_id")
 
 
+def scrape_sbd_odds(race_name: str, track_name: str, race_date: str):
+    """Try to scrape pre-race odds from SportsBettingDime for a specific race.
+
+    Returns dict of {driver_name: odds_string} or empty dict.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+
+    # Build URL slug from race name and track
+    date_parts = race_date.split("-") if race_date else []
+    months = {
+        "01": "jan", "02": "feb", "03": "mar", "04": "apr",
+        "05": "may", "06": "jun", "07": "jul", "08": "aug",
+        "09": "sep", "10": "oct", "11": "nov", "12": "dec",
+    }
+
+    # Try multiple URL patterns
+    race_slug = re.sub(r'[^a-z0-9\s]', '', race_name.lower()).strip()
+    race_slug = re.sub(r'\s+', '-', race_slug)
+    # Strip common track suffixes (site uses short names)
+    short_track = track_name
+    for suffix in ['International Speedway', 'Motor Speedway', 'Superspeedway',
+                    'Speedway', 'Raceway', 'Street Course', 'Road Course']:
+        short_track = re.sub(rf'\s*{suffix}$', '', short_track, flags=re.IGNORECASE)
+    track_slug = re.sub(r'[^a-z0-9\s]', '', short_track.lower()).strip()
+    track_slug = re.sub(r'\s+', '-', track_slug)
+
+    day_str = ""
+    mon_str = ""
+    if len(date_parts) == 3:
+        mon_str = months.get(date_parts[1], "")
+        day_str = str(int(date_parts[2]))
+
+    patterns = []
+    if mon_str and day_str:
+        patterns.append(
+            f"https://www.sportsbettingdime.com/news/racing/nascar-{race_slug}-predictions-odds-start-time-{track_slug}-sunday-{mon_str}-{day_str}/"
+        )
+        patterns.append(
+            f"https://www.sportsbettingdime.com/news/racing/nascar-{race_slug}-predictions-odds-start-time-{track_slug}-saturday-{mon_str}-{day_str}/"
+        )
+    patterns.append(
+        f"https://www.sportsbettingdime.com/news/racing/{race_slug}-predictions-odds-picks-{date_parts[0] if date_parts else '2026'}/"
+    )
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    for url in patterns:
+        try:
+            resp = requests.get(url, timeout=15, headers=headers)
+            if resp.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            odds = {}
+
+            # Look for odds tables
+            for table in soup.find_all("table"):
+                rows = table.find_all("tr")
+                for row in rows:
+                    cells = row.find_all(["td", "th"])
+                    if len(cells) >= 2:
+                        name = cells[0].get_text(strip=True)
+                        odds_val = cells[1].get_text(strip=True)
+                        if re.match(r'^[+-]?\d+$', odds_val) and name and name != "Driver":
+                            odds[name] = odds_val
+
+            if odds:
+                return odds
+        except Exception:
+            continue
+
+    return {}
+
+
+def _backfill_odds_from_web():
+    """Try to backfill historical odds from SportsBettingDime for Cup races."""
+    import sqlite3
+    from src.config import DB_PATH
+
+    if not DB_PATH.exists():
+        print("  Database not found")
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+
+    # Find Cup races with no odds
+    races_without_odds = conn.execute("""
+        SELECT r.id, r.api_race_id, r.race_name, r.race_date, t.name as track_name
+        FROM races r
+        LEFT JOIN tracks t ON t.id = r.track_id
+        WHERE r.series_id = 1
+          AND r.api_race_id IS NOT NULL
+          AND r.id NOT IN (SELECT DISTINCT race_id FROM odds)
+        ORDER BY r.race_date DESC
+    """).fetchall()
+    conn.close()
+
+    print(f"\n  Found {len(races_without_odds)} Cup races without odds")
+
+    saved = 0
+    for race in races_without_odds[:20]:  # Limit to 20 to avoid rate limiting
+        api_rid = race["api_race_id"]
+        name = race["race_name"] or ""
+        track = race["track_name"] or ""
+        date = (race["race_date"] or "")[:10]
+
+        print(f"  Trying {date} {name} @ {track}...", end=" ", flush=True)
+        odds = scrape_sbd_odds(name, track, date)
+        if odds:
+            count = save_odds_to_db(odds, api_rid, sportsbook="sportsbettingdime")
+            print(f"Found {count} odds!")
+            saved += count
+        else:
+            print("No data found")
+
+    print(f"\n  Backfilled {saved} total odds entries")
+
+
+def import_odds_csv(csv_path: str):
+    """Import historical odds from a CSV file.
+
+    CSV format: race_id (API),driver_name,win_odds
+    Example:
+        5596,Kyle Larson,+350
+        5596,Denny Hamlin,+600
+    """
+    import csv
+    print(f"\n  Importing odds from {csv_path}...")
+
+    try:
+        with open(csv_path, "r") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            # Auto-detect header
+            if header and header[0].lower().strip() in ("race_id", "api_race_id"):
+                pass  # skip header
+            else:
+                # No header — rewind
+                f.seek(0)
+                reader = csv.reader(f)
+
+            by_race = {}
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                api_rid = int(row[0].strip())
+                driver = row[1].strip()
+                odds_str = row[2].strip()
+                if api_rid not in by_race:
+                    by_race[api_rid] = {}
+                by_race[api_rid][driver] = odds_str
+
+        total = 0
+        for api_rid, odds_data in by_race.items():
+            count = save_odds_to_db(odds_data, api_rid, sportsbook="csv_import")
+            print(f"  Race {api_rid}: saved {count}/{len(odds_data)} odds")
+            total += count
+
+        print(f"  Total: {total} odds imported across {len(by_race)} races")
+    except Exception as e:
+        print(f"  Error importing CSV: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="NASCAR DFS Hub — Data Refresh")
     parser.add_argument("--series", type=str, default="cup",
@@ -259,11 +425,25 @@ def main():
                         help="Fetch a specific race ID")
     parser.add_argument("--odds", action="store_true",
                         help="Also fetch and save current odds for the next upcoming race")
+    parser.add_argument("--import-odds", type=str, default=None, metavar="CSV",
+                        help="Import historical odds from CSV (columns: api_race_id,driver,odds)")
+    parser.add_argument("--backfill-odds", action="store_true",
+                        help="Try to scrape historical odds from SportsBettingDime for races missing odds")
     args = parser.parse_args()
 
     print("\n" + "="*60)
     print("  NASCAR DFS Hub — Data Refresh")
     print("="*60)
+
+    if args.import_odds:
+        import_odds_csv(args.import_odds)
+        print("\nDone!\n")
+        return
+
+    if args.backfill_odds:
+        _backfill_odds_from_web()
+        print("\nDone!\n")
+        return
 
     if args.race:
         series_id = SERIES_MAP.get(args.series.lower(), 1)
