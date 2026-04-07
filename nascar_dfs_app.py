@@ -275,11 +275,17 @@ with st.expander("Settings & Data Upload", expanded=False):
             odds_data = auto_odds
             odds_source = "action_network"
         # Fallback: estimate odds from DK salary when no real odds available
-        if not odds_data and not dk_auto.empty:
-            odds_data = estimate_odds_from_salaries(dk_auto)
-            if odds_data:
-                odds_source = "salary_estimate"
-                st.caption("📊 Using salary-estimated odds (Action Network unavailable)")
+        if not odds_data:
+            sal_source = dk_auto if not dk_auto.empty else dk_df
+            if not sal_source.empty:
+                # Ensure the salary column name is "DK Salary" for the estimator
+                if "DK Salary" not in sal_source.columns and "Salary" in sal_source.columns:
+                    sal_source = sal_source.rename(columns={"Salary": "DK Salary"})
+                odds_data = estimate_odds_from_salaries(sal_source)
+                if odds_data:
+                    odds_source = "salary_estimate"
+                    reason = "Action Network unavailable" if is_cup else f"no odds source for {series_name} series"
+                    st.caption(f"📊 Using salary-estimated odds ({reason})")
 
     # Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
     if odds_data:

@@ -334,7 +334,8 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
     """Scrape driveraverages.com and return (recent_df, alltime_df) tuple."""
     key = track_name.lower().strip()
     trk_id = None
-    for name, tid in DA_TRACK_IDS.items():
+    # Sort by key length descending so "charlotte roval" matches before "charlotte"
+    for name, tid in sorted(DA_TRACK_IDS.items(), key=lambda x: len(x[0]), reverse=True):
         if name in key:
             trk_id = tid
             break
@@ -344,7 +345,10 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
     series_map = {1: "nascar", 2: "nascar_secondseries", 3: "nascar_truckseries"}
     series_path = series_map.get(series_id, "nascar")
 
-    # Column layouts: site changed from 15 → 13 columns
+    # Column layouts: site uses different layouts per series
+    # Cup: 13 or 15 columns; Xfinity/Truck: 14 (recent) or 10 (alltime)
+    VALID_COL_COUNTS = (10, 13, 14, 15)
+
     col_names_13_recent = [
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
         "Top 10", "Laps Led", "Avg Start", "Best Finish",
@@ -354,6 +358,15 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
         "Top 10", "Laps Led", "Avg Start", "Best Finish",
         "Worst Finish", "DNF", "Detail",
+    ]
+    col_names_14_recent = [
+        "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
+        "Top 10", "Top 20", "Laps Led", "Avg Start", "Best Finish",
+        "DNF", "Avg Rating", "Detail",
+    ]
+    col_names_10_alltime = [
+        "Rank", "Driver", "Wins", "Races", "Avg Finish",
+        "Top 5", "Top 10", "Avg Start", "Best Finish", "DNF",
     ]
     col_names_15 = [
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
@@ -375,7 +388,7 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
                 has_nested_data = False
                 for nt in t.find_all("table"):
                     for tr in nt.find_all("tr"):
-                        if len(tr.find_all("td")) in (13, 15):
+                        if len(tr.find_all("td")) in VALID_COL_COUNTS:
                             has_nested_data = True
                             break
                     if has_nested_data:
@@ -386,7 +399,7 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
             ncols = None
             for tr in t.find_all("tr"):
                 cells = tr.find_all("td")
-                if len(cells) in (13, 15):
+                if len(cells) in VALID_COL_COUNTS:
                     vals = [c.get_text(strip=True) for c in cells]
                     if vals[1] and vals[1] != "Driver":
                         rows.append(vals)
@@ -397,8 +410,12 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
         def _build_df(rows, ncols, is_alltime=False):
             if ncols == 15:
                 cols = col_names_15
+            elif ncols == 14:
+                cols = col_names_14_recent
             elif ncols == 13:
                 cols = col_names_13_alltime if is_alltime else col_names_13_recent
+            elif ncols == 10:
+                cols = col_names_10_alltime
             else:
                 return pd.DataFrame()
             df = pd.DataFrame(rows, columns=cols)
@@ -527,7 +544,7 @@ def query_season_stats(track_name: str = None, season: int = None,
         return pd.DataFrame()
 
 
-def query_track_type_stats(track_type: str) -> pd.DataFrame:
+def query_track_type_stats(track_type: str, season: int = None) -> pd.DataFrame:
     """Pull stats filtered by track type from local DB.
 
     Handles both DB-level types (short, intermediate, road, superspeedway, dirt)
@@ -585,6 +602,11 @@ def query_track_type_stats(track_type: str) -> pd.DataFrame:
             JOIN races r ON r.id=rr.race_id
             JOIN tracks t ON t.id=r.track_id
             WHERE t.name IN ({placeholders})
+        """
+        if season:
+            query += f" AND r.season = ?"
+            filter_tracks = filter_tracks + [season]
+        query += """
             GROUP BY d.full_name
             HAVING Races >= 1
             ORDER BY "Avg DFS" DESC

@@ -80,6 +80,15 @@ TRACK_TYPE_COLORS = {
     "intermediate_worn": "#93c5fd",
 }
 
+TRACK_TYPE_DISPLAY = {
+    "superspeedway": "Superspeedway",
+    "road": "Road Course",
+    "short": "Short Track",
+    "short_concrete": "Short (Concrete)",
+    "intermediate": "Intermediate",
+    "intermediate_worn": "Intermediate (Worn)",
+}
+
 # ----------------------------
 # DRIVERAVERAGES.COM TRACK IDS
 # ----------------------------
@@ -90,8 +99,29 @@ DA_TRACK_IDS = {
     "michigan": 15, "new hampshire": 16, "phoenix": 17, "pocono": 18,
     "richmond": 19, "talladega": 20, "texas": 21, "watkins glen": 22,
     "north wilkesboro": 24, "rockingham": 23, "iowa": 55, "nashville": 57,
-    "gateway": 61, "st. petersburg": 216, "circuit of the americas": 211,
+    "gateway": 61, "world wide technology": 61,
+    "st. petersburg": 216, "circuit of the americas": 211,
     "cota": 211, "chicago": 215, "charlotte roval": 206,
+}
+
+# ----------------------------
+# DRIVER NAME ALIASES (normalized key → normalized canonical name)
+# Keys/values are lowercase, ASCII-folded, period-stripped, suffix-stripped
+# ----------------------------
+DRIVER_ALIASES = {
+    # Middle-name / initial variants
+    "john h nemechek": "john hunter nemechek",
+    "john nemechek": "john hunter nemechek",
+    "jh nemechek": "john hunter nemechek",
+    # Abbreviation variants
+    "a j allmendinger": "aj allmendinger",
+    "christopher buescher": "chris buescher",
+    "alexander bowman": "alex bowman",
+    # Nickname variants
+    "willy b": "william byron",
+    # CJ vs C.J. (periods stripped → "cj")
+    "c j mclaughlin": "cj mclaughlin",
+    "j j yeley": "jj yeley",
 }
 
 # ----------------------------

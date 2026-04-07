@@ -32,3 +32,12 @@ cache/
 ROADMAP.md
 RUN ME/
 START_HUB.bat
+
+# Local reference prompts
+CLAUDE_CODE_PROMPT.md
+
+# Database (rebuilt by setup_db.py / refresh_data.py)
+nascar.db
+
+# Windows batch scripts (local convenience only)
+*.bat

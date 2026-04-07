@@ -376,8 +376,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     st.markdown(f"### Lineup Optimizer — {race_name}")
 
     if dk_df.empty:
-        st.info("No salary data available. Upload a DK CSV or wait for DK API salaries to enable the optimizer.")
-        return
+        # Try loading salaries from DB for completed races
+        from src.data import query_salaries
+        db_sal = query_salaries(race_id=race_id, platform="DraftKings")
+        if not db_sal.empty and "Salary" in db_sal.columns:
+            dk_df = db_sal.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
+        if dk_df.empty:
+            if not is_prerace:
+                st.info("No salary data for this completed race. "
+                        "Salaries expire after the race — upload a CSV or use an upcoming race.")
+            else:
+                st.info("No salary data available. Upload a DK CSV or wait for DK API salaries to enable the optimizer.")
+            return
 
     # Initialize session state
     if "opt_lineup" not in st.session_state:

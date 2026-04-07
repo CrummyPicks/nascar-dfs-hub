@@ -47,6 +47,13 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     ra_series_id = series_id
     ra_series_name = series_name
 
+    # Sync year filter with global selector when it changes
+    if "ra_year_synced_from" not in st.session_state:
+        st.session_state["ra_year_synced_from"] = selected_year
+    if st.session_state.get("ra_year_synced_from") != selected_year:
+        st.session_state["ra_year"] = selected_year
+        st.session_state["ra_year_synced_from"] = selected_year
+
     with st.expander("Filters", expanded=False):
         f_cols = st.columns(4)
         with f_cols[0]:

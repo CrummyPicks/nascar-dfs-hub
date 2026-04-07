@@ -936,6 +936,25 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         proj_finish_rank = proj_s.rank(ascending=False)
         actual_finish_rank = actual_s.rank(ascending=False)
 
+        # Compute projected finish positions from DK rank and actual finishes
+        proj_finish_list = []
+        actual_finish_list = []
+        sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
+        proj_finish_map = {d: i + 1 for i, (d, _) in enumerate(sorted_proj)}
+        for _, row in actuals.iterrows():
+            d = row["Driver"]
+            if d in proj_dk and pd.notna(row.get("Finish Position")):
+                proj_finish_list.append(proj_finish_map.get(d, len(sorted_proj)))
+                actual_finish_list.append(int(row["Finish Position"]))
+
+        finish_mae = 0.0
+        finish_corr = 0.0
+        if proj_finish_list:
+            pf = pd.Series(proj_finish_list)
+            af = pd.Series(actual_finish_list)
+            finish_mae = (pf - af).abs().mean()
+            finish_corr = pf.corr(af) if len(pf) > 2 else 0.0
+
         race_metrics.append({
             "Race": race.get("race_name", ""),
             "Track": track_name,
@@ -943,9 +962,9 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
             "Track Type": TRACK_TYPE_MAP.get(track_name, "intermediate"),
             "Drivers": len(proj_list),
             "DK MAE": dk_errors.abs().mean(),
-            "Finish MAE": 0,  # Not available from backtest
+            "Finish MAE": finish_mae,
             "DK Corr": proj_s.corr(actual_s),
-            "Finish Corr": 0,
+            "Finish Corr": finish_corr,
             "Rank Corr": proj_finish_rank.corr(actual_finish_rank),
             "Avg Bias": dk_errors.mean(),
         })
@@ -1003,6 +1022,16 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         "Track your projection accuracy over time. Lower MAE and higher correlation = better model. "
         "Positive bias means you're over-projecting on average."
     )
+
+    # Flag superspeedway accuracy caveat
+    if not all_comp_df.empty and "Track Type" in all_comp_df.columns:
+        ss_count = all_comp_df[all_comp_df["Track Type"] == "superspeedway"]["Race"].nunique()
+        if ss_count > 0:
+            st.caption(
+                f"⚠️ Superspeedway races ({ss_count} included) are inherently unpredictable "
+                "due to pack racing — expect higher MAE and lower correlation at Daytona, "
+                "Talladega, Atlanta, and Indianapolis."
+            )
 
 
 # ── Weight Optimizer ─────────────────────────────────────────────────────────

@@ -1,8 +1,10 @@
 """NASCAR DFS Hub — Utility Functions."""
 
+import unicodedata
+
 import pandas as pd
 import numpy as np
-from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS
+from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES
 
 
 def calc_dk_points(finish, start, laps_led, fastest_laps):
@@ -30,36 +32,66 @@ def calc_fd_points(finish, start, laps_led, fastest_laps):
 
 
 def normalize_driver_name(name: str) -> str:
-    """Normalize a driver name for matching (lowercase, strip suffixes)."""
+    """Normalize a driver name for matching.
+
+    Steps: lowercase, Unicode→ASCII folding (Suárez→suarez), strip periods,
+    remove common suffixes (Jr/Sr/III), collapse whitespace, apply aliases.
+    """
     if not name:
         return ""
     name = name.strip().lower()
+    # Unicode → ASCII folding (handles Suárez, Préost, etc.)
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    # Strip all periods (A.J. → AJ, Jr. → Jr)
+    name = name.replace(".", "")
+    # Collapse extra whitespace
+    name = " ".join(name.split())
     # Remove common suffixes
-    for suffix in [" jr.", " jr", " sr.", " sr", " iii", " ii", " iv"]:
+    for suffix in [" jr", " sr", " iii", " ii", " iv"]:
         if name.endswith(suffix):
             name = name[: -len(suffix)].strip()
             break
+    # Apply alias mapping
+    alias = DRIVER_ALIASES.get(name)
+    if alias:
+        name = alias
     return name
 
 
 def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> str:
-    """Find best fuzzy match for a driver name in a list of candidates."""
+    """Find best fuzzy match for a driver name in a list of candidates.
+
+    Uses normalized names (Unicode-folded, period-stripped, alias-resolved)
+    and a last-name shortcut only when the last name is unique in the candidate list.
+    """
     from difflib import SequenceMatcher
+
+    if not name or not candidates:
+        return None
 
     norm = normalize_driver_name(name)
     best_match, best_score = None, 0.0
 
-    for candidate in candidates:
-        norm_c = normalize_driver_name(candidate)
-        # Exact match
+    # Pre-compute normalized candidates
+    norm_candidates = [(c, normalize_driver_name(c)) for c in candidates]
+
+    # Pass 1: exact normalized match
+    for candidate, norm_c in norm_candidates:
         if norm == norm_c:
             return candidate
-        # Last name match
-        last_name = norm.split()[-1] if norm.split() else ""
-        last_name_c = norm_c.split()[-1] if norm_c.split() else ""
-        if last_name and last_name == last_name_c:
-            return candidate
-        # Fuzzy
+
+    # Pass 2: last-name match — only if last name is unique among candidates
+    last_name = norm.split()[-1] if norm.split() else ""
+    if last_name:
+        last_name_matches = [
+            (c, nc) for c, nc in norm_candidates
+            if nc.split()[-1] == last_name
+        ]
+        if len(last_name_matches) == 1:
+            return last_name_matches[0][0]
+
+    # Pass 3: fuzzy SequenceMatcher
+    for candidate, norm_c in norm_candidates:
         score = SequenceMatcher(None, norm, norm_c).ratio()
         if score > best_score:
             best_score = score

@@ -224,9 +224,9 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
                     f"Run `python refresh_data.py` to populate race data.")
 
     elif hist_view == "2026 Season":
-        st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks")
-        # Use track type query to filter season data to this type
-        season_df = query_track_type_stats(track_type_filter)
+        st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks (2026 only)")
+        # Use track type query to filter season data to this type AND 2026 only
+        season_df = query_track_type_stats(track_type_filter, season=2026)
         if not season_df.empty:
             display = format_display_df(season_df)
             st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)

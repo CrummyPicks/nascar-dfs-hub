@@ -24,7 +24,7 @@ from src.data import (
     query_projections, scrape_track_history,
 )
 # projection_bar no longer used — replaced with inline stacked bar
-from src.utils import safe_fillna, format_display_df, calc_dk_points
+from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
@@ -392,9 +392,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
+        th_names = th_idx.index.tolist()
         for d in drivers:
-            if d in th_idx.index:
-                row = th_idx.loc[d]
+            # Try exact match first, then fuzzy match
+            matched = d if d in th_idx.index else fuzzy_match_name(d, th_names)
+            if matched and matched in th_idx.index:
+                row = th_idx.loc[matched]
                 th_data[d] = {
                     "avg_finish": row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20,
                     "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
@@ -441,11 +444,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     if pd.notna(ll) and pd.notna(races) and races > 0:
                         type_laps_led.setdefault(d, []).append(ll / races)
 
+            tt_names = list(type_finishes.keys())
             for d in drivers:
-                if d in type_finishes:
+                matched = d if d in type_finishes else fuzzy_match_name(d, tt_names)
+                if matched and matched in type_finishes:
                     tt_data[d] = {
-                        "avg_finish": np.mean(type_finishes[d]),
-                        "laps_led_per_race": np.mean(type_laps_led.get(d, [0])),
+                        "avg_finish": np.mean(type_finishes[matched]),
+                        "laps_led_per_race": np.mean(type_laps_led.get(matched, [0])),
                     }
 
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
@@ -720,12 +725,18 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             tt_score = round(finish_comp * 0.70 + ll_comp * 0.30, 1)
 
         odds_info = driver_odds_display.get(d, {})
+        # Store odds as numeric for proper sorting (format_display_df handles Int64)
+        odds_str = odds_info.get("odds_str", "")
+        try:
+            odds_numeric = int(str(odds_str).replace("+", "")) if odds_str else None
+        except (ValueError, TypeError):
+            odds_numeric = None
 
         rows.append({
             "Driver": d,
             "Proj DK": proj_dk,
             "Proj Finish": proj_finish,
-            "Win Odds": odds_info.get("odds_str", ""),
+            "Win Odds": odds_numeric,
             "Impl %": odds_info.get("impl_pct", None),
             "Finish Pts": round(finish_pts, 1),
             "Diff Pts": round(diff_pts, 1),
