@@ -582,7 +582,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         driver_raw_scores[d] = raw_finish
 
-        # --- Build raw dominator score (laps led potential) ---
+        # --- Build raw dominator score (laps led potential) — weight-aware ---
+        # Dom signal weights reflect user's projection weights so changing
+        # odds weight also changes who is projected to lead laps
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
@@ -591,27 +593,27 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             if th and th["races"] >= 1 and th["laps_led"] > 0:
                 ll_per_race = th["laps_led"] / th["races"]
                 dom_signals.append(ll_per_race)
-                dom_weights_list.append(0.30)
+                dom_weights_list.append(wn.get("track", 0.20))
 
             if tt and tt.get("laps_led_per_race", 0) > 0:
                 dom_signals.append(tt["laps_led_per_race"])
-                dom_weights_list.append(0.15)
+                dom_weights_list.append(wn.get("track_type", 0.10))
 
             if qp and qp <= field_size:
                 qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 30
                 dom_signals.append(qual_dom)
-                dom_weights_list.append(0.20)
+                dom_weights_list.append(wn.get("qual", 0.15))
 
             if od and wn.get("odds", 0) > 0:
                 odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
                 dom_signals.append(odds_dom)
-                dom_weights_list.append(0.30)
+                dom_weights_list.append(wn.get("odds", 0.15))
 
             if pr:
                 max_p_val = max(practice_data.values()) if practice_data else field_size
                 prac_dom = max(0, (max_p_val + 1 - pr) / max_p_val) * 15
                 dom_signals.append(prac_dom)
-                dom_weights_list.append(0.05)
+                dom_weights_list.append(wn.get("practice", 0.10))
 
             if dom_signals:
                 total_dw = sum(dom_weights_list)
@@ -619,7 +621,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             else:
                 dom_score = max(0, (field_size - raw_finish) / field_size) * 5
 
-        # --- Build raw fastest laps score ---
+        # --- Build raw fastest laps score — weight-aware ---
         fl_score = 0.0
         if race_laps > 0:
             fl_signals = []
@@ -627,23 +629,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
             if dom_score > 0:
                 fl_signals.append(dom_score * 0.5)
-                fl_signal_weights.append(0.30)
+                fl_signal_weights.append(0.25)
 
             if qp and qp <= field_size:
                 qual_fl = max(0, (field_size + 1 - qp) / field_size) * 15
                 fl_signals.append(qual_fl)
-                fl_signal_weights.append(0.25)
+                fl_signal_weights.append(wn.get("qual", 0.15))
 
             if pr:
                 max_p_val = max(practice_data.values()) if practice_data else field_size
                 prac_fl = max(0, (max_p_val + 1 - pr) / max_p_val) * 12
                 fl_signals.append(prac_fl)
-                fl_signal_weights.append(0.20)
+                fl_signal_weights.append(wn.get("practice", 0.10))
 
             if od and wn.get("odds", 0) > 0:
                 odds_fl = max(0, (field_size + 1 - od) / field_size) * 12
                 fl_signals.append(odds_fl)
-                fl_signal_weights.append(0.15)
+                fl_signal_weights.append(wn.get("odds", 0.15))
 
             finish_fl = max(0, (field_size - raw_finish) / field_size) * 10
             fl_signals.append(finish_fl)

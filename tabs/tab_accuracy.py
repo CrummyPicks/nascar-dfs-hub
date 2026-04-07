@@ -496,7 +496,9 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
         driver_raw_scores[d] = raw_finish
 
-        # ── Dominator score (laps led potential) — mirrors live engine ──
+        # ── Dominator score (laps led potential) — weight-aware ──
+        # Dom signal weights reflect the user's projection weights so that
+        # changing odds weight also changes who is projected to lead laps
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
@@ -504,21 +506,21 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
             if th and th.get("laps_led_per_race", 0) > 0:
                 dom_signals.append(th["laps_led_per_race"])
-                dom_w.append(0.30)
+                dom_w.append(wn.get("track", 0.20))
 
             if tt and tt.get("laps_led_per_race", 0) > 0:
                 dom_signals.append(tt["laps_led_per_race"])
-                dom_w.append(0.15)
+                dom_w.append(wn.get("track_type", 0.10))
 
             if sp and sp <= field_size:
                 qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30
                 dom_signals.append(qual_dom)
-                dom_w.append(0.20)
+                dom_w.append(wn.get("qual", 0.15))
 
             if od and wn.get("odds", 0) > 0:
                 odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
                 dom_signals.append(odds_dom)
-                dom_w.append(0.30)
+                dom_w.append(wn.get("odds", 0.15))
 
             if dom_signals:
                 total_dw = sum(dom_w)
@@ -528,7 +530,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
         dom_raw_scores[d] = dom_score
 
-        # ── Fastest laps score — mirrors live engine ──
+        # ── Fastest laps score — weight-aware ──
         fl_score = 0.0
         if race_laps > 0:
             fl_signals = []
@@ -536,17 +538,17 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
             if dom_score > 0:
                 fl_signals.append(dom_score * 0.5)
-                fl_w.append(0.30)
+                fl_w.append(0.25)
 
             if sp and sp <= field_size:
                 qual_fl = max(0, (field_size + 1 - sp) / field_size) * 15
                 fl_signals.append(qual_fl)
-                fl_w.append(0.25)
+                fl_w.append(wn.get("qual", 0.15))
 
             if od and wn.get("odds", 0) > 0:
                 odds_fl = max(0, (field_size + 1 - od) / field_size) * 12
                 fl_signals.append(odds_fl)
-                fl_w.append(0.15)
+                fl_w.append(wn.get("odds", 0.15))
 
             finish_fl = max(0, (field_size - raw_finish) / field_size) * 10
             fl_signals.append(finish_fl)
@@ -710,6 +712,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
 
             comp = pd.DataFrame({
                 "Driver": merged["Driver"],
+                "Start": merged["Start"],
                 "Proj DK": merged["proj_dk"].round(1),
                 "Actual DK": merged["DK Pts"].round(1),
                 "DK Error": (merged["proj_dk"] - merged["DK Pts"]).round(1),
@@ -741,12 +744,14 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 proj = proj_dk.get(d, 0)
                 actual_dk = row["DK Pts"]
                 actual_finish = row["Finish Position"]
+                start_pos = row.get("Start")
                 # Estimate projected finish from rank order of proj_dk
                 sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
                 proj_finish = next((i+1 for i, (n, _) in enumerate(sorted_proj) if n == d),
                                    len(sorted_proj))
                 rows.append({
                     "Driver": d,
+                    "Start": start_pos,
                     "Proj DK": round(proj, 1),
                     "Actual DK": round(actual_dk, 1),
                     "DK Error": round(proj - actual_dk, 1),
@@ -877,80 +882,91 @@ def _render_race_comparison(completed_races, series_id, selected_year):
 # ── Accuracy Dashboard ───────────────────────────────────────────────────────
 
 def _render_accuracy_dashboard(series_id, selected_year, series_name):
-    """Cross-race accuracy metrics across all saved projections."""
-    saved_races = load_saved_race_list(series_id)
+    """Cross-race accuracy metrics — auto-generates projections for all completed races."""
+    # Get all completed races for this series/year
+    races = fetch_race_list(series_id, selected_year)
+    point_races = filter_point_races(races) if races else []
+    now = __import__("datetime").datetime.now()
+    completed = []
+    for race in point_races:
+        date_str = race.get("race_date", "")
+        try:
+            rd = __import__("datetime").datetime.fromisoformat(
+                date_str.replace("Z", "+00:00").split("+")[0].split("T")[0])
+            if rd.date() <= now.date():
+                completed.append(race)
+        except Exception:
+            pass
 
-    if saved_races.empty:
-        st.info("No saved projections yet. Save projections from the Projections tab to start tracking accuracy.")
+    if not completed:
+        st.info("No completed races available for accuracy tracking.")
         return
 
-    st.caption(f"**{len(saved_races)} races** with saved projections for {series_name}")
+    st.caption(f"Auto-generating projections for **{len(completed)} completed races** ({series_name} {selected_year})")
 
     all_comparisons = []
     race_metrics = []
+    progress = st.progress(0)
 
-    for _, race_row in saved_races.iterrows():
-        race_id = int(race_row["race_id"])
-        season = int(race_row["season"])
+    for idx, race in enumerate(completed):
+        progress.progress((idx + 1) / len(completed),
+                          text=f"Processing {race.get('track_name', '')}...")
+        race_id = race.get("race_id")
+        track_name = race.get("track_name", "")
 
-        proj_df = load_saved_projections(series_id=series_id, race_id=race_id)
-        if proj_df.empty:
+        proj_dk, actuals, meta = _generate_race_projections(race, series_id)
+        if proj_dk is None or actuals is None:
             continue
 
-        races = fetch_race_list(series_id, season)
-        point_races = filter_point_races(races) if races else []
-        actual_race = None
-        for rc in point_races:
-            if rc.get("race_id") == race_id:
-                actual_race = rc
-                break
+        proj_list = []
+        actual_list = []
+        for _, row in actuals.iterrows():
+            d = row["Driver"]
+            if d in proj_dk:
+                proj_list.append(proj_dk[d])
+                actual_list.append(row["DK Pts"])
 
-        if actual_race is None:
+        if len(proj_list) < 5:
             continue
 
-        actuals = _load_actual_results(actual_race, series_id)
-        if actuals.empty:
-            continue
+        proj_s = pd.Series(proj_list)
+        actual_s = pd.Series(actual_list)
+        dk_errors = proj_s - actual_s
 
-        merged = proj_df.merge(
-            actuals[["Driver", "Finish Position", "Start", "Laps Led",
-                     "Fastest Laps", "DK Pts"]],
-            left_on="driver", right_on="Driver", how="inner"
-        )
-        if merged.empty:
-            continue
-
-        dk_errors = (merged["proj_dk"] - merged["DK Pts"])
-        finish_errors = (merged["proj_finish"] - merged["Finish Position"])
+        proj_finish_rank = proj_s.rank(ascending=False)
+        actual_finish_rank = actual_s.rank(ascending=False)
 
         race_metrics.append({
-            "Race": race_row["race_name"],
-            "Track": race_row["track_name"],
-            "Season": season,
-            "Track Type": TRACK_TYPE_MAP.get(race_row["track_name"], "intermediate"),
-            "Drivers": len(merged),
+            "Race": race.get("race_name", ""),
+            "Track": track_name,
+            "Season": selected_year,
+            "Track Type": TRACK_TYPE_MAP.get(track_name, "intermediate"),
+            "Drivers": len(proj_list),
             "DK MAE": dk_errors.abs().mean(),
-            "Finish MAE": finish_errors.abs().mean(),
-            "DK Corr": merged["proj_dk"].corr(merged["DK Pts"]),
-            "Finish Corr": merged["proj_finish"].corr(merged["Finish Position"]),
-            "Rank Corr": merged["proj_dk"].rank(ascending=False).corr(
-                merged["DK Pts"].rank(ascending=False)),
+            "Finish MAE": 0,  # Not available from backtest
+            "DK Corr": proj_s.corr(actual_s),
+            "Finish Corr": 0,
+            "Rank Corr": proj_finish_rank.corr(actual_finish_rank),
             "Avg Bias": dk_errors.mean(),
         })
 
-        for _, row in merged.iterrows():
-            all_comparisons.append({
-                "Race": race_row["race_name"],
-                "Track": race_row["track_name"],
-                "Track Type": TRACK_TYPE_MAP.get(race_row["track_name"], "intermediate"),
-                "Driver": row["Driver"],
-                "Proj DK": row["proj_dk"],
-                "Actual DK": row["DK Pts"],
-                "Error": row["proj_dk"] - row["DK Pts"],
-            })
+        for _, row in actuals.iterrows():
+            d = row["Driver"]
+            if d in proj_dk:
+                all_comparisons.append({
+                    "Race": race.get("race_name", ""),
+                    "Track": track_name,
+                    "Track Type": TRACK_TYPE_MAP.get(track_name, "intermediate"),
+                    "Driver": d,
+                    "Proj DK": proj_dk[d],
+                    "Actual DK": row["DK Pts"],
+                    "Error": proj_dk[d] - row["DK Pts"],
+                })
+
+    progress.progress(1.0, text="Complete!")
 
     if not race_metrics:
-        st.info("No completed races with saved projections found.")
+        st.info("Could not generate projections for any completed races.")
         return
 
     metrics_df = pd.DataFrame(race_metrics)
@@ -1531,18 +1547,35 @@ def _display_backtest_results(results_df, series_name):
                     else:
                         raw_scores[d] = field_size * 0.65
 
-                    # Dom score
+                    # Dom score — uses projection weights
                     dom_s = []
-                    dom_w = []
+                    dom_dw = []
                     if th and th.get("laps_led_per_race", 0) > 0:
-                        dom_s.append(th["laps_led_per_race"]); dom_w.append(0.30)
+                        dom_s.append(th["laps_led_per_race"]); dom_dw.append(wn.get("track", 0.20))
                     if tt and tt.get("laps_led_per_race", 0) > 0:
-                        dom_s.append(tt["laps_led_per_race"]); dom_w.append(0.15)
+                        dom_s.append(tt["laps_led_per_race"]); dom_dw.append(wn.get("track_type", 0.10))
                     if sp and sp <= field_size:
-                        dom_s.append(max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30); dom_w.append(0.20)
+                        dom_s.append(max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30)
+                        dom_dw.append(wn.get("qual", 0.15))
                     if od and wn.get("odds", 0) > 0:
-                        dom_s.append(max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35); dom_w.append(0.30)
-                    dom_scores[d] = sum(s * w for s, w in zip(dom_s, dom_w)) / sum(dom_w) if dom_s else 0
+                        dom_s.append(max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35)
+                        dom_dw.append(wn.get("odds", 0.15))
+                    dom_scores[d] = sum(s * w for s, w in zip(dom_s, dom_dw)) / sum(dom_dw) if dom_s else 0
+
+                    # FL score — uses projection weights
+                    fl_s_list = []
+                    fl_w_list = []
+                    if dom_scores[d] > 0:
+                        fl_s_list.append(dom_scores[d] * 0.5); fl_w_list.append(0.25)
+                    if sp and sp <= field_size:
+                        fl_s_list.append(max(0, (field_size + 1 - sp) / field_size) * 15)
+                        fl_w_list.append(wn.get("qual", 0.15))
+                    if od and wn.get("odds", 0) > 0:
+                        fl_s_list.append(max(0, (field_size + 1 - od) / field_size) * 12)
+                        fl_w_list.append(wn.get("odds", 0.15))
+                    fl_s_list.append(max(0, (field_size - raw_scores.get(d, 20)) / field_size) * 10)
+                    fl_w_list.append(0.10)
+                    fl_scores_dict[d] = sum(s * w for s, w in zip(fl_s_list, fl_w_list)) / sum(fl_w_list) if fl_s_list else 0
 
                 # Rank-order finish spreading
                 sorted_d = sorted(raw_scores.items(), key=lambda x: x[1])
@@ -1557,30 +1590,38 @@ def _display_backtest_results(results_df, series_name):
 
                 # Allocate LL/FL using same logic as backtest
                 race_laps = rd.get("race_laps", 0)
-                parent = TRACK_TYPE_PARENT.get(rd.get("track_type", "intermediate"), "intermediate")
-                LEADER_FRAC = {"superspeedway": 0.60, "road": 0.22, "short": 0.18, "intermediate": 0.22}
-                CONC = {"superspeedway": 0.6, "road": 1.0, "short": 2.0, "intermediate": 1.5}
-                ll_conc = CONC.get(parent, 1.5)
+                tt_key = rd.get("track_type", "intermediate")
+                parent = TRACK_TYPE_PARENT.get(tt_key, tt_key)
+                LEADER_FRAC = {
+                    "superspeedway": 0.60, "road": 0.22, "short": 0.18,
+                    "short_concrete": 0.16, "intermediate": 0.22, "intermediate_worn": 0.20,
+                }
+                CONC = {
+                    "superspeedway": 0.6, "road": 1.0, "short": 2.0,
+                    "short_concrete": 2.2, "intermediate": 1.5, "intermediate_worn": 1.6,
+                }
+                ll_conc = CONC.get(tt_key, CONC.get(parent, 1.5))
 
                 allocated_ll = {}
                 if race_laps > 0 and dom_scores:
-                    n_leaders = max(3, int(field_size * LEADER_FRAC.get(parent, 0.22)))
+                    ll_frac = LEADER_FRAC.get(tt_key, LEADER_FRAC.get(parent, 0.22))
+                    n_leaders = max(3, int(field_size * ll_frac))
                     top_dom = sorted(dom_scores.items(), key=lambda x: x[1], reverse=True)[:n_leaders]
                     ll_s = {d: max(0.01, s) ** ll_conc for d, s in top_dom}
                     ll_t = sum(ll_s.values())
                     if ll_t > 0:
                         allocated_ll = {d: (s / ll_t) * race_laps for d, s in ll_s.items()}
 
-                FL_FRAC = {"superspeedway": 0.85, "road": 0.55, "short": 0.55, "intermediate": 0.65}
+                FL_FRAC = {
+                    "superspeedway": 0.85, "road": 0.55, "short": 0.55,
+                    "short_concrete": 0.50, "intermediate": 0.65, "intermediate_worn": 0.60,
+                }
                 fl_conc = max(0.5, ll_conc * 0.7)
                 allocated_fl = {}
-                if race_laps > 0:
-                    # Simple FL allocation based on dom + finish
-                    fl_raw = {}
-                    for d in drivers:
-                        fl_raw[d] = dom_scores.get(d, 0) * 0.5 + max(0, (field_size - raw_scores.get(d, 20)) / field_size) * 10
-                    n_fl = max(5, int(field_size * FL_FRAC.get(parent, 0.55)))
-                    top_fl = sorted(fl_raw.items(), key=lambda x: x[1], reverse=True)[:n_fl]
+                if race_laps > 0 and fl_scores_dict:
+                    fl_frac = FL_FRAC.get(tt_key, FL_FRAC.get(parent, 0.55))
+                    n_fl = max(5, int(field_size * fl_frac))
+                    top_fl = sorted(fl_scores_dict.items(), key=lambda x: x[1], reverse=True)[:n_fl]
                     fl_s = {d: max(0.01, s) ** fl_conc for d, s in top_fl}
                     fl_t = sum(fl_s.values())
                     if fl_t > 0:
@@ -1641,6 +1682,55 @@ def _display_backtest_results(results_df, series_name):
                     mc[1].metric("Avg Error", f"{valid['Error'].mean():+.1f}")
                     mc[2].metric("LL MAE", f"{(valid['Proj LL'] - valid['Actual LL']).abs().mean():.1f}")
                     mc[3].metric("FL MAE", f"{(valid['Proj FL'] - valid['Actual FL']).abs().mean():.1f}")
+
+                    # Scatter: Projected vs Actual DK Points with trend line
+                    import plotly.graph_objects as go
+                    from src.charts import DARK_LAYOUT
+
+                    fig = go.Figure()
+                    min_val = min(valid["Proj DK"].min(), valid["Actual DK"].min()) - 5
+                    max_val = max(valid["Proj DK"].max(), valid["Actual DK"].max()) + 5
+
+                    # Perfect prediction line
+                    fig.add_trace(go.Scatter(
+                        x=[min_val, max_val], y=[min_val, max_val],
+                        mode="lines", line=dict(color="#444", dash="dash", width=1),
+                        showlegend=False, name="Perfect",
+                    ))
+
+                    # Data points
+                    colors = np.where(valid["Error"] > 0, "#ef4444", "#22c55e")
+                    fig.add_trace(go.Scatter(
+                        x=valid["Actual DK"], y=valid["Proj DK"],
+                        mode="markers",
+                        marker=dict(size=8, color=colors, opacity=0.7),
+                        hovertemplate=(
+                            "<b>%{customdata[0]}</b><br>"
+                            "Projected: %{y:.1f}<br>Actual: %{x:.1f}<br>"
+                            "Error: %{customdata[1]:+.1f}<extra></extra>"
+                        ),
+                        customdata=np.column_stack([valid["Driver"], valid["Error"]]),
+                        showlegend=False,
+                    ))
+
+                    # Trend line (linear regression)
+                    z = np.polyfit(valid["Actual DK"].values, valid["Proj DK"].values, 1)
+                    trend_x = np.linspace(min_val, max_val, 50)
+                    trend_y = z[0] * trend_x + z[1]
+                    corr = valid["Proj DK"].corr(valid["Actual DK"])
+                    fig.add_trace(go.Scatter(
+                        x=trend_x, y=trend_y,
+                        mode="lines", line=dict(color="#4a7dfc", width=2),
+                        name=f"Trend (r={corr:.3f})",
+                    ))
+
+                    fig.update_layout(
+                        **DARK_LAYOUT, height=450,
+                        title=f"Projected vs Actual DK Points — {selected_lbl.split(':')[0]}",
+                        xaxis_title="Actual DK Points",
+                        yaxis_title="Projected DK Points",
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key="acc_drill_scatter")
 
                 csv_detail = detail_df.to_csv(index=True).encode("utf-8")
                 st.download_button("Export Detail CSV", csv_detail,
