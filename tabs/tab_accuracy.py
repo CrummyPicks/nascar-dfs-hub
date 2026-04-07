@@ -228,13 +228,26 @@ def _query_driver_track_stats(track_name, series_id):
 def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
     """Query per-driver stats across all tracks of a given type.
 
-    Returns dict of {driver_name: {avg_finish, laps_led_per_race, ...}}
+    Uses track name filtering via TRACK_TYPE_MAP to handle subtypes correctly.
+    For parent types (e.g., "intermediate"), includes all subtypes.
+    Returns dict of {driver_name: {avg_finish, laps_led_per_race, speed_score, ...}}
     """
     if not os.path.exists(PROJ_DB):
         return {}
 
+    # Find all tracks that belong to this type or whose parent matches
+    from src.config import TRACK_TYPE_MAP as _TTM
+    matching_tracks = [t for t, tt in _TTM.items()
+                       if tt == track_type
+                       or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+    if exclude_track:
+        matching_tracks = [t for t in matching_tracks if exclude_track not in t]
+    if not matching_tracks:
+        return {}
+
     conn = sqlite3.connect(PROJ_DB)
-    query = '''
+    placeholders = ",".join("?" for _ in matching_tracks)
+    query = f'''
         SELECT d.full_name,
                COUNT(*) as races,
                AVG(rr.finish_pos) as avg_finish,
@@ -245,13 +258,10 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
         JOIN drivers d ON d.id = rr.driver_id
         JOIN races r ON r.id = rr.race_id
         JOIN tracks t ON t.id = r.track_id
-        WHERE t.track_type = ? AND r.series_id = ?
+        WHERE t.name IN ({placeholders}) AND r.series_id = ?
+        GROUP BY d.id
     '''
-    params = [track_type, series_id]
-    if exclude_track:
-        query += " AND t.name NOT LIKE ?"
-        params.append(f"%{exclude_track}%")
-    query += " GROUP BY d.id"
+    params = matching_tracks + [series_id]
 
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -260,9 +270,12 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
     for r in rows:
         name, races, avg_f, avg_s, ll, fl = r
         if races and races > 0:
+            ll_per = (ll or 0) / races
+            fl_per = (fl or 0) / races
             result[name] = {
                 "avg_finish": avg_f or 20,
-                "laps_led_per_race": (ll or 0) / races,
+                "laps_led_per_race": ll_per,
+                "speed_score": ll_per + fl_per,
                 "races": races,
             }
     return result
@@ -428,6 +441,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         # ── Finish composite (same as live engine) ──
         finish_signals = []
         signal_weights = []
+        has_history = bool(th or tt)
 
         if th and wn.get("track", 0) > 0:
             finish_signals.append(th["avg_finish"])
@@ -438,18 +452,25 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             signal_weights.append(wn["track_type"])
 
         if sp and wn.get("qual", 0) > 0:
-            qual_finish = sp * 0.85 + (field_size * 0.5) * 0.15
+            # Less regression when history is missing
+            regress = 0.15 if has_history else 0.08
+            qual_finish = sp * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(qual_finish)
             signal_weights.append(wn["qual"])
 
-        # Practice: use speed_score as proxy (laps_led + fastest_laps per race)
-        if th and th.get("speed_score", 0) > 0 and wn.get("practice", 0) > 0:
-            max_speed = max((t.get("speed_score", 0) for t in th_data.values()), default=1)
+        # Practice proxy: use speed_score from track history OR track type
+        speed_source = th if (th and th.get("speed_score", 0) > 0) else (
+            tt if (tt and tt.get("speed_score", 0) > 0) else None)
+        if speed_source and wn.get("practice", 0) > 0:
+            all_speeds = [t.get("speed_score", 0) for t in th_data.values()]
+            all_speeds += [t.get("speed_score", 0) for t in tt_data.values()]
+            max_speed = max(all_speeds) if all_speeds else 1
             if max_speed > 0:
-                speed_pct = th["speed_score"] / max_speed
+                speed_pct = speed_source["speed_score"] / max_speed
                 prac_finish = field_size * (1 - speed_pct * 0.8)
                 finish_signals.append(max(1, prac_finish))
-                signal_weights.append(wn["practice"] * 0.5)
+                weight_scale = 0.5 if has_history else 0.85
+                signal_weights.append(wn["practice"] * weight_scale)
 
         if od and wn.get("odds", 0) > 0:
             finish_signals.append(od)
@@ -552,11 +573,17 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
     # ── Allocate laps led (zero-sum with cutoff) ──
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
-    LEADER_FRAC = {"superspeedway": 0.60, "road": 0.22, "short": 0.18, "intermediate": 0.22}
-    ll_frac = LEADER_FRAC.get(parent, 0.22)
+    LEADER_FRAC = {
+        "superspeedway": 0.60, "road": 0.22, "short": 0.18,
+        "short_concrete": 0.16, "intermediate": 0.22, "intermediate_worn": 0.20,
+    }
+    ll_frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.22))
     n_leaders = max(3, int(field_size * ll_frac))
-    CONC = {"superspeedway": 0.6, "road": 1.0, "short": 2.0, "intermediate": 1.5}
-    ll_conc = CONC.get(parent, 1.5)
+    CONC = {
+        "superspeedway": 0.6, "road": 1.0, "short": 2.0,
+        "short_concrete": 2.2, "intermediate": 1.5, "intermediate_worn": 1.6,
+    }
+    ll_conc = CONC.get(track_type, CONC.get(parent, 1.5))
 
     allocated_ll = {}
     if race_laps > 0 and dom_raw_scores:
@@ -567,8 +594,11 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             allocated_ll = {d: (s / ll_total) * race_laps for d, s in ll_scores.items()}
 
     # ── Allocate fastest laps (zero-sum with cutoff) ──
-    FL_FRAC = {"superspeedway": 0.85, "road": 0.55, "short": 0.55, "intermediate": 0.65}
-    fl_frac = FL_FRAC.get(parent, 0.55)
+    FL_FRAC = {
+        "superspeedway": 0.85, "road": 0.55, "short": 0.55,
+        "short_concrete": 0.50, "intermediate": 0.65, "intermediate_worn": 0.60,
+    }
+    fl_frac = FL_FRAC.get(track_type, FL_FRAC.get(parent, 0.55))
     n_with_fl = max(5, int(field_size * fl_frac))
     fl_conc = max(0.5, ll_conc * 0.7)
 

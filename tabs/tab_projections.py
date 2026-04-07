@@ -101,13 +101,9 @@ TRACK_TYPE_CONCENTRATION = {
     "road": 1.0,            # Moderate
     "dirt": 1.2,            # Moderate-high
     "intermediate": 1.5,    # Concentrated
-    "intermediate_narrow": 1.6,  # Darlington — slightly more concentrated
-    "intermediate_worn": 1.5,
-    "intermediate_fast": 1.3,    # Michigan/Indy — more spread
-    "intermediate_unique": 1.4,  # Pocono
+    "intermediate_worn": 1.6,  # Darlington/Homestead — high wear, slightly more concentrated
     "short": 2.0,           # Very concentrated — single driver can dominate
     "short_concrete": 2.2,  # Bristol/Dover concrete — even more concentrated
-    "short_flat": 1.8,      # New Hampshire — flatter, slightly more spread
 }
 
 # Fallback dominator ceilings by track type (max laps led, max fastest laps)
@@ -116,13 +112,9 @@ TRACK_TYPE_DOM_DEFAULTS = {
     "road":                 {"max_ll": 60,  "max_fl": 30},
     "dirt":                 {"max_ll": 100, "max_fl": 50},
     "intermediate":         {"max_ll": 200, "max_fl": 80},
-    "intermediate_narrow":  {"max_ll": 200, "max_fl": 80},
     "intermediate_worn":    {"max_ll": 200, "max_fl": 80},
-    "intermediate_fast":    {"max_ll": 180, "max_fl": 70},
-    "intermediate_unique":  {"max_ll": 150, "max_fl": 60},
     "short":                {"max_ll": 350, "max_fl": 120},
     "short_concrete":       {"max_ll": 400, "max_fl": 130},
-    "short_flat":           {"max_ll": 300, "max_fl": 100},
 }
 
 
@@ -211,10 +203,10 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
         "superspeedway": 0.60,
         "road": 0.22,
         "dirt": 0.20,
-        "intermediate": 0.22, "intermediate_narrow": 0.20,
-        "intermediate_worn": 0.22, "intermediate_fast": 0.25,
-        "intermediate_unique": 0.22,
-        "short": 0.18, "short_concrete": 0.16, "short_flat": 0.20,
+        "intermediate": 0.22,
+        "intermediate_worn": 0.20,
+        "short": 0.18,
+        "short_concrete": 0.16,
     }
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.22))
@@ -255,10 +247,10 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
         "superspeedway": 0.85,
         "road": 0.55,
         "dirt": 0.50,
-        "intermediate": 0.65, "intermediate_narrow": 0.60,
-        "intermediate_worn": 0.65, "intermediate_fast": 0.70,
-        "intermediate_unique": 0.60,
-        "short": 0.55, "short_concrete": 0.50, "short_flat": 0.55,
+        "intermediate": 0.65,
+        "intermediate_worn": 0.60,
+        "short": 0.55,
+        "short_concrete": 0.50,
     }
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     frac = FL_FRAC.get(track_type, FL_FRAC.get(parent, 0.55))
@@ -551,6 +543,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         # We'll collect these but then use rank-ordering to spread the field
         finish_signals = []
         signal_weights = []
+        has_history = bool(th or tt)
 
         if th:
             finish_signals.append(th["avg_finish"])
@@ -561,16 +554,21 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             signal_weights.append(wn["track_type"])
 
         if qp:
-            # Qualifying position: regress slightly toward mid-field
-            qual_finish = qp * 0.85 + (field_size * 0.5) * 0.15
+            # Qualifying position: regress toward mid-field
+            # Less regression when history is missing (qual becomes primary signal)
+            regress = 0.15 if has_history else 0.08
+            qual_finish = qp * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(qual_finish)
             signal_weights.append(wn["qual"])
 
         if pr:
-            # Practice rank: regress more heavily since it's noisy
-            prac_finish = pr * 0.65 + (field_size * 0.5) * 0.35
+            # Practice rank: regress toward mid-field (noisy signal)
+            # Less regression and higher weight when history is missing
+            regress = 0.35 if has_history else 0.20
+            weight_scale = 0.5 if has_history else 0.85
+            prac_finish = pr * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(prac_finish)
-            signal_weights.append(wn["practice"] * 0.5)
+            signal_weights.append(wn["practice"] * weight_scale)
 
         if od and wn.get("odds", 0) > 0:
             finish_signals.append(od)

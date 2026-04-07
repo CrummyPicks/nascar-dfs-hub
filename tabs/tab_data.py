@@ -8,7 +8,7 @@ from src.data import (
     scrape_track_history,
     compute_fastest_laps, compute_avg_running_position,
 )
-from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df
+from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df, fuzzy_match_name
 from src.charts import (
     dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
 )
@@ -76,7 +76,14 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
                 return float(str(v).replace("+", ""))
             except (ValueError, TypeError):
                 return None
-        master["Win Odds"] = master["Driver"].map(odds_data).map(_parse_odds)
+        # Use fuzzy matching to handle name format differences (Jr. vs Jr, etc.)
+        odds_keys = list(odds_data.keys())
+        def _match_odds(driver):
+            if driver in odds_data:
+                return odds_data[driver]
+            matched = fuzzy_match_name(driver, odds_keys)
+            return odds_data.get(matched) if matched else None
+        master["Win Odds"] = master["Driver"].map(_match_odds).map(_parse_odds)
 
     # Qualifying
     if not qualifying_df.empty and "Qualifying Position" not in master.columns:

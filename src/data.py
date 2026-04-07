@@ -531,37 +531,45 @@ def query_track_type_stats(track_type: str) -> pd.DataFrame:
     """Pull stats filtered by track type from local DB.
 
     Handles both DB-level types (short, intermediate, road, superspeedway, dirt)
-    and config-level subtypes (short_concrete, intermediate_fast, etc.) by:
-    - Joining races → tracks to get t.track_type
-    - For subtypes: querying the parent type then filtering to subtype tracks
+    and config-level subtypes (short_concrete, intermediate_worn) by:
+    - For subtypes: filtering by track names belonging to that subtype
+    - For parent groups ("All Short"): including all tracks of that parent type
+    - For base types: querying by DB track_type directly
     """
     from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
     if not DB_PATH.exists():
         return pd.DataFrame()
 
-    # Determine which DB track_type(s) to query and optional track name filter
+    # Determine query strategy
     is_parent_group = track_type.startswith("All ")
+    # Detect subtypes: types in TRACK_TYPE_PARENT whose parent differs from themselves
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    is_subtype = (parent != track_type)
+
     if is_parent_group:
-        parent = track_type.replace("All ", "").lower()
-        db_type = parent
-        # Include all tracks whose subtype resolves to this parent
-        subtype_tracks = None  # no track filter — all tracks of parent type
-    elif track_type in TRACK_TYPE_PARENT and track_type not in ("superspeedway", "road", "short", "intermediate", "dirt"):
-        # It's a subtype like "short_concrete" — DB stores parent type
-        db_type = TRACK_TYPE_PARENT[track_type]
-        # Filter to only tracks that belong to this subtype
-        subtype_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type]
+        parent_name = track_type.replace("All ", "").lower()
+        # Get ALL tracks whose parent resolves to this group
+        filter_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                         if TRACK_TYPE_PARENT.get(tt, tt) == parent_name]
+    elif is_subtype:
+        # Subtype like "short_concrete" — filter to specific tracks
+        filter_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type]
     else:
-        # It's a base DB type (short, intermediate, etc.)
-        db_type = track_type
-        subtype_tracks = None
+        # Base type (short, intermediate, road, superspeedway)
+        # Get all tracks that belong to this type OR whose parent is this type
+        filter_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                         if tt == track_type or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+
+    if not filter_tracks:
+        return pd.DataFrame()
 
     try:
         conn = sqlite3.connect(str(DB_PATH))
+        placeholders = ",".join("?" for _ in filter_tracks)
 
-        query = """
+        query = f"""
             SELECT d.full_name as Driver,
-                   COUNT(*) as Races,
+                   COUNT(DISTINCT rr.race_id) as Races,
                    ROUND(AVG(rr.finish_pos),1) as "Avg Finish",
                    ROUND(AVG(rr.start_pos),1) as "Avg Start",
                    ROUND(AVG(dp.dfs_score),1) as "Avg DFS",
@@ -572,24 +580,17 @@ def query_track_type_stats(track_type: str) -> pd.DataFrame:
                    ROUND(AVG(rr.fastest_laps),1) as "Avg Fastest Laps"
             FROM race_results rr
             JOIN drivers d ON d.id=rr.driver_id
-            LEFT JOIN dfs_points dp ON dp.race_id=rr.race_id AND dp.driver_id=rr.driver_id
+            LEFT JOIN dfs_points dp ON dp.race_id=rr.race_id
+                AND dp.driver_id=rr.driver_id AND dp.platform='DraftKings'
             JOIN races r ON r.id=rr.race_id
             JOIN tracks t ON t.id=r.track_id
-            WHERE t.track_type = ?
-        """
-        params = [db_type]
-
-        if subtype_tracks:
-            placeholders = ",".join("?" for _ in subtype_tracks)
-            query += f" AND t.name IN ({placeholders})"
-            params.extend(subtype_tracks)
-
-        query += """
+            WHERE t.name IN ({placeholders})
             GROUP BY d.full_name
+            HAVING Races >= 1
             ORDER BY "Avg DFS" DESC
         """
 
-        df = pd.read_sql_query(query, conn, params=params)
+        df = pd.read_sql_query(query, conn, params=filter_tracks)
         conn.close()
         return df
     except Exception:

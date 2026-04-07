@@ -15,9 +15,21 @@ from src.utils import format_display_df, safe_fillna
 TRACK_TYPE_BADGES = {
     "superspeedway": "🔴",
     "intermediate": "🟡",
+    "intermediate_worn": "🟠",
     "short": "🟢",
+    "short_concrete": "🟣",
     "road": "🔵",
     "dirt": "🟤",
+}
+
+# Human-readable descriptions for track types
+TRACK_TYPE_DESCRIPTIONS = {
+    "superspeedway": "Superspeedway — Daytona, Atlanta, Talladega, Indianapolis",
+    "road": "Road Course — COTA, Sonoma, Watkins Glen, Chicago, Charlotte Roval, etc.",
+    "short": "Short Track — Phoenix, Martinsville, Richmond, Iowa, New Hampshire, etc.",
+    "short_concrete": "Short Concrete — Bristol, Dover",
+    "intermediate": "Intermediate — Las Vegas, Kansas, Charlotte, Texas, Nashville, Michigan, Pocono, etc.",
+    "intermediate_worn": "Intermediate Worn — Darlington, Homestead (high tire wear)",
 }
 
 
@@ -27,7 +39,15 @@ def _format_type_label(t):
         return t
     if t.startswith("All "):
         return t
-    return t.replace("_", " — ").title() if "_" in t else t.title()
+    # Clean display name
+    label = t.replace("_", " ").title()
+    # Add track list for subtypes
+    tracks = _tracks_for_type(t)
+    if tracks and len(tracks) <= 4:
+        track_shorts = [tn.split(" Motor")[0].split(" International")[0].split(" Raceway")[0].split(" Speedway")[0]
+                        for tn in tracks]
+        return f"{label} ({', '.join(track_shorts)})"
+    return label
 
 
 def _tracks_for_type(track_type: str) -> list:
@@ -42,17 +62,21 @@ def _tracks_for_type(track_type: str) -> list:
 def render(*, track_name, track_type, series_id):
     """Render the Track History tab."""
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    badge = TRACK_TYPE_BADGES.get(parent_type, "")
+    badge = TRACK_TYPE_BADGES.get(track_type, TRACK_TYPE_BADGES.get(parent_type, ""))
     display_type = track_type.replace("_", " ").title()
     st.markdown(f"### {track_name} — Driver History")
     st.caption(f"Track type: {badge} **{display_type}**")
 
-    # Track type filter
+    # Track type filter — show all types + parent groups (only if parent has subtypes)
     filter_cols = st.columns([2, 3])
     with filter_cols[0]:
-        type_options = ["This Track"] + sorted(set(TRACK_TYPE_MAP.values())) + sorted(set(
+        all_types = sorted(set(TRACK_TYPE_MAP.values()))
+        # Only add "All X" parent groups if they actually have subtypes
+        parent_groups = sorted(set(
             f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())
+            if sum(1 for v in TRACK_TYPE_PARENT.values() if v == p) > 1
         ))
+        type_options = ["This Track"] + all_types + parent_groups
         type_filter = st.selectbox("Track Type Filter", type_options,
                                     key="th_type_filter", label_visibility="collapsed",
                                     format_func=_format_type_label,

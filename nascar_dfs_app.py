@@ -17,7 +17,7 @@ try:
         compute_fastest_laps, detect_prerace, filter_point_races,
         parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
         sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
-        estimate_odds_from_salaries,
+        estimate_odds_from_salaries, _clean_api_name,
     )
 except ImportError as e:
     import streamlit as st
@@ -280,6 +280,10 @@ with st.expander("Settings & Data Upload", expanded=False):
             if odds_data:
                 odds_source = "salary_estimate"
                 st.caption("📊 Using salary-estimated odds (Action Network unavailable)")
+
+    # Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
+    if odds_data:
+        odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
 
     # Persist odds to DB for historical backtesting
     if odds_data and race_id:

@@ -19,9 +19,12 @@ SERIES_LABELS = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
 # TRACK TYPE CLASSIFICATION
 # ----------------------------
 TRACK_TYPE_MAP = {
+    # Superspeedway — high-speed pack racing (2.5+ mi ovals)
     "Daytona International Speedway": "superspeedway",
     "Atlanta Motor Speedway": "superspeedway",
     "Talladega Superspeedway": "superspeedway",
+    "Indianapolis Motor Speedway": "superspeedway",
+    # Road courses
     "Circuit of the Americas": "road",
     "Circuit of The Americas": "road",
     "Sonoma Raceway": "road",
@@ -31,6 +34,7 @@ TRACK_TYPE_MAP = {
     "Grand Prix of St. Petersburg": "road",
     "San Diego Street Course": "road",
     "Portland International Raceway": "road",
+    # Short tracks (< 1 mile ovals)
     "Phoenix Raceway": "short",
     "Martinsville Speedway": "short",
     "Richmond Raceway": "short",
@@ -38,9 +42,11 @@ TRACK_TYPE_MAP = {
     "North Wilkesboro Speedway": "short",
     "Rockingham Speedway": "short",
     "Bowman Gray Stadium": "short",
+    "New Hampshire Motor Speedway": "short",
+    # Short concrete — high-banked concrete surface (Bristol/Dover)
     "Bristol Motor Speedway": "short_concrete",
     "Dover Motor Speedway": "short_concrete",
-    "New Hampshire Motor Speedway": "short_flat",
+    # Intermediate — standard 1.5-mile ovals
     "Las Vegas Motor Speedway": "intermediate",
     "Kansas Speedway": "intermediate",
     "Charlotte Motor Speedway": "intermediate",
@@ -48,11 +54,11 @@ TRACK_TYPE_MAP = {
     "Nashville Superspeedway": "intermediate",
     "World Wide Technology Raceway": "intermediate",
     "Chicagoland Speedway": "intermediate",
-    "Darlington Raceway": "intermediate_narrow",
+    "Michigan International Speedway": "intermediate",
+    "Pocono Raceway": "intermediate",
+    # Intermediate worn — high tire wear/abrasive surface
+    "Darlington Raceway": "intermediate_worn",
     "Homestead-Miami Speedway": "intermediate_worn",
-    "Michigan International Speedway": "intermediate_fast",
-    "Pocono Raceway": "intermediate_unique",
-    "Indianapolis Motor Speedway": "intermediate_fast",
 }
 
 # Map subtypes back to parent type for broader comparisons
@@ -61,12 +67,8 @@ TRACK_TYPE_PARENT = {
     "road": "road",
     "short": "short",
     "short_concrete": "short",
-    "short_flat": "short",
     "intermediate": "intermediate",
-    "intermediate_narrow": "intermediate",
     "intermediate_worn": "intermediate",
-    "intermediate_fast": "intermediate",
-    "intermediate_unique": "intermediate",
 }
 
 TRACK_TYPE_COLORS = {
@@ -74,12 +76,8 @@ TRACK_TYPE_COLORS = {
     "road": "#f59e0b",
     "short": "#8b5cf6",
     "short_concrete": "#a78bfa",
-    "short_flat": "#c4b5fd",
     "intermediate": "#3b82f6",
-    "intermediate_narrow": "#60a5fa",
     "intermediate_worn": "#93c5fd",
-    "intermediate_fast": "#2563eb",
-    "intermediate_unique": "#1d4ed8",
 }
 
 # ----------------------------
