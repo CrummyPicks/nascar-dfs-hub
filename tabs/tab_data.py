@@ -67,13 +67,15 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     if not fd_df.empty:
         master = master.merge(fd_df.drop_duplicates("Driver"), on="Driver", how="left")
 
-    # Betting odds (store as numeric for proper sorting)
+    # Betting odds (store as numeric for proper sorting, rounded for display)
     if odds_data:
+        from src.data import round_odds
         def _parse_odds(v):
             if v is None or str(v).strip() in ("", "None", "null"):
                 return None
             try:
-                return float(str(v).replace("+", ""))
+                raw = int(float(str(v).replace("+", "")))
+                return round_odds(raw)
             except (ValueError, TypeError):
                 return None
         # Use fuzzy matching to handle name format differences (Jr. vs Jr, etc.)

@@ -80,10 +80,18 @@ def _get_race_laps(feed):
 
 
 def _expected_finish_from_avg(avg_finish, field_size=38):
-    """Convert an average finish to expected DK finish points."""
-    # Clamp to 1-40 range
-    ef = max(1, min(40, round(avg_finish)))
-    return DK_FINISH_POINTS.get(ef, 0)
+    """Convert a projected finish to expected DK finish points.
+
+    Uses linear interpolation between adjacent positions for fractional
+    finishes (e.g., 5.3 → 70% of P5 pts + 30% of P6 pts).
+    """
+    ef = max(1.0, min(40.0, avg_finish))
+    lo = int(ef)
+    hi = min(lo + 1, 40)
+    frac = ef - lo
+    pts_lo = DK_FINISH_POINTS.get(lo, 0)
+    pts_hi = DK_FINISH_POINTS.get(hi, 0)
+    return pts_lo + (pts_hi - pts_lo) * frac
 
 
 def _dominator_share(laps_led_history, total_laps_history, races):
@@ -507,6 +515,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                        f"Odds weight redistributed to other signals.")
 
     # ── Build odds display lookup for the projections table ──────────────────
+    from src.data import round_odds
     driver_odds_display = {}  # d -> {"odds_str": "+350", "impl_pct": 22.2}
     if odds_data:
         for name, odds_str in odds_data.items():
@@ -522,9 +531,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     continue
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    sign = "+" if oval > 0 else ""
+                    rounded = round_odds(oval)
                     driver_odds_display[matched] = {
-                        "odds_str": f"{sign}{oval}",
+                        "odds_str": rounded,  # numeric for sorting
                         "impl_pct": round(impl, 1),
                     }
             except (ValueError, TypeError):
@@ -549,33 +558,32 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         has_history = bool(th or tt)
 
         if th:
+            # Weight track history by experience: more races = more reliable
+            races_mult = min(1.5, 0.7 + th["races"] * 0.1)  # 1 race=0.8x, 8+=1.5x
             finish_signals.append(th["avg_finish"])
-            signal_weights.append(wn["track"])
+            signal_weights.append(wn["track"] * races_mult)
 
         if tt:
             finish_signals.append(tt["avg_finish"])
             signal_weights.append(wn["track_type"])
 
         if qp:
-            # Qualifying position: regress toward mid-field
-            # Less regression when history is missing (qual becomes primary signal)
-            regress = 0.15 if has_history else 0.08
-            qual_finish = qp * (1 - regress) + (field_size * 0.5) * regress
+            # Qualifying position: less regression — qual is a strong signal
+            regress = 0.10 if has_history else 0.05
+            qual_finish = qp * (1 - regress) + (field_size * 0.45) * regress
             finish_signals.append(qual_finish)
-            signal_weights.append(wn["qual"])
+            signal_weights.append(wn["qual"] * (1.0 if has_history else 1.4))
 
         if pr:
-            # Practice rank: regress toward mid-field (noisy signal)
-            # Less regression and higher weight when history is missing
-            regress = 0.35 if has_history else 0.20
-            weight_scale = 0.5 if has_history else 0.85
+            # Practice rank: moderate noise, boost when no history
+            regress = 0.30 if has_history else 0.15
             prac_finish = pr * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(prac_finish)
-            signal_weights.append(wn["practice"] * weight_scale)
+            signal_weights.append(wn["practice"] * (0.6 if has_history else 1.0))
 
         if od and wn.get("odds", 0) > 0:
             finish_signals.append(od)
-            signal_weights.append(wn["odds"] * 1.2)  # boost odds influence
+            signal_weights.append(wn["odds"] * 1.3)  # odds are the strongest signal
 
         if finish_signals:
             total_w = sum(signal_weights)
@@ -672,14 +680,22 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     n = len(sorted_drivers)
 
     driver_proj_finish = {}
+    # The raw scores carry meaningful distance info — blend rank-order mapping
+    # with the actual raw score to preserve signal strength.
+    raw_vals = [s for _, s in sorted_drivers]
+    raw_min, raw_max = min(raw_vals), max(raw_vals)
+    raw_range = max(raw_max - raw_min, 1.0)
+
     for rank_idx, (d, raw_score) in enumerate(sorted_drivers):
-        # rank_idx 0 = best (lowest raw finish), rank_idx n-1 = worst
-        # Map to finish positions 1 through field_size
         if n > 1:
-            # Use a power curve: top drivers spread out, back of field compresses
             t = rank_idx / (n - 1)  # 0.0 (best) to 1.0 (worst)
-            # Concave mapping: spreads the top, compresses the bottom
-            proj_finish = 1 + (field_size - 1) * (t ** 0.85)
+            # Rank-based component: spread top more aggressively
+            rank_finish = 1 + (field_size - 1) * (t ** 0.82)
+            # Raw-score component: preserves actual signal distances
+            raw_t = (raw_score - raw_min) / raw_range
+            raw_finish = 1 + (field_size - 1) * raw_t
+            # Blend: 60% rank-based, 40% raw-score-based
+            proj_finish = rank_finish * 0.6 + raw_finish * 0.4
         else:
             proj_finish = field_size * 0.5
 
@@ -706,29 +722,26 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         fl_pts = proj_fastest * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
 
-        # Track/type scores for display
+        # Track/type scores for display (None when no data — not 0)
         th = th_data.get(d)
         tt = tt_data.get(d)
-        track_score = 0
+        track_score = None
         if th:
             finish_comp = max(0, (40 - th["avg_finish"]) / 39 * 100)
             rating_comp = min(100, th["avg_rating"] / 1.5) if th["avg_rating"] else 0
             ll_per_race = th["laps_led"] / max(th["races"], 1)
             ll_comp = min(100, ll_per_race * 2.5)  # ~40 ll/race = 100
             track_score = round(finish_comp * 0.45 + rating_comp * 0.30 + ll_comp * 0.25, 1)
-        tt_score = 0
+        tt_score = None
         if tt:
             finish_comp = max(0, (40 - tt["avg_finish"]) / 39 * 100)
             ll_comp = min(100, tt.get("laps_led_per_race", 0) * 2.5)
             tt_score = round(finish_comp * 0.70 + ll_comp * 0.30, 1)
 
         odds_info = driver_odds_display.get(d, {})
-        # Store odds as numeric for proper sorting (format_display_df handles Int64)
-        odds_str = odds_info.get("odds_str", "")
-        try:
-            odds_numeric = int(str(odds_str).replace("+", "")) if odds_str else None
-        except (ValueError, TypeError):
-            odds_numeric = None
+        odds_val = odds_info.get("odds_str", None)
+        # odds_str is now numeric from round_odds()
+        odds_numeric = odds_val if isinstance(odds_val, (int, float)) else None
 
         rows.append({
             "Driver": d,
@@ -776,7 +789,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     display_cols = ["Driver"]
     if "Car" in proj.columns:
         display_cols.append("Car")
-    if "Win Odds" in proj.columns and proj["Win Odds"].astype(bool).any():
+    if "Win Odds" in proj.columns and proj["Win Odds"].notna().any():
         display_cols.append("Win Odds")
     if "Impl %" in proj.columns and proj["Impl %"].notna().any():
         display_cols.append("Impl %")

@@ -194,12 +194,26 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                           "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap",
                           "Qual Speed", "Best Lap Speed"}
 
+    # Odds columns: format with "+" prefix for positive values
+    odds_patterns = {"Win Odds", "Odds"}
+
     for col in result.columns:
         # Handle MultiIndex columns
         col_name = col[-1] if isinstance(col, tuple) else col
         dtype_str = str(result[col].dtype)
 
-        if col_name in int_patterns or col_name.endswith("Rank"):
+        if col_name in odds_patterns:
+            # Format odds as "+350" / "-200" strings
+            def _fmt_odds(v):
+                if pd.isna(v):
+                    return None
+                try:
+                    iv = int(float(v))
+                    return f"+{iv}" if iv > 0 else str(iv)
+                except (ValueError, TypeError):
+                    return v
+            result[col] = result[col].map(_fmt_odds)
+        elif col_name in int_patterns or col_name.endswith("Rank"):
             if dtype_str not in ("object", "str", "string", "StringDtype"):
                 try:
                     result[col] = pd.to_numeric(result[col], errors="coerce").astype("float64").astype("Int64")

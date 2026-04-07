@@ -910,6 +910,23 @@ def fetch_nascar_odds() -> dict:
         return {}
 
 
+def round_odds(odds_val: int) -> int:
+    """Round American odds to clean increments for display.
+
+    ≤500: nearest 50   (+150, +350, +500)
+    501-2000: nearest 100  (+600, +1200)
+    2001+: nearest 500  (+2500, +5000, +10000)
+    """
+    v = abs(odds_val)
+    if v <= 500:
+        v = round(v / 50) * 50
+    elif v <= 2000:
+        v = round(v / 100) * 100
+    else:
+        v = round(v / 500) * 500
+    return max(v, 100) if odds_val >= 0 else -max(v, 100)
+
+
 def estimate_odds_from_salaries(dk_df: pd.DataFrame) -> dict:
     """Derive estimated American win odds from DK salary as a fallback.
 
@@ -949,6 +966,7 @@ def estimate_odds_from_salaries(dk_df: pd.DataFrame) -> dict:
         # Using exponential decay: odds = base * e^(-k * norm)
         odds = int(350 * math.exp(3.5 * (1 - norm)))
         odds = max(150, min(20000, odds))  # clamp
+        odds = round_odds(odds)
 
         result[name] = f"+{odds}"
 
