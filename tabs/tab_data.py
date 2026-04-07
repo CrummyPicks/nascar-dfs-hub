@@ -110,12 +110,10 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
                 prac_cols.append(col)
         master = master.merge(lap_averages_df[prac_cols].drop_duplicates("Driver"), on="Driver", how="left")
 
-    # Track History
+    # Track History — use fuzzy matching since API names may differ from DA names
     with st.spinner(f"Loading {track_name} history..."):
         th_df = scrape_track_history(track_name, series_id)
     if not th_df.empty:
-        # Rename track history columns to avoid clashes with Results columns
-        # Use "TH_" prefix internally, then display without prefix under group header
         th_rename = {
             "Races": "TH_Races", "Avg Finish": "TH_Avg Finish", "Avg Start": "TH_Avg Start",
             "Avg Rating": "TH_Rating", "Wins": "TH_Wins", "Top 5": "TH_T5",
@@ -124,7 +122,22 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         }
         th_merge = th_df.rename(columns=th_rename)
         th_cols = ["Driver"] + [v for v in th_rename.values() if v in th_merge.columns]
-        master = master.merge(th_merge[th_cols].drop_duplicates("Driver"), on="Driver", how="left")
+        th_dedup = th_merge[th_cols].drop_duplicates("Driver")
+        # Build fuzzy name mapping: master Driver → track history Driver
+        th_names = th_dedup["Driver"].tolist()
+        name_map = {}
+        for drv in master["Driver"].unique():
+            if drv in th_names:
+                name_map[drv] = drv
+            else:
+                matched = fuzzy_match_name(drv, th_names)
+                if matched:
+                    name_map[drv] = matched
+        # Map master drivers to TH driver names, merge, then restore original names
+        master["_th_key"] = master["Driver"].map(name_map)
+        th_dedup = th_dedup.rename(columns={"Driver": "_th_key"})
+        master = master.merge(th_dedup, on="_th_key", how="left")
+        master = master.drop(columns=["_th_key"])
 
     # Search
     search = st.text_input("Search driver / team / make...", "", placeholder="Type to filter...",

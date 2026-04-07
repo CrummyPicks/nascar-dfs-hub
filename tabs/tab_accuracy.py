@@ -444,19 +444,18 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         has_history = bool(th or tt)
 
         if th and wn.get("track", 0) > 0:
-            races_mult = min(1.5, 0.7 + th.get("races", 1) * 0.1)
             finish_signals.append(th["avg_finish"])
-            signal_weights.append(wn["track"] * races_mult)
+            signal_weights.append(wn["track"])
 
         if tt and wn.get("track_type", 0) > 0:
             finish_signals.append(tt["avg_finish"])
             signal_weights.append(wn["track_type"])
 
         if sp and wn.get("qual", 0) > 0:
-            regress = 0.10 if has_history else 0.05
-            qual_finish = sp * (1 - regress) + (field_size * 0.45) * regress
+            regress = 0.15
+            qual_finish = sp * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(qual_finish)
-            signal_weights.append(wn["qual"] * (1.0 if has_history else 1.4))
+            signal_weights.append(wn["qual"])
 
         # Practice proxy: use speed_score from track history OR track type
         speed_source = th if (th and th.get("speed_score", 0) > 0) else (
@@ -469,12 +468,11 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                 speed_pct = speed_source["speed_score"] / max_speed
                 prac_finish = field_size * (1 - speed_pct * 0.8)
                 finish_signals.append(max(1, prac_finish))
-                weight_scale = 0.5 if has_history else 0.85
-                signal_weights.append(wn["practice"] * weight_scale)
+                signal_weights.append(wn["practice"])
 
         if od and wn.get("odds", 0) > 0:
             finish_signals.append(od)
-            signal_weights.append(wn["odds"] * 1.2)
+            signal_weights.append(wn["odds"])
 
         if finish_signals and sum(signal_weights) > 0:
             total_w = sum(signal_weights)
@@ -563,18 +561,12 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
     # ── Rank-order finish spreading ──
     sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
     n = len(sorted_drivers)
-    raw_vals = [s for _, s in sorted_drivers]
-    raw_min, raw_max = min(raw_vals), max(raw_vals)
-    raw_range = max(raw_max - raw_min, 1.0)
 
     driver_proj_finish = {}
     for rank_idx, (d, raw_score) in enumerate(sorted_drivers):
         if n > 1:
             t = rank_idx / (n - 1)
-            rank_finish = 1 + (field_size - 1) * (t ** 0.82)
-            raw_t = (raw_score - raw_min) / raw_range
-            raw_finish = 1 + (field_size - 1) * raw_t
-            proj_finish = rank_finish * 0.6 + raw_finish * 0.4
+            proj_finish = 1 + (field_size - 1) * (t ** 0.85)
         else:
             proj_finish = field_size * 0.5
         driver_proj_finish[d] = max(1, min(field_size, proj_finish))
@@ -622,18 +614,15 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
     proj_dk = {}
     for d in drivers:
         proj_finish = driver_proj_finish[d]
-        # Interpolated finish points for fractional positions
-        ef = max(1.0, min(40.0, proj_finish))
-        lo, hi = int(ef), min(int(ef) + 1, 40)
-        frac = ef - lo
-        finish_pts = DK_FINISH_POINTS.get(lo, 0) + (DK_FINISH_POINTS.get(hi, 0) - DK_FINISH_POINTS.get(lo, 0)) * frac
+        pf_int = round(proj_finish)  # DK uses integer positions
+        finish_pts = DK_FINISH_POINTS.get(max(1, min(40, pf_int)), 0)
 
         sp = start_positions.get(d)
-        start = sp if sp else round(proj_finish)
-        diff_pts = (start - proj_finish) * 1.0
+        start = sp if sp else pf_int
+        diff_pts = int(start - pf_int)
 
-        led_pts = allocated_ll.get(d, 0) * 0.25
-        fl_pts = allocated_fl.get(d, 0) * 0.45
+        led_pts = round(allocated_ll.get(d, 0)) * 0.25
+        fl_pts = round(allocated_fl.get(d, 0)) * 0.45
 
         proj_dk[d] = finish_pts + diff_pts + led_pts + fl_pts
 
@@ -1577,10 +1566,10 @@ def _display_backtest_results(results_df, series_name):
                         max_spd = max((t.get("speed_score", 0) for t in rd["th_data"].values()), default=1)
                         if max_spd > 0:
                             finish_signals.append(max(1, field_size * (1 - th["speed_score"] / max_spd * 0.8)))
-                            signal_weights.append(wn["practice"] * 0.5)
+                            signal_weights.append(wn["practice"])
                     if od and wn.get("odds", 0) > 0:
                         finish_signals.append(od)
-                        signal_weights.append(wn["odds"] * 1.2)
+                        signal_weights.append(wn["odds"])
                     if finish_signals:
                         raw_scores[d] = sum(f * w for f, w in zip(finish_signals, signal_weights)) / sum(signal_weights)
                     else:
@@ -1616,20 +1605,14 @@ def _display_backtest_results(results_df, series_name):
                     fl_w_list.append(0.10)
                     fl_scores_dict[d] = sum(s * w for s, w in zip(fl_s_list, fl_w_list)) / sum(fl_w_list) if fl_s_list else 0
 
-                # Rank-order finish spreading (blended with raw signal)
+                # Rank-order finish spreading
                 sorted_d = sorted(raw_scores.items(), key=lambda x: x[1])
                 n = len(sorted_d)
-                r_vals = [s for _, s in sorted_d]
-                r_min, r_max = min(r_vals), max(r_vals)
-                r_range = max(r_max - r_min, 1.0)
                 proj_finishes = {}
                 for rank_idx, (d, rs) in enumerate(sorted_d):
                     if n > 1:
                         t = rank_idx / (n - 1)
-                        rank_f = 1 + (field_size - 1) * (t ** 0.82)
-                        raw_t = (rs - r_min) / r_range
-                        raw_f = 1 + (field_size - 1) * raw_t
-                        proj_finishes[d] = max(1, min(field_size, rank_f * 0.6 + raw_f * 0.4))
+                        proj_finishes[d] = max(1, min(field_size, 1 + (field_size - 1) * (t ** 0.85)))
                     else:
                         proj_finishes[d] = field_size * 0.5
 
@@ -1680,11 +1663,9 @@ def _display_backtest_results(results_df, series_name):
                     p_ll = allocated_ll.get(d, 0)
                     p_fl = allocated_fl.get(d, 0)
 
-                    ef2 = max(1.0, min(40.0, pf))
-                    lo2, hi2 = int(ef2), min(int(ef2) + 1, 40)
-                    frac2 = ef2 - lo2
-                    finish_pts = DK_FINISH_POINTS.get(lo2, 0) + (DK_FINISH_POINTS.get(hi2, 0) - DK_FINISH_POINTS.get(lo2, 0)) * frac2
-                    diff_pts = (start - pf) * 1.0
+                    pf_int = round(pf)
+                    finish_pts = DK_FINISH_POINTS.get(max(1, min(40, pf_int)), 0)
+                    diff_pts = int(start - pf_int)
                     led_pts = p_ll * 0.25
                     fl_pts = p_fl * 0.45
                     proj_total = finish_pts + diff_pts + led_pts + fl_pts

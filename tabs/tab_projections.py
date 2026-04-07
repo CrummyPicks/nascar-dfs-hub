@@ -82,16 +82,10 @@ def _get_race_laps(feed):
 def _expected_finish_from_avg(avg_finish, field_size=38):
     """Convert a projected finish to expected DK finish points.
 
-    Uses linear interpolation between adjacent positions for fractional
-    finishes (e.g., 5.3 → 70% of P5 pts + 30% of P6 pts).
+    Rounds to nearest integer position since DK awards discrete finish points.
     """
-    ef = max(1.0, min(40.0, avg_finish))
-    lo = int(ef)
-    hi = min(lo + 1, 40)
-    frac = ef - lo
-    pts_lo = DK_FINISH_POINTS.get(lo, 0)
-    pts_hi = DK_FINISH_POINTS.get(hi, 0)
-    return pts_lo + (pts_hi - pts_lo) * frac
+    ef = max(1, min(40, round(avg_finish)))
+    return DK_FINISH_POINTS.get(ef, 0)
 
 
 def _dominator_share(laps_led_history, total_laps_history, races):
@@ -558,32 +552,30 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         has_history = bool(th or tt)
 
         if th:
-            # Weight track history by experience: more races = more reliable
-            races_mult = min(1.5, 0.7 + th["races"] * 0.1)  # 1 race=0.8x, 8+=1.5x
             finish_signals.append(th["avg_finish"])
-            signal_weights.append(wn["track"] * races_mult)
+            signal_weights.append(wn["track"])
 
         if tt:
             finish_signals.append(tt["avg_finish"])
             signal_weights.append(wn["track_type"])
 
         if qp:
-            # Qualifying position: less regression — qual is a strong signal
-            regress = 0.10 if has_history else 0.05
-            qual_finish = qp * (1 - regress) + (field_size * 0.45) * regress
+            # Qualifying position: regress toward mid-field (noisy pre-race signal)
+            regress = 0.15
+            qual_finish = qp * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(qual_finish)
-            signal_weights.append(wn["qual"] * (1.0 if has_history else 1.4))
+            signal_weights.append(wn["qual"])
 
         if pr:
-            # Practice rank: moderate noise, boost when no history
-            regress = 0.30 if has_history else 0.15
+            # Practice rank: regress toward mid-field (noisiest signal)
+            regress = 0.30
             prac_finish = pr * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(prac_finish)
-            signal_weights.append(wn["practice"] * (0.6 if has_history else 1.0))
+            signal_weights.append(wn["practice"])
 
         if od and wn.get("odds", 0) > 0:
             finish_signals.append(od)
-            signal_weights.append(wn["odds"] * 1.3)  # odds are the strongest signal
+            signal_weights.append(wn["odds"])
 
         if finish_signals:
             total_w = sum(signal_weights)
@@ -680,22 +672,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     n = len(sorted_drivers)
 
     driver_proj_finish = {}
-    # The raw scores carry meaningful distance info — blend rank-order mapping
-    # with the actual raw score to preserve signal strength.
-    raw_vals = [s for _, s in sorted_drivers]
-    raw_min, raw_max = min(raw_vals), max(raw_vals)
-    raw_range = max(raw_max - raw_min, 1.0)
-
     for rank_idx, (d, raw_score) in enumerate(sorted_drivers):
         if n > 1:
             t = rank_idx / (n - 1)  # 0.0 (best) to 1.0 (worst)
-            # Rank-based component: spread top more aggressively
-            rank_finish = 1 + (field_size - 1) * (t ** 0.82)
-            # Raw-score component: preserves actual signal distances
-            raw_t = (raw_score - raw_min) / raw_range
-            raw_finish = 1 + (field_size - 1) * raw_t
-            # Blend: 60% rank-based, 40% raw-score-based
-            proj_finish = rank_finish * 0.6 + raw_finish * 0.4
+            # Power curve: top drivers spread out, back of field compresses
+            proj_finish = 1 + (field_size - 1) * (t ** 0.85)
         else:
             proj_finish = field_size * 0.5
 
@@ -714,12 +695,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         # Start position = qualifying pos if known, else projected finish
         start_pos = qual_pos.get(d) or round(proj_finish)
+        proj_finish_int = round(proj_finish)  # DK uses integer positions
 
-        # DK scoring components
-        finish_pts = _expected_finish_from_avg(proj_finish)
-        diff_pts = (start_pos - proj_finish) * 1.0  # DK: ±1.0 per position
-        led_pts = proj_laps_led * 0.25
-        fl_pts = proj_fastest * 0.45
+        # DK scoring components (all based on integer positions)
+        finish_pts = _expected_finish_from_avg(proj_finish_int)
+        diff_pts = int(start_pos - proj_finish_int)  # DK: ±1 per position, always integer
+        led_pts = round(proj_laps_led) * 0.25
+        fl_pts = round(proj_fastest) * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
 
         # Track/type scores for display (None when no data — not 0)
