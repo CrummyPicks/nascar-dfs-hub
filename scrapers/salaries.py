@@ -226,9 +226,7 @@ def get_json(url: str, extra_headers: dict | None = None,
 
 # DraftKings API endpoints (try in order; DK occasionally restructures these)
 DK_CONTEST_URLS = [
-    "https://api.draftkings.com/contests/v1/contests?sport=NASCAR",
-    "https://api.draftkings.com/contests/v1/contests?sport=nascar",
-    "https://api.draftkings.com/draftgroups/v1/draftgroups?sport=NASCAR&site=DraftKings",
+    "https://www.draftkings.com/lobby/getcontests?sport=NASCAR",
 ]
 DK_DRAFTABLES_URL = "https://api.draftkings.com/draftgroups/v1/draftgroups/{}/draftables"
 
@@ -268,6 +266,12 @@ def scrape_dk(conn, series_filter: list[str], dry_run: bool) -> None:
     else:
         print(f"  [WARN] Unexpected DK response type: {type(data)}")
         return
+
+    # Lobby endpoint returns all sports — filter to NASCAR only
+    draft_groups = [
+        g for g in draft_groups
+        if (g.get("Sport") or g.get("sport") or "").upper() == "NASCAR"
+    ]
 
     if not draft_groups:
         print("  [i] No upcoming NASCAR draft groups found on DraftKings.")

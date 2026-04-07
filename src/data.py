@@ -686,8 +686,7 @@ def query_projections(race_id: int = None, platform: str = "DraftKings") -> pd.D
 # ============================================================
 
 DK_CONTEST_URLS = [
-    "https://api.draftkings.com/contests/v1/contests?sport=NASCAR",
-    "https://api.draftkings.com/contests/v1/contests?sport=nascar",
+    "https://www.draftkings.com/lobby/getcontests?sport=NASCAR",
 ]
 DK_DRAFTABLES_URL = "https://api.draftkings.com/draftgroups/v1/draftgroups/{}/draftables"
 
@@ -717,10 +716,15 @@ def fetch_dk_salaries_live() -> pd.DataFrame:
         return pd.DataFrame()
 
     draft_groups = data.get("DraftGroups") or data.get("draftGroups") or []
+    # Lobby endpoint returns all sports — filter to NASCAR only
+    draft_groups = [
+        g for g in draft_groups
+        if (g.get("Sport") or g.get("sport") or "").upper() == "NASCAR"
+    ]
     if not draft_groups:
         return pd.DataFrame()
 
-    # Get the first (most upcoming) group
+    # Get the first (most upcoming) NASCAR group
     group = draft_groups[0]
     group_id = group.get("DraftGroupId") or group.get("draftGroupId")
     if not group_id:
@@ -776,13 +780,31 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
 
-        # Find or match DB race
+        # Find or match DB race — try name, then api_race_id, then date
         db_race = conn.execute(
             "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
             (series_id, race_name)
         ).fetchone()
 
+        if not db_race and race_id:
+            db_race = conn.execute(
+                "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+            ).fetchone()
+
         if not db_race:
+            from datetime import datetime as _dt
+            today = _dt.now().strftime("%Y-%m-%d")
+            db_race = conn.execute(
+                """SELECT id FROM races
+                   WHERE series_id = ?
+                   AND ABS(julianday(race_date) - julianday(?)) <= 7
+                   ORDER BY ABS(julianday(race_date) - julianday(?))
+                   LIMIT 1""",
+                (series_id, today, today)
+            ).fetchone()
+
+        if not db_race:
+            conn.close()
             return 0
 
         db_race_id = db_race["id"]
@@ -1015,6 +1037,39 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
 
     # Resolve API race_id to internal DB race_id
     db_race_id = _resolve_db_race_id(race_id)
+
+    # Fallback: if api_race_id not found, try matching by date from API
+    if not db_race_id:
+        try:
+            for sid in [1, 2, 3]:
+                api_url = f"{NASCAR_API_BASE}/2026/{sid}/race_list_basic.json"
+                resp = requests.get(api_url, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                for r in resp.json():
+                    if r.get("race_id") == race_id:
+                        race_date = (r.get("race_date") or "")[:10]
+                        if race_date:
+                            conn_tmp = sqlite3.connect(str(DB_PATH))
+                            row = conn_tmp.execute(
+                                "SELECT id FROM races WHERE race_date = ? AND series_id = ?",
+                                (race_date, sid)
+                            ).fetchone()
+                            if row:
+                                db_race_id = row[0]
+                                # Fix the api_race_id so future lookups work
+                                conn_tmp.execute(
+                                    "UPDATE races SET api_race_id = ? WHERE id = ?",
+                                    (race_id, db_race_id)
+                                )
+                                conn_tmp.commit()
+                            conn_tmp.close()
+                        break
+                if db_race_id:
+                    break
+        except Exception:
+            pass
+
     if not db_race_id:
         return 0
 

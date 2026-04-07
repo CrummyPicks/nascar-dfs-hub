@@ -154,6 +154,51 @@ def fetch_and_save_odds(series_id: int, year: int):
         print("No DK salary data available")
 
 
+def verify_api_race_ids():
+    """Verify and fix api_race_id values that may be wrong (e.g. duplicates)."""
+    import sqlite3
+    from src.config import DB_PATH
+
+    if not DB_PATH.exists():
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+
+    # Check for duplicate api_race_ids (a clear sign of corruption)
+    dupes = conn.execute("""
+        SELECT api_race_id, COUNT(*) as cnt
+        FROM races
+        WHERE api_race_id IS NOT NULL
+        GROUP BY api_race_id
+        HAVING cnt > 1
+    """).fetchall()
+
+    if not dupes:
+        conn.close()
+        return
+
+    print(f"\n  Found {len(dupes)} duplicate api_race_id values — fixing...")
+
+    for api_rid, cnt in dupes:
+        races = conn.execute(
+            "SELECT id, race_name, race_date FROM races WHERE api_race_id = ?",
+            (api_rid,)
+        ).fetchall()
+        print(f"    api_race_id {api_rid} assigned to {cnt} races:")
+        for r in races:
+            print(f"      db_id={r[0]}, name={r[1]}, date={r[2]}")
+
+        # Clear ALL duplicates — backfill will re-resolve correctly
+        conn.execute(
+            "UPDATE races SET api_race_id = NULL WHERE api_race_id = ?",
+            (api_rid,)
+        )
+
+    conn.commit()
+    conn.close()
+    print("  Cleared duplicates — backfill will re-resolve them")
+
+
 def backfill_api_race_ids():
     """Backfill api_race_id for races that don't have one yet."""
     import sqlite3
@@ -219,21 +264,21 @@ def backfill_api_race_ids():
 
         for db_id, db_name, db_date in db_races:
             api_rid = None
-            # Try exact name match
+            # Try exact name match first
             if db_name and db_name in api_by_name:
                 api_rid = api_by_name[db_name]
-            # Try fuzzy name match
-            if not api_rid and db_name:
-                matches = get_close_matches(db_name, api_names, n=1, cutoff=0.6)
-                if matches:
-                    api_rid = api_by_name[matches[0]]
-            # Try date match
+            # Try date match BEFORE fuzzy name (more reliable — race names change)
             if not api_rid and db_date:
                 date_key = db_date[:10]
                 candidates = api_by_date.get(date_key, [])
                 candidates = [c for c in candidates if c not in used_ids]
                 if len(candidates) == 1:
                     api_rid = candidates[0]
+            # Try fuzzy name match as last resort
+            if not api_rid and db_name:
+                matches = get_close_matches(db_name, api_names, n=1, cutoff=0.6)
+                if matches:
+                    api_rid = api_by_name[matches[0]]
 
             if api_rid and api_rid not in used_ids:
                 conn.execute(
@@ -460,7 +505,8 @@ def main():
         series_id = SERIES_MAP.get(args.series.lower(), 1)
         fetch_season(series_id, args.year)
 
-    # Backfill api_race_id for any races missing it
+    # Verify existing api_race_ids, then backfill missing ones
+    verify_api_race_ids()
     backfill_api_race_ids()
 
     # Fetch odds if requested or during normal refresh
