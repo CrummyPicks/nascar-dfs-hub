@@ -67,9 +67,16 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     if not fd_df.empty:
         master = master.merge(fd_df.drop_duplicates("Driver"), on="Driver", how="left")
 
-    # Betting odds
+    # Betting odds (store as numeric for proper sorting)
     if odds_data:
-        master["Win Odds"] = master["Driver"].map(odds_data)
+        def _parse_odds(v):
+            if v is None or str(v).strip() in ("", "None", "null"):
+                return None
+            try:
+                return float(str(v).replace("+", ""))
+            except (ValueError, TypeError):
+                return None
+        master["Win Odds"] = master["Driver"].map(odds_data).map(_parse_odds)
 
     # Qualifying
     if not qualifying_df.empty and "Qualifying Position" not in master.columns:

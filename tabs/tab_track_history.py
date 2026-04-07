@@ -126,13 +126,14 @@ def render(*, track_name, track_type, series_id):
                 st.info(f"No track-type data in database. Run `python refresh_data.py` to populate race data.")
 
     elif hist_view == "2026 Season":
-        st.caption("Aggregated from all 2026 races in database")
-        season_df = query_season_stats()
+        st.caption(f"Aggregated from 2026 races at {track_name}")
+        season_df = query_season_stats(track_name=track_name, season=2026,
+                                       series_id=series_id)
         if not season_df.empty:
             display = format_display_df(season_df)
             st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
         else:
-            st.info("No season data available.")
+            st.info(f"No 2026 data at {track_name}. Data appears after races are completed and synced.")
 
 
 def _render_track_type_filtered(track_type_filter, hist_view, series_id):

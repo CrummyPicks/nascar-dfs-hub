@@ -136,7 +136,7 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                     "Position Differential", "Projected Finish",
                     "Proj Laps Led", "Proj Fast Laps", "Count",
                     "Best Finish", "Worst Finish", "DK Salary",
-                    "Qual Pos"}
+                    "Qual Pos", "Win Odds"}
 
     # 1-decimal columns
     one_dec_patterns = {"Avg Finish", "Avg Start", "Avg Rating", "Rating",

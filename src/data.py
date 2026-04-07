@@ -15,6 +15,25 @@ from src.config import (
     NASCAR_API_BASE, DB_PATH, DA_TRACK_IDS, EXHIBITION_KEYWORDS,
 )
 from src.utils import int_col, calc_dk_points, calc_fd_points
+import re
+
+
+def _clean_api_name(name: str) -> str:
+    """Normalize a driver name from any NASCAR API endpoint.
+
+    Strips rookie indicators (*), charter indicators (#), suffixes like (i)/(R),
+    and normalizes Jr./Sr. suffixes to consistent forms without trailing periods.
+    """
+    if not name:
+        return ""
+    name = name.strip()
+    name = re.sub(r'^\*\s*', '', name)        # leading asterisk (rookie)
+    name = re.sub(r'\s*#$', '', name)          # trailing # (charter)
+    name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)  # trailing (i)/(R)
+    # Normalize "Jr." -> "Jr", "Sr." -> "Sr" (remove trailing period on suffixes)
+    name = re.sub(r'\bJr\.\s*$', 'Jr', name)
+    name = re.sub(r'\bSr\.\s*$', 'Sr', name)
+    return name.strip()
 
 
 # ============================================================
@@ -67,7 +86,7 @@ def fetch_lap_averages(series_id: int, race_id: int, year: int = 2026) -> pd.Dat
             return pd.DataFrame()
         rows = []
         for item in items:
-            driver_name = (item.get("FullName") or item.get("Driver") or "").replace(" #", "").strip()
+            driver_name = _clean_api_name(item.get("FullName") or item.get("Driver") or "")
             row = {
                 "Driver": driver_name,
                 "Car": str(item.get("Number", "")).strip(),
@@ -108,7 +127,7 @@ def _build_car_driver_map(feed: dict) -> Dict[str, dict]:
             cn = str(car.get("car_number", "")).strip()
             if cn and car.get("driver_fullname"):
                 car_map[cn] = {
-                    "driver": car["driver_fullname"],
+                    "driver": _clean_api_name(car["driver_fullname"]),
                     "team": car.get("team_name", ""),
                     "make": car.get("car_make", ""),
                     "crew_chief": car.get("crew_chief_fullname", ""),
@@ -117,7 +136,7 @@ def _build_car_driver_map(feed: dict) -> Dict[str, dict]:
             cn = str(r.get("car_number", "")).strip()
             if cn and cn not in car_map and r.get("driver_fullname"):
                 car_map[cn] = {
-                    "driver": r["driver_fullname"],
+                    "driver": _clean_api_name(r["driver_fullname"]),
                     "team": r.get("team_name", ""),
                     "make": r.get("car_make", ""),
                     "crew_chief": r.get("crew_chief_fullname", ""),
@@ -137,7 +156,7 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
     if cars:
         rows = [{
             "Car": car.get("car_number"),
-            "Driver": car.get("driver_fullname"),
+            "Driver": _clean_api_name(car.get("driver_fullname") or ""),
             "Team": car.get("team_name"),
             "Manufacturer": car.get("car_make"),
             "Crew Chief": car.get("crew_chief_fullname", ""),
@@ -148,7 +167,7 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
     if results:
         rows = [{
             "Car": r.get("car_number"),
-            "Driver": r.get("driver_fullname"),
+            "Driver": _clean_api_name(r.get("driver_fullname") or ""),
             "Team": r.get("team_name"),
             "Manufacturer": r.get("car_make"),
             "Crew Chief": r.get("crew_chief_fullname", ""),
@@ -246,7 +265,7 @@ def extract_race_results(feed: dict) -> pd.DataFrame:
             continue  # DNQ
         rows.append({
             "Finish Position": fp,
-            "Driver": r.get("driver_fullname"),
+            "Driver": _clean_api_name(r.get("driver_fullname") or ""),
             "Start": r.get("starting_position") or r.get("qualifying_position"),
             "Car": r.get("car_number"),
             "Team": r.get("team_name"),
@@ -277,7 +296,7 @@ def compute_fastest_laps(lap_data: dict) -> Dict[str, int]:
     driver_laps = {}
     all_laps = set()
     for d in drivers:
-        name = d["FullName"]
+        name = _clean_api_name(d["FullName"])
         driver_laps[name] = {}
         for lap in d.get("Laps", []):
             if lap["Lap"] > 0 and lap.get("LapTime") and lap["LapTime"] > 0:
@@ -303,7 +322,7 @@ def compute_avg_running_position(lap_data: dict) -> Dict[str, float]:
         positions = [lap["RunningPos"] for lap in d.get("Laps", [])
                      if lap["Lap"] > 0 and lap.get("RunningPos")]
         if positions:
-            result[d["FullName"]] = round(np.mean(positions), 1)
+            result[_clean_api_name(d["FullName"])] = round(np.mean(positions), 1)
     return result
 
 
@@ -311,9 +330,8 @@ def compute_avg_running_position(lap_data: dict) -> Dict[str, float]:
 # TRACK HISTORY SCRAPING
 # ============================================================
 
-@st.cache_data(ttl=7200, show_spinner=False)
-def scrape_track_history(track_name: str, series_id: int = 1) -> pd.DataFrame:
-    """Scrape driveraverages.com for recent track history."""
+def _scrape_da_tables(track_name: str, series_id: int = 1):
+    """Scrape driveraverages.com and return (recent_df, alltime_df) tuple."""
     key = track_name.lower().strip()
     trk_id = None
     for name, tid in DA_TRACK_IDS.items():
@@ -321,10 +339,27 @@ def scrape_track_history(track_name: str, series_id: int = 1) -> pd.DataFrame:
             trk_id = tid
             break
     if trk_id is None:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     series_map = {1: "nascar", 2: "nascar_secondseries", 3: "nascar_truckseries"}
     series_path = series_map.get(series_id, "nascar")
+
+    # Column layouts: site changed from 15 → 13 columns
+    col_names_13_recent = [
+        "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
+        "Top 10", "Laps Led", "Avg Start", "Best Finish",
+        "Worst Finish", "Avg Rating", "Detail",
+    ]
+    col_names_13_alltime = [
+        "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
+        "Top 10", "Laps Led", "Avg Start", "Best Finish",
+        "Worst Finish", "DNF", "Detail",
+    ]
+    col_names_15 = [
+        "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
+        "Top 10", "Top 20", "Laps Led", "Avg Start", "Best Finish",
+        "Worst Finish", "DNF", "Avg Rating", "Detail",
+    ]
 
     try:
         resp = requests.get(
@@ -333,86 +368,70 @@ def scrape_track_history(track_name: str, series_id: int = 1) -> pd.DataFrame:
         )
         soup = BeautifulSoup(resp.text, "lxml")
 
-        col_names = ["Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
-                     "Top 10", "Top 20", "Laps Led", "Avg Start", "Best Finish",
-                     "Worst Finish", "DNF", "Avg Rating", "Detail"]
-
         all_tables = []
         for t in soup.find_all("table"):
+            # Skip wrapper tables that contain nested data tables
+            if t.find("table"):
+                has_nested_data = False
+                for nt in t.find_all("table"):
+                    for tr in nt.find_all("tr"):
+                        if len(tr.find_all("td")) in (13, 15):
+                            has_nested_data = True
+                            break
+                    if has_nested_data:
+                        break
+                if has_nested_data:
+                    continue
             rows = []
+            ncols = None
             for tr in t.find_all("tr"):
                 cells = tr.find_all("td")
-                if len(cells) == 15:
+                if len(cells) in (13, 15):
                     vals = [c.get_text(strip=True) for c in cells]
                     if vals[1] and vals[1] != "Driver":
                         rows.append(vals)
+                        ncols = len(cells)
             if rows:
-                all_tables.append(rows)
+                all_tables.append((rows, ncols))
 
-        dfs = {}
-        labels = ["Recent", "All-Time"]
-        for i, rows in enumerate(all_tables[:2]):
-            df = pd.DataFrame(rows, columns=col_names).drop(columns=["Detail"])
+        def _build_df(rows, ncols, is_alltime=False):
+            if ncols == 15:
+                cols = col_names_15
+            elif ncols == 13:
+                cols = col_names_13_alltime if is_alltime else col_names_13_recent
+            else:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows, columns=cols)
+            df = df.drop(columns=["Detail"], errors="ignore")
             for col in df.columns:
                 if col != "Driver":
                     df[col] = pd.to_numeric(df[col], errors="coerce")
-            dfs[labels[i] if i < len(labels) else f"Table {i}"] = df
+            return df
 
-        if dfs:
-            return dfs.get("Recent", list(dfs.values())[0])
+        recent_df = pd.DataFrame()
+        alltime_df = pd.DataFrame()
+        if len(all_tables) >= 1:
+            recent_df = _build_df(all_tables[0][0], all_tables[0][1], is_alltime=False)
+        if len(all_tables) >= 2:
+            alltime_df = _build_df(all_tables[1][0], all_tables[1][1], is_alltime=True)
+
+        return recent_df, alltime_df
     except Exception:
-        pass
-    return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def scrape_track_history(track_name: str, series_id: int = 1) -> pd.DataFrame:
+    """Scrape driveraverages.com for recent track history."""
+    recent, _ = _scrape_da_tables(track_name, series_id)
+    return recent
 
 
 @st.cache_data(ttl=7200, show_spinner=False)
 def scrape_track_history_alltime(track_name: str, series_id: int = 1) -> pd.DataFrame:
     """Scrape driveraverages.com for all-time track history."""
-    key = track_name.lower().strip()
-    trk_id = None
-    for name, tid in DA_TRACK_IDS.items():
-        if name in key:
-            trk_id = tid
-            break
-    if trk_id is None:
-        return pd.DataFrame()
-
-    series_map = {1: "nascar", 2: "nascar_secondseries", 3: "nascar_truckseries"}
-    series_path = series_map.get(series_id, "nascar")
-
-    try:
-        resp = requests.get(
-            f"https://www.driveraverages.com/{series_path}/track_avg.php?trk_id={trk_id}",
-            timeout=15, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        soup = BeautifulSoup(resp.text, "lxml")
-        col_names = ["Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
-                     "Top 10", "Top 20", "Laps Led", "Avg Start", "Best Finish",
-                     "Worst Finish", "DNF", "Avg Rating", "Detail"]
-        all_tables = []
-        for t in soup.find_all("table"):
-            rows = []
-            for tr in t.find_all("tr"):
-                cells = tr.find_all("td")
-                if len(cells) == 15:
-                    vals = [c.get_text(strip=True) for c in cells]
-                    if vals[1] and vals[1] != "Driver":
-                        rows.append(vals)
-            if rows:
-                all_tables.append(rows)
-        if len(all_tables) >= 2:
-            rows = all_tables[1]
-        elif all_tables:
-            rows = all_tables[0]
-        else:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=col_names).drop(columns=["Detail"])
-        for col in df.columns:
-            if col != "Driver":
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df
-    except Exception:
-        return pd.DataFrame()
+    _, alltime = _scrape_da_tables(track_name, series_id)
+    return alltime
 
 
 # ============================================================
@@ -456,13 +475,14 @@ def query_gfs_stats(series_id: int = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def query_season_stats() -> pd.DataFrame:
-    """Pull aggregated season stats from local DB (legacy compat)."""
+def query_season_stats(track_name: str = None, season: int = None,
+                       series_id: int = None) -> pd.DataFrame:
+    """Pull aggregated season stats from local DB, optionally filtered."""
     if not DB_PATH.exists():
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        df = pd.read_sql_query("""
+        query = """
             SELECT d.full_name as Driver,
                    COUNT(*) as Races,
                    ROUND(AVG(rr.finish_pos),1) as "Avg Finish",
@@ -478,10 +498,29 @@ def query_season_stats() -> pd.DataFrame:
                    SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
             FROM race_results rr
             JOIN drivers d ON d.id=rr.driver_id
+            JOIN races r ON r.id=rr.race_id
             LEFT JOIN dfs_points dp ON dp.race_id=rr.race_id AND dp.driver_id=rr.driver_id
+                                       AND dp.platform='DraftKings'
+        """
+        conditions = []
+        params = []
+        if track_name:
+            query += " JOIN tracks t ON t.id=r.track_id"
+            conditions.append("t.name = ?")
+            params.append(track_name)
+        if season:
+            conditions.append("r.season = ?")
+            params.append(season)
+        if series_id:
+            conditions.append("r.series_id = ?")
+            params.append(series_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += """
             GROUP BY d.full_name
             ORDER BY "Avg DFS" DESC
-        """, conn)
+        """
+        df = pd.read_sql_query(query, conn, params=params)
         conn.close()
         return df
     except Exception:
@@ -1125,7 +1164,7 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
 
         for r in results:
             finish_pos = r.get("finishing_position", 0) or 0
-            driver_name = r.get("driver_fullname") or ""
+            driver_name = _clean_api_name(r.get("driver_fullname") or "")
             if not driver_name or (finish_pos == 0 and not (r.get("finishing_status") or "").strip()):
                 continue  # skip DNQ / empty rows
 
