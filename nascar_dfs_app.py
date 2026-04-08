@@ -372,13 +372,6 @@ with st.expander("Settings & Data Upload", expanded=False):
     if odds_data:
         odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
 
-    # Persist odds to DB for historical backtesting (admin only)
-    if is_admin and odds_data and race_id:
-        prop_odds = fetch_nascar_prop_odds()
-        save_odds_to_db(odds_data, race_id,
-                        top3_data=prop_odds.get("top3"),
-                        top5_data=prop_odds.get("top5"),
-                        top10_data=prop_odds.get("top10"))
 
 
 # ============================================================
@@ -391,12 +384,23 @@ with st.spinner("Loading data..."):
 
 is_prerace = detect_prerace(feed)
 
-# For completed races, use saved odds from DB (not live odds which are for the current race)
+# For completed races, use saved odds from DB (not live auto-fetched odds)
 if not is_prerace and race_id:
     saved_odds = load_race_odds(race_id)
     if saved_odds:
         odds_data = saved_odds
         odds_source = "saved"
+
+# Persist odds to DB — only for prerace (auto odds match this race) or manual entry
+if is_admin and odds_data and race_id:
+    should_save_odds = (is_prerace and odds_source in ("action_network", "salary_estimate")) or \
+                       odds_source == "manual"
+    if should_save_odds:
+        prop_odds = fetch_nascar_prop_odds()
+        save_odds_to_db(odds_data, race_id,
+                        top3_data=prop_odds.get("top3"),
+                        top5_data=prop_odds.get("top5"),
+                        top10_data=prop_odds.get("top10"))
 
 results_df = extract_race_results(feed) if feed and not is_prerace else pd.DataFrame()
 fl_counts = compute_fastest_laps(lap_data) if lap_data and not is_prerace else {}
