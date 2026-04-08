@@ -14,8 +14,10 @@ from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps,
     filter_point_races, query_salaries, load_race_odds,
+    scrape_track_history,
 )
 from src.utils import calc_dk_points, safe_fillna, format_display_df, short_name_series, fuzzy_match_name
+from tabs.tab_projections import _query_races_to_subtract, _subtract_races_from_scraped
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
@@ -382,6 +384,121 @@ def _query_driver_career_dnf(series_id, before_date=None):
     return result
 
 
+def _hybrid_track_stats(track_name, series_id, race_date=None):
+    """Hybrid track history: scrape driveraverages.com baseline, then subtract
+    races on/after race_date using DB data to prevent data leakage.
+
+    Returns dict matching _query_driver_track_stats format:
+    {driver: {avg_finish, avg_start, laps_led_per_race, fastest_laps_per_race,
+              races, dnf_rate, crash_rate, speed_score}}
+    """
+    th_df = scrape_track_history(track_name, series_id)
+    if th_df.empty:
+        # Fallback to DB-only
+        return _query_driver_track_stats(track_name, series_id,
+                                          before_date=race_date)
+
+    if race_date:
+        removals = _query_races_to_subtract(track_name, series_id, race_date)
+        if removals:
+            th_df = _subtract_races_from_scraped(th_df, removals)
+
+    if th_df.empty:
+        return {}
+
+    # Convert DataFrame to dict format expected by backtest engine
+    for col in ["Avg Finish", "Avg Start", "Laps Led", "Races", "Avg Rating",
+                "Wins", "Top 5", "Top 10", "DNF"]:
+        if col in th_df.columns:
+            th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
+
+    result = {}
+    for _, row in th_df.iterrows():
+        driver = row.get("Driver", "")
+        if not driver:
+            continue
+        races = row.get("Races", 0)
+        if pd.isna(races) or races <= 0:
+            continue
+        ll = row.get("Laps Led", 0) if pd.notna(row.get("Laps Led")) else 0
+        dnfs = row.get("DNF", 0) if pd.notna(row.get("DNF")) else 0
+        ll_per = ll / races
+        # driveraverages.com doesn't have fastest_laps — estimate from laps led
+        fl_per = ll_per * 0.4  # rough estimate
+        result[driver] = {
+            "avg_finish": row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20,
+            "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
+            "laps_led_per_race": ll_per,
+            "fastest_laps_per_race": fl_per,
+            "races": int(races),
+            "dnf_rate": dnfs / races,
+            "crash_rate": 0,  # not available from scrape
+            "speed_score": ll_per + fl_per,
+        }
+    return result
+
+
+def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
+                              race_date=None):
+    """Hybrid track type history: scrape similar tracks from driveraverages.com,
+    then subtract races on/after race_date using DB data.
+
+    Returns dict matching _query_driver_track_type_stats format:
+    {driver: {avg_finish, laps_led_per_race, speed_score, races}}
+    """
+    from src.config import TRACK_TYPE_MAP as _TTM
+
+    matching_tracks = [t for t, tt in _TTM.items()
+                       if tt == track_type
+                       or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+    if exclude_track:
+        matching_tracks = [t for t in matching_tracks if exclude_track not in t]
+    if not matching_tracks:
+        return {}
+
+    type_finishes = {}
+    type_laps_led = {}
+    type_races = {}
+
+    for sim_track in matching_tracks[:6]:
+        sim_th = scrape_track_history(sim_track, series_id)
+        if sim_th.empty:
+            continue
+        if race_date:
+            removals = _query_races_to_subtract(sim_track, series_id, race_date)
+            if removals:
+                sim_th = _subtract_races_from_scraped(sim_th, removals)
+        for col in ["Avg Finish", "Laps Led", "Races"]:
+            if col in sim_th.columns:
+                sim_th[col] = pd.to_numeric(sim_th[col], errors="coerce")
+        for _, r in sim_th.iterrows():
+            d = r.get("Driver")
+            if not d:
+                continue
+            af = r.get("Avg Finish")
+            ll = r.get("Laps Led", 0)
+            races = r.get("Races", 1)
+            if pd.notna(af):
+                type_finishes.setdefault(d, []).append(af)
+            if pd.notna(ll) and pd.notna(races) and races > 0:
+                type_laps_led.setdefault(d, []).append(ll / races)
+            if pd.notna(races):
+                type_races.setdefault(d, []).append(races)
+
+    result = {}
+    for d in type_finishes:
+        total_races = sum(type_races.get(d, [1]))
+        ll_per = np.mean(type_laps_led.get(d, [0]))
+        fl_per = ll_per * 0.4
+        result[d] = {
+            "avg_finish": np.mean(type_finishes[d]),
+            "laps_led_per_race": ll_per,
+            "speed_score": ll_per + fl_per,
+            "races": total_races,
+        }
+    return result
+
+
 DEFAULT_WEIGHTS = {
     "track": 0.30, "track_type": 0.15, "practice": 0.25,
     "odds": 0.30, "qual": 0,  # qualifying only used for start position, not finish
@@ -410,17 +527,13 @@ def _generate_race_projections(race, series_id, weights=None):
     drivers = actuals["Driver"].unique().tolist()
     field_size = len(drivers)
 
-    # Exclude this race AND all future races to prevent data leakage
-    db_rid = _api_race_id_to_db(race_id)
+    # Hybrid approach: scrape driveraverages.com baseline, subtract future races
     race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
-    th_data = _query_driver_track_stats(track_name, series_id,
-                                         exclude_race_id=db_rid,
-                                         before_date=race_date)
+    th_data = _hybrid_track_stats(track_name, series_id, race_date=race_date)
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    tt_data = _query_driver_track_type_stats(parent_type, series_id,
-                                              exclude_track=track_name,
-                                              exclude_race_id=db_rid,
-                                              before_date=race_date)
+    tt_data = _hybrid_track_type_stats(parent_type, series_id,
+                                        exclude_track=track_name,
+                                        race_date=race_date)
 
     start_positions = {}
     for _, row in actuals.iterrows():
@@ -1262,19 +1375,15 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
 
         drivers = results["Driver"].unique().tolist()
 
-        # Exclude this race AND all future races to prevent data leakage
-        db_rid = _api_race_id_to_db(race_id)
+        # Hybrid approach: scrape driveraverages.com baseline, subtract future races
         race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
-        th_data = _query_driver_track_stats(track_name, series_id,
-                                             exclude_race_id=db_rid,
-                                             before_date=race_date)
+        th_data = _hybrid_track_stats(track_name, series_id, race_date=race_date)
 
-        # DB-backed track type history — use parent type for broader data
+        # Hybrid track type history — use parent type for broader data
         parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-        tt_data = _query_driver_track_type_stats(parent_type, series_id,
-                                                  exclude_track=track_name,
-                                                  exclude_race_id=db_rid,
-                                                  before_date=race_date)
+        tt_data = _hybrid_track_type_stats(parent_type, series_id,
+                                            exclude_track=track_name,
+                                            race_date=race_date)
 
         # DNF data — also time-bounded
         dnf_data = _query_driver_career_dnf(series_id, before_date=race_date) if include_dnf else {}

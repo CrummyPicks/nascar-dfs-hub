@@ -464,6 +464,122 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
     return result
 
 
+def _query_races_to_subtract(track_name, series_id, race_date, db_race_id=None):
+    """Query DB for per-driver results at this track on or after race_date.
+
+    Returns dict: {driver_name: [{finish_pos, start_pos, laps_led, ...}, ...]}
+    These results need to be subtracted from the scraped driveraverages.com
+    aggregates to prevent data leakage in completed race projections.
+    """
+    if not os.path.exists(PROJ_DB):
+        return {}
+
+    conn = sqlite3.connect(PROJ_DB)
+    where = "WHERE t.name LIKE ? AND r.series_id = ? AND r.race_date >= ?"
+    params = [f"%{track_name}%", series_id, race_date]
+
+    rows = conn.execute(f'''
+        SELECT d.full_name, rr.finish_pos, rr.start_pos, rr.laps_led,
+               CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END as is_dnf
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        {where}
+    ''', params).fetchall()
+    conn.close()
+
+    result = {}
+    for name, fp, sp, ll, dnf in rows:
+        result.setdefault(name, []).append({
+            "finish_pos": fp, "start_pos": sp,
+            "laps_led": ll or 0, "is_dnf": dnf,
+        })
+    return result
+
+
+def _subtract_races_from_scraped(th_df, races_to_remove):
+    """Subtract specific race results from scraped aggregate data.
+
+    driveraverages.com gives us: avg_finish over N races, total laps_led, etc.
+    We need to remove specific races to get a clean historical baseline.
+
+    Formula: new_avg = (old_avg * old_races - sum(removed_finishes)) / (old_races - n_removed)
+    """
+    th_df = th_df.copy()
+    for col in ["Avg Finish", "Avg Start", "Laps Led", "Races", "Wins",
+                 "Top 5", "Top 10", "DNF"]:
+        if col in th_df.columns:
+            th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
+
+    rows_to_drop = []
+    for idx, row in th_df.iterrows():
+        driver = row.get("Driver", "")
+        removals = races_to_remove.get(driver)
+        if not removals:
+            # Also try fuzzy match
+            matched = fuzzy_match_name(driver, list(races_to_remove.keys()))
+            removals = races_to_remove.get(matched) if matched else None
+        if not removals:
+            continue
+
+        n_remove = len(removals)
+        old_races = row.get("Races", 0)
+        if pd.isna(old_races) or old_races <= n_remove:
+            # Removing all races — drop this driver entirely
+            rows_to_drop.append(idx)
+            continue
+
+        new_races = old_races - n_remove
+
+        # Adjust avg finish
+        old_avg_f = row.get("Avg Finish")
+        if pd.notna(old_avg_f):
+            removed_f = sum(r["finish_pos"] for r in removals if r["finish_pos"])
+            new_avg_f = (old_avg_f * old_races - removed_f) / new_races
+            th_df.at[idx, "Avg Finish"] = round(new_avg_f, 1)
+
+        # Adjust avg start
+        old_avg_s = row.get("Avg Start")
+        if pd.notna(old_avg_s):
+            removed_s = sum(r["start_pos"] for r in removals if r["start_pos"])
+            new_avg_s = (old_avg_s * old_races - removed_s) / new_races
+            th_df.at[idx, "Avg Start"] = round(new_avg_s, 1)
+
+        # Adjust laps led (total, not average)
+        old_ll = row.get("Laps Led", 0)
+        if pd.notna(old_ll):
+            removed_ll = sum(r["laps_led"] for r in removals)
+            th_df.at[idx, "Laps Led"] = max(0, old_ll - removed_ll)
+
+        # Adjust DNF count
+        old_dnf = row.get("DNF", 0)
+        if pd.notna(old_dnf):
+            removed_dnf = sum(r["is_dnf"] for r in removals)
+            th_df.at[idx, "DNF"] = max(0, old_dnf - removed_dnf)
+
+        # Adjust wins (finish_pos == 1)
+        old_wins = row.get("Wins", 0)
+        if pd.notna(old_wins):
+            removed_wins = sum(1 for r in removals if r["finish_pos"] == 1)
+            th_df.at[idx, "Wins"] = max(0, old_wins - removed_wins)
+
+        # Adjust top 5/10
+        for col_name, threshold in [("Top 5", 5), ("Top 10", 10)]:
+            old_val = row.get(col_name, 0)
+            if pd.notna(old_val):
+                removed_val = sum(1 for r in removals
+                                  if r["finish_pos"] and r["finish_pos"] <= threshold)
+                th_df.at[idx, col_name] = max(0, old_val - removed_val)
+
+        th_df.at[idx, "Races"] = new_races
+
+    if rows_to_drop:
+        th_df = th_df.drop(rows_to_drop)
+
+    return th_df
+
+
 def _resolve_db_race_id(api_race_id, series_id):
     """Resolve NASCAR API race_id to internal DB race_id."""
     if not api_race_id or not os.path.exists(PROJ_DB):
@@ -506,26 +622,27 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
 
     # ── 1. Track History Signal ──────────────────────────────────────────────
-    # For completed races, use DB queries with date filtering to prevent data
-    # leakage (driveraverages.com always includes the current race's results).
-    # For upcoming/prerace, scrape driveraverages.com for the latest data.
+    # Hybrid approach: scrape driveraverages.com for rich baseline data, then
+    # for completed races, subtract the current race + future races using DB
+    # to prevent data leakage. This gives us full historical depth without
+    # contamination from races that haven't happened yet (from this race's POV).
     th_data = {}  # driver -> {avg_finish, avg_start, laps_led, races, avg_rating}
 
     # Resolve DB race ID for exclusion
     db_race_id = _resolve_db_race_id(race_id, series_id) if race_id else None
 
-    if not is_prerace and race_date:
-        # Completed race — use DB with date filter to exclude this race + future
-        with st.spinner("Loading track history (DB, date-filtered)..."):
-            th_df = _query_db_track_history(
-                track_name, series_id,
-                exclude_race_id=db_race_id,
-                before_date=race_date,
-            )
-    else:
-        # Upcoming race — scrape live data (includes all historical)
-        with st.spinner("Loading track history..."):
-            th_df = scrape_track_history(track_name, series_id)
+    # Always scrape driveraverages.com as the baseline
+    with st.spinner("Loading track history..."):
+        th_df = scrape_track_history(track_name, series_id)
+
+    if not is_prerace and race_date and not th_df.empty:
+        # Completed race — subtract current race + future races from scraped data.
+        # Query DB for races AT THIS TRACK on or after this race date to remove.
+        races_to_remove = _query_races_to_subtract(
+            track_name, series_id, race_date, db_race_id
+        )
+        if races_to_remove:
+            th_df = _subtract_races_from_scraped(th_df, races_to_remove)
 
     if not th_df.empty:
         for col in ["Avg Finish", "Avg Start", "Laps Led", "Races", "Avg Rating",
@@ -563,29 +680,22 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                             if TRACK_TYPE_PARENT.get(tt, tt) == parent_type
                             and t != track_name]
 
-    if not is_prerace and race_date:
-        # Completed race — use DB query with date filtering
-        with st.spinner(f"Loading {track_type} track type data (DB)..."):
-            tt_raw = _query_db_track_type_history(
-                track_type, series_id,
-                exclude_track=track_name,
-                exclude_race_id=db_race_id,
-                before_date=race_date,
-            )
-            tt_names = list(tt_raw.keys())
-            for d in drivers:
-                matched = d if d in tt_raw else fuzzy_match_name(d, tt_names)
-                if matched and matched in tt_raw:
-                    tt_data[d] = tt_raw[matched]
-    elif same_type_tracks:
-        # Upcoming race — scrape live data
+    if same_type_tracks:
         with st.spinner(f"Loading {track_type} track type data..."):
             type_finishes = {}
             type_laps_led = {}
+            type_races = {}
             for sim_track in same_type_tracks[:6]:
                 sim_th = scrape_track_history(sim_track, series_id)
                 if sim_th.empty:
                     continue
+                # For completed races, subtract future data from each similar track
+                if not is_prerace and race_date:
+                    removals = _query_races_to_subtract(
+                        sim_track, series_id, race_date
+                    )
+                    if removals:
+                        sim_th = _subtract_races_from_scraped(sim_th, removals)
                 for col in ["Avg Finish", "Laps Led", "Races"]:
                     if col in sim_th.columns:
                         sim_th[col] = pd.to_numeric(sim_th[col], errors="coerce")
@@ -600,14 +710,18 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                         type_finishes.setdefault(d, []).append(af)
                     if pd.notna(ll) and pd.notna(races) and races > 0:
                         type_laps_led.setdefault(d, []).append(ll / races)
+                    if pd.notna(races):
+                        type_races.setdefault(d, []).append(races)
 
             tt_names = list(type_finishes.keys())
             for d in drivers:
                 matched = d if d in type_finishes else fuzzy_match_name(d, tt_names)
                 if matched and matched in type_finishes:
+                    total_races = sum(type_races.get(matched, [1]))
                     tt_data[d] = {
                         "avg_finish": np.mean(type_finishes[matched]),
                         "laps_led_per_race": np.mean(type_laps_led.get(matched, [0])),
+                        "races": total_races,
                     }
 
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
