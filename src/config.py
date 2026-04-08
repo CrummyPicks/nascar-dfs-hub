@@ -164,4 +164,12 @@ DEFAULT_PROJECTION_WEIGHTS = {
 # API
 # ----------------------------
 NASCAR_API_BASE = "https://cf.nascar.com/cacher"
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
+def _get_odds_api_key():
+    """Get The Odds API key from Streamlit secrets or environment."""
+    try:
+        import streamlit as st
+        return st.secrets.get("ODDS_API_KEY", os.getenv("ODDS_API_KEY", ""))
+    except Exception:
+        return os.getenv("ODDS_API_KEY", "")
+
+ODDS_API_KEY = _get_odds_api_key()

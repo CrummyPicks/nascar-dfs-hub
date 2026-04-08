@@ -950,12 +950,122 @@ def fetch_nascar_odds() -> dict:
 
 
 def fetch_nascar_prop_odds() -> dict:
-    """Fetch top5/top10 prop odds from Action Network.
+    """Fetch top5/top10 prop odds. Tries Action Network first, then The Odds API.
 
     Returns {"top5": {name: odds_str}, "top10": {name: odds_str}}.
     """
+    # Try Action Network first (already cached from win odds fetch)
     all_odds = _fetch_all_nascar_odds()
-    return {"top5": all_odds.get("top5", {}), "top10": all_odds.get("top10", {})}
+    top5 = all_odds.get("top5", {})
+    top10 = all_odds.get("top10", {})
+
+    # Fall back to The Odds API if Action Network didn't have prop odds
+    if not top5 and not top10:
+        api_props = fetch_odds_api_props()
+        top5 = api_props.get("top5", {})
+        top10 = api_props.get("top10", {})
+
+    return {"top5": top5, "top10": top10}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_odds_api_props() -> dict:
+    """Fetch NASCAR top 5/top 10 finish odds from The Odds API.
+
+    Requires ODDS_API_KEY set in Streamlit secrets or environment.
+    Returns {"top5": {name: odds_str}, "top10": {name: odds_str}}.
+    """
+    from src.config import ODDS_API_KEY
+    if not ODDS_API_KEY:
+        return {"top5": {}, "top10": {}}
+
+    base = "https://api.the-odds-api.com/v4"
+    empty = {"top5": {}, "top10": {}}
+
+    try:
+        # First discover the NASCAR sport key
+        sports_resp = requests.get(f"{base}/sports", params={"apiKey": ODDS_API_KEY}, timeout=10)
+        if sports_resp.status_code != 200:
+            return empty
+
+        nascar_key = None
+        for sport in sports_resp.json():
+            key = sport.get("key", "")
+            title = sport.get("title", "").lower()
+            if "nascar" in key.lower() or "nascar" in title:
+                nascar_key = key
+                break
+
+        if not nascar_key:
+            return empty
+
+        # Get events for NASCAR
+        events_resp = requests.get(
+            f"{base}/sports/{nascar_key}/events",
+            params={"apiKey": ODDS_API_KEY},
+            timeout=10,
+        )
+        if events_resp.status_code != 200 or not events_resp.json():
+            return empty
+
+        # Use the first (upcoming) event
+        event_id = events_resp.json()[0].get("id")
+        if not event_id:
+            return empty
+
+        # Try fetching outrights + top finish markets
+        top5 = {}
+        top10 = {}
+
+        for market in ["outrights", "top_5_finish", "top_10_finish",
+                        "top5", "top10", "driver_top_5", "driver_top_10"]:
+            try:
+                odds_resp = requests.get(
+                    f"{base}/sports/{nascar_key}/events/{event_id}/odds",
+                    params={
+                        "apiKey": ODDS_API_KEY,
+                        "regions": "us",
+                        "markets": market,
+                        "oddsFormat": "american",
+                    },
+                    timeout=10,
+                )
+                if odds_resp.status_code != 200:
+                    continue
+
+                data = odds_resp.json()
+                bookmakers = data.get("bookmakers", [])
+                if not bookmakers:
+                    continue
+
+                # Use first bookmaker's odds
+                bm = bookmakers[0]
+                for mkt in bm.get("markets", []):
+                    mkt_key = mkt.get("key", "").lower()
+                    outcomes = mkt.get("outcomes", [])
+
+                    is_t5 = "top_5" in mkt_key or "top5" in mkt_key
+                    is_t10 = "top_10" in mkt_key or "top10" in mkt_key
+
+                    if is_t5 and not top5:
+                        for o in outcomes:
+                            name = o.get("name", "")
+                            price = o.get("price")
+                            if name and price is not None:
+                                top5[name] = str(int(price))
+                    elif is_t10 and not top10:
+                        for o in outcomes:
+                            name = o.get("name", "")
+                            price = o.get("price")
+                            if name and price is not None:
+                                top10[name] = str(int(price))
+            except Exception:
+                continue
+
+        return {"top5": top5, "top10": top10}
+
+    except Exception:
+        return {"top5": {}, "top10": {}}
 
 
 def round_odds(odds_val: int) -> int:
