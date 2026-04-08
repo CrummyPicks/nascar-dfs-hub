@@ -18,6 +18,7 @@ try:
         parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
         sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
+        fetch_nascar_prop_odds, load_race_prop_odds,
     )
 except ImportError as e:
     import streamlit as st
@@ -286,9 +287,12 @@ with st.expander("Settings & Data Upload", expanded=False):
     if odds_data:
         odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
 
-    # Persist odds to DB for historical backtesting
+    # Persist odds to DB for historical backtesting (with prop odds if available)
     if odds_data and race_id:
-        save_odds_to_db(odds_data, race_id)
+        prop_odds = fetch_nascar_prop_odds()
+        save_odds_to_db(odds_data, race_id,
+                        top5_data=prop_odds.get("top5"),
+                        top10_data=prop_odds.get("top10"))
 
 
 # ============================================================
@@ -346,6 +350,8 @@ from tabs import tab_optimizer as topt
 from tabs import tab_accuracy as tacc
 
 with tab_data:
+    # Load prop odds (top5/top10) from DB — always available even if live fetch fails
+    _prop_odds = load_race_prop_odds(race_id) if race_id else {"top5": {}, "top10": {}}
     td.render(
         feed=feed, lap_data=lap_data, lap_averages_df=lap_averages_df,
         entry_list_df=entry_list_df, qualifying_df=qualifying_df,
@@ -353,7 +359,7 @@ with tab_data:
         series_id=series_id, race_name=race_name, track_name=track_name,
         track_type=track_type, dk_df=dk_df, fd_df=fd_df,
         completed_races=completed_races, selected_year=selected_year,
-        fl_counts=fl_counts, odds_data=odds_data,
+        fl_counts=fl_counts, odds_data=odds_data, prop_odds=_prop_odds,
     )
 
 with tab_practice:

@@ -16,7 +16,8 @@ from src.charts import (
 
 def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
            results_df, is_prerace, series_id, race_name, track_name, track_type,
-           dk_df, fd_df, completed_races, selected_year, fl_counts, odds_data=None):
+           dk_df, fd_df, completed_races, selected_year, fl_counts, odds_data=None,
+           prop_odds=None):
     """Render the consolidated Data tab — same wide table for pre and post race."""
 
     series_name = SERIES_LABELS.get(series_id, "Cup")
@@ -87,6 +88,28 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
             return odds_data.get(matched) if matched else None
         master["Win Odds"] = master["Driver"].map(_match_odds).map(_parse_odds)
 
+    # Top 5 / Top 10 finish odds (informational only, from sportsbook)
+    if prop_odds is None:
+        prop_odds = {"top5": {}, "top10": {}}
+    if prop_odds.get("top5"):
+        t5_data = prop_odds["top5"]
+        t5_keys = list(t5_data.keys())
+        def _match_t5(driver):
+            if driver in t5_data:
+                return t5_data[driver]
+            matched = fuzzy_match_name(driver, t5_keys)
+            return t5_data.get(matched) if matched else None
+        master["Top 5 Odds"] = master["Driver"].map(_match_t5)
+    if prop_odds.get("top10"):
+        t10_data = prop_odds["top10"]
+        t10_keys = list(t10_data.keys())
+        def _match_t10(driver):
+            if driver in t10_data:
+                return t10_data[driver]
+            matched = fuzzy_match_name(driver, t10_keys)
+            return t10_data.get(matched) if matched else None
+        master["Top 10 Odds"] = master["Driver"].map(_match_t10)
+
     # Qualifying
     if not qualifying_df.empty and "Qualifying Position" not in master.columns:
         qual_want = ["Driver", "Qualifying Position", "Best Lap Speed"]
@@ -145,7 +168,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     # --- Build column groups for display ---
     driver_info = ["Driver"]
-    for c in ["DK Salary", "FD Salary", "Win Odds"]:
+    for c in ["DK Salary", "FD Salary", "Win Odds", "Top 5 Odds", "Top 10 Odds"]:
         if c in master.columns:
             driver_info.append(c)
 
@@ -193,8 +216,9 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         display_df = display_df[mask]
 
     # Fill nulls with sentinel values so missing data sorts to bottom
-    if "Win Odds" in display_df.columns:
-        display_df["Win Odds"] = display_df["Win Odds"].fillna(999999)
+    for odds_col in ["Win Odds", "Top 5 Odds", "Top 10 Odds"]:
+        if odds_col in display_df.columns:
+            display_df[odds_col] = display_df[odds_col].fillna(999999)
 
     # Track history: large sentinel for "lower is better" cols, 0 for count/rating cols
     th_high_sentinel = {"TH_Avg Finish": 99, "TH_Avg Start": 99, "TH_DNF": 0}
