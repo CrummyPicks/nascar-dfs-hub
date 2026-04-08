@@ -16,7 +16,8 @@ try:
         extract_entry_list, extract_qualifying, extract_race_results,
         compute_fastest_laps, detect_prerace, filter_point_races,
         parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
-        sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
+        sync_dk_salaries_to_db, sync_fd_salaries_to_db,
+        fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
         fetch_nascar_prop_odds, load_race_prop_odds, load_race_odds,
         _fetch_all_nascar_odds, query_salaries,
@@ -247,8 +248,8 @@ with st.expander("Settings & Data Upload", expanded=False):
         # Clear button for saved salaries
         if has_saved_dk:
             if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
-                import sqlite3 as _sql
                 try:
+                    import sqlite3 as _sql
                     _conn = _sql.connect(str(DB_PATH))
                     _db_race = _conn.execute(
                         "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
@@ -260,8 +261,8 @@ with st.expander("Settings & Data Upload", expanded=False):
                         _conn.commit()
                     _conn.close()
                     st.rerun()
-                except Exception:
-                    st.error("Failed to clear salaries")
+                except Exception as e:
+                    st.error(f"Failed to clear salaries: {e}")
     with s_cols[1]:
         st.markdown("**FD Salary CSV**")
         if has_saved_fd:
@@ -272,8 +273,8 @@ with st.expander("Settings & Data Upload", expanded=False):
             st.caption("CSV uploaded — will save to DB")
         if has_saved_fd:
             if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
-                import sqlite3 as _sql
                 try:
+                    import sqlite3 as _sql
                     _conn = _sql.connect(str(DB_PATH))
                     _db_race = _conn.execute(
                         "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
@@ -285,8 +286,8 @@ with st.expander("Settings & Data Upload", expanded=False):
                         _conn.commit()
                     _conn.close()
                     st.rerun()
-                except Exception:
-                    st.error("Failed to clear salaries")
+                except Exception as e:
+                    st.error(f"Failed to clear salaries: {e}")
     with s_cols[2]:
         st.markdown("**Manual Practice**")
         practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
@@ -410,7 +411,6 @@ if dk_file or (not has_saved_dk and not dk_auto.empty):
 
 # Sync FD salaries to DB when uploaded
 if fd_file and not fd_df.empty:
-    from src.data import sync_fd_salaries_to_db
     sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
 
 

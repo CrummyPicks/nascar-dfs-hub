@@ -754,18 +754,21 @@ def fetch_dk_salaries_live(series_id: int = 1) -> pd.DataFrame:
     # Try to match the specific series by keywords in group metadata
     keywords = SERIES_DK_KEYWORDS.get(series_id, [])
     if keywords:
-        def _group_text(g):
-            parts = [
-                g.get("ContestStartTimeSuffix") or "",
-                g.get("GameType") or "",
-                g.get("ContestTypeName") or "",
-                g.get("GameSetKey") or "",
-            ]
-            return " ".join(parts).lower()
+        try:
+            def _group_text(g):
+                parts = [
+                    str(g.get("ContestStartTimeSuffix") or ""),
+                    str(g.get("GameType") or ""),
+                    str(g.get("ContestTypeName") or ""),
+                    str(g.get("GameSetKey") or ""),
+                ]
+                return " ".join(parts).lower()
 
-        filtered = [g for g in draft_groups if any(kw in _group_text(g) for kw in keywords)]
-        if filtered:
-            draft_groups = filtered
+            filtered = [g for g in draft_groups if any(kw in _group_text(g) for kw in keywords)]
+            if filtered:
+                draft_groups = filtered
+        except Exception:
+            pass  # Fall back to unfiltered groups
 
     # Get the first (most upcoming) matching group
     group = draft_groups[0]
