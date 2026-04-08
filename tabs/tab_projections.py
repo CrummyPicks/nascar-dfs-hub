@@ -639,18 +639,33 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Resolve DB race ID for exclusion
     db_race_id = _resolve_db_race_id(race_id, series_id) if race_id else None
 
-    # Always scrape driveraverages.com as the baseline
+    # Try scraping driveraverages.com as the baseline (rich historical depth).
+    # Falls back to DB-only queries for series where the scraper returns empty
+    # (e.g. O'Reilly/Xfinity, Trucks if the site doesn't serve that series).
     with st.spinner("Loading track history..."):
         th_df = scrape_track_history(track_name, series_id)
 
+    if th_df.empty:
+        # Scrape failed — fall back to DB-only track history
+        db_th = _query_db_track_history(
+            track_name, series_id,
+            exclude_race_id=db_race_id,
+            before_date=race_date if not is_prerace else None,
+        )
+        if not db_th.empty:
+            th_df = db_th
+
     if not is_prerace and race_date and not th_df.empty:
         # Completed race — subtract current race + future races from scraped data.
-        # Query DB for races AT THIS TRACK on or after this race date to remove.
-        races_to_remove = _query_races_to_subtract(
-            track_name, series_id, race_date, db_race_id
-        )
-        if races_to_remove:
-            th_df = _subtract_races_from_scraped(th_df, races_to_remove)
+        # Only needed for scraped data; DB queries already filter via before_date.
+        # Check if this DF came from scraping (has "Avg Rating" column) vs DB.
+        is_scraped = "Avg Rating" in th_df.columns
+        if is_scraped:
+            races_to_remove = _query_races_to_subtract(
+                track_name, series_id, race_date, db_race_id
+            )
+            if races_to_remove:
+                th_df = _subtract_races_from_scraped(th_df, races_to_remove)
 
     if not th_df.empty:
         for col in ["Avg Finish", "Avg Start", "Laps Led", "Races", "Avg Rating",
@@ -693,10 +708,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             type_finishes = {}
             type_laps_led = {}
             type_races = {}
+            scraped_any = False
             for sim_track in same_type_tracks[:6]:
                 sim_th = scrape_track_history(sim_track, series_id)
                 if sim_th.empty:
                     continue
+                scraped_any = True
                 # For completed races, subtract future data from each similar track
                 if not is_prerace and race_date:
                     removals = _query_races_to_subtract(
@@ -721,16 +738,34 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     if pd.notna(races):
                         type_races.setdefault(d, []).append(races)
 
-            tt_names = list(type_finishes.keys())
-            for d in drivers:
-                matched = d if d in type_finishes else fuzzy_match_name(d, tt_names)
-                if matched and matched in type_finishes:
-                    total_races = sum(type_races.get(matched, [1]))
-                    tt_data[d] = {
-                        "avg_finish": np.mean(type_finishes[matched]),
-                        "laps_led_per_race": np.mean(type_laps_led.get(matched, [0])),
-                        "races": total_races,
-                    }
+            # If scraping returned nothing (e.g. Xfinity/Trucks), fall back to DB
+            if not scraped_any:
+                db_tt = _query_db_track_type_history(
+                    track_type, series_id,
+                    exclude_track=track_name,
+                    exclude_race_id=db_race_id,
+                    before_date=race_date if not is_prerace else None,
+                )
+                for d_name, stats in db_tt.items():
+                    matched = d_name if d_name in drivers else fuzzy_match_name(d_name, drivers)
+                    if matched:
+                        tt_data[matched] = {
+                            "avg_finish": stats["avg_finish"],
+                            "laps_led_per_race": stats.get("laps_led_per_race", 0),
+                            "races": stats.get("races", 1),
+                        }
+
+            if scraped_any:
+                tt_names = list(type_finishes.keys())
+                for d in drivers:
+                    matched = d if d in type_finishes else fuzzy_match_name(d, tt_names)
+                    if matched and matched in type_finishes:
+                        total_races = sum(type_races.get(matched, [1]))
+                        tt_data[d] = {
+                            "avg_finish": np.mean(type_finishes[matched]),
+                            "laps_led_per_race": np.mean(type_laps_led.get(matched, [0])),
+                            "races": total_races,
+                        }
 
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
     qual_pos = {}

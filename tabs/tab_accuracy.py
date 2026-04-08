@@ -459,11 +459,13 @@ def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
     type_finishes = {}
     type_laps_led = {}
     type_races = {}
+    scraped_any = False
 
     for sim_track in matching_tracks[:6]:
         sim_th = scrape_track_history(sim_track, series_id)
         if sim_th.empty:
             continue
+        scraped_any = True
         if race_date:
             removals = _query_races_to_subtract(sim_track, series_id, race_date)
             if removals:
@@ -484,6 +486,12 @@ def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
                 type_laps_led.setdefault(d, []).append(ll / races)
             if pd.notna(races):
                 type_races.setdefault(d, []).append(races)
+
+    # If scraping returned nothing (e.g. Xfinity/Trucks), fall back to DB
+    if not scraped_any:
+        return _query_driver_track_type_stats(track_type, series_id,
+                                               exclude_track=exclude_track,
+                                               before_date=race_date)
 
     result = {}
     for d in type_finishes:
