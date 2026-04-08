@@ -439,18 +439,16 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
         return pd.DataFrame(), pd.DataFrame()
 
 
-@st.cache_data(ttl=7200, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def scrape_track_history(track_name: str, series_id: int = 1) -> pd.DataFrame:
-    """Scrape driveraverages.com for recent track history."""
-    _v = 2  # cache-bust: bump to invalidate stale data after code changes
+    """Scrape driveraverages.com recent track history (v3: comma-strip)."""
     recent, _ = _scrape_da_tables(track_name, series_id)
     return recent
 
 
-@st.cache_data(ttl=7200, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def scrape_track_history_alltime(track_name: str, series_id: int = 1) -> pd.DataFrame:
-    """Scrape driveraverages.com for all-time track history."""
-    _v = 2  # cache-bust: bump to invalidate stale data after code changes
+    """Scrape driveraverages.com all-time track history (v3: comma-strip)."""
     _, alltime = _scrape_da_tables(track_name, series_id)
     return alltime
 
