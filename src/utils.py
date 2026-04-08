@@ -216,16 +216,20 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def safe_fillna(df: pd.DataFrame, fill_value="") -> pd.DataFrame:
-    """Fill NaN values safely, converting nullable int/float columns to object first.
-    Uses empty string by default to keep Arrow serialization happy.
+    """Fill NaN values safely for Streamlit display.
+    Numeric columns stay numeric (converted to float64 which handles NaN natively)
+    so that Streamlit column sorting works correctly.
+    Non-numeric columns get fill_value (empty string by default).
     """
     result = df.copy()
     for col in result.columns:
         dtype_str = str(result[col].dtype)
         if dtype_str in ("Int64", "Int32", "Int16", "Int8"):
-            result[col] = result[col].astype(object).where(result[col].notna(), fill_value)
+            # Convert nullable int to float64 — preserves NaN and numeric sorting
+            result[col] = result[col].astype("float64")
         elif dtype_str.startswith("float"):
-            result[col] = result[col].astype(object).where(result[col].notna(), fill_value)
+            # Already numeric, leave as-is (NaN displays as blank in Streamlit)
+            pass
         else:
             result[col] = result[col].fillna(fill_value)
     return result
