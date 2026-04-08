@@ -184,6 +184,19 @@ else:
 # SETTINGS EXPANDER (DK/FD upload, weights)
 # ============================================================
 with st.expander("Settings & Data Upload", expanded=False):
+    # ── Admin authentication ──────────────────────────────────────────────
+    _admin_pw = st.secrets.get("ADMIN_PASSWORD", "") if hasattr(st, "secrets") else ""
+    is_admin = False
+    if _admin_pw:
+        pw_input = st.text_input("Admin Password", type="password", key="admin_pw",
+                                 placeholder="Enter password to enable uploads")
+        is_admin = (pw_input == _admin_pw)
+        if pw_input and not is_admin:
+            st.error("Incorrect password")
+    else:
+        # No password configured — allow everything (local dev)
+        is_admin = True
+
     # ── Auto-fetch status row ──────────────────────────────────────────────
     auto_odds = fetch_nascar_odds()
     dk_auto = fetch_dk_salaries_live(series_id=series_id)
@@ -197,36 +210,14 @@ with st.expander("Settings & Data Upload", expanded=False):
     # Status summary at top
     status_parts = []
     if not dk_auto.empty:
-        status_parts.append(f"✅ DK Salary: {len(dk_auto)} drivers")
+        status_parts.append(f"DK Salary: {len(dk_auto)} drivers")
     else:
-        status_parts.append("⚠️ DK Salary: unavailable")
+        status_parts.append("DK Salary: unavailable")
     if auto_odds:
-        status_parts.append(f"✅ Odds: {len(auto_odds)} drivers")
+        status_parts.append(f"Odds: {len(auto_odds)} drivers")
     else:
-        status_parts.append("⚠️ Odds: unavailable")
+        status_parts.append("Odds: unavailable")
     st.caption(" | ".join(status_parts))
-
-    # Refresh All button
-    ref_cols = st.columns([1, 1, 4])
-    with ref_cols[0]:
-        if st.button("Refresh All Data", key="refresh_all_btn", type="primary"):
-            _fetch_all_nascar_odds.clear()
-            fetch_dk_salaries_live.clear()
-            fresh_odds = fetch_nascar_odds()
-            fresh_dk = fetch_dk_salaries_live(series_id=series_id)
-            msgs = []
-            if fresh_odds:
-                auto_odds = fresh_odds
-                st.session_state["last_good_odds"] = fresh_odds
-                msgs.append(f"Odds: {len(fresh_odds)} drivers")
-            else:
-                msgs.append("Odds: failed")
-            if not fresh_dk.empty:
-                dk_auto = fresh_dk
-                msgs.append(f"DK Salary: {len(fresh_dk)} drivers")
-            else:
-                msgs.append("DK Salary: failed")
-            st.success(f"Refreshed — {' | '.join(msgs)}")
 
     # Check for saved salaries in DB for this race
     db_dk_df = query_salaries(race_id=race_id, platform="DraftKings")
@@ -234,120 +225,155 @@ with st.expander("Settings & Data Upload", expanded=False):
     has_saved_dk = not db_dk_df.empty
     has_saved_fd = not db_fd_df.empty
 
-    s_cols = st.columns([1, 1, 1, 1])
-    with s_cols[0]:
-        st.markdown("**DK Salary**")
-        if has_saved_dk:
-            st.caption(f"Saved: {len(db_dk_df)} drivers in DB for this race")
-        dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed",
-                                   key=f"dk_upload_{race_id}")
-        if dk_file:
-            st.caption("CSV uploaded — will save to DB")
-        elif not dk_auto.empty and not has_saved_dk:
-            st.caption(f"Auto: {len(dk_auto)} drivers from DK API")
-        # Clear button for saved salaries
-        if has_saved_dk:
-            if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
-                try:
-                    import sqlite3 as _sql
-                    _conn = _sql.connect(str(DB_PATH))
-                    _db_race = _conn.execute(
-                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                    ).fetchone()
-                    if _db_race:
-                        _conn.execute(
-                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
-                            (_db_race[0],))
-                        _conn.commit()
-                    _conn.close()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to clear salaries: {e}")
-    with s_cols[1]:
-        st.markdown("**FD Salary CSV**")
-        if has_saved_fd:
-            st.caption(f"Saved: {len(db_fd_df)} drivers in DB for this race")
-        fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed",
-                                   key=f"fd_upload_{race_id}")
-        if fd_file:
-            st.caption("CSV uploaded — will save to DB")
-        if has_saved_fd:
-            if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
-                try:
-                    import sqlite3 as _sql
-                    _conn = _sql.connect(str(DB_PATH))
-                    _db_race = _conn.execute(
-                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                    ).fetchone()
-                    if _db_race:
-                        _conn.execute(
-                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
-                            (_db_race[0],))
-                        _conn.commit()
-                    _conn.close()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to clear salaries: {e}")
-    with s_cols[2]:
-        st.markdown("**Manual Practice**")
-        practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
-                                     height=80, label_visibility="collapsed")
-        practice_data = {}
-        if practice_text.strip():
-            for line in practice_text.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 2:
+    # ── Admin-only controls (upload, refresh, clear) ──────────────────────
+    dk_file = None
+    fd_file = None
+    practice_data = {}
+    odds_data = {}
+    odds_source = ""
+    is_cup = (series_id == 1)
+
+    if is_admin:
+        # Refresh All button
+        ref_cols = st.columns([1, 1, 4])
+        with ref_cols[0]:
+            if st.button("Refresh All Data", key="refresh_all_btn", type="primary"):
+                _fetch_all_nascar_odds.clear()
+                fetch_dk_salaries_live.clear()
+                fresh_odds = fetch_nascar_odds()
+                fresh_dk = fetch_dk_salaries_live(series_id=series_id)
+                msgs = []
+                if fresh_odds:
+                    auto_odds = fresh_odds
+                    st.session_state["last_good_odds"] = fresh_odds
+                    msgs.append(f"Odds: {len(fresh_odds)} drivers")
+                else:
+                    msgs.append("Odds: failed")
+                if not fresh_dk.empty:
+                    dk_auto = fresh_dk
+                    msgs.append(f"DK Salary: {len(fresh_dk)} drivers")
+                else:
+                    msgs.append("DK Salary: failed")
+                st.success(f"Refreshed — {' | '.join(msgs)}")
+
+        s_cols = st.columns([1, 1, 1, 1])
+        with s_cols[0]:
+            st.markdown("**DK Salary**")
+            if has_saved_dk:
+                st.caption(f"Saved: {len(db_dk_df)} drivers in DB for this race")
+            dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed",
+                                       key=f"dk_upload_{race_id}")
+            if dk_file:
+                st.caption("CSV uploaded — will save to DB")
+            elif not dk_auto.empty and not has_saved_dk:
+                st.caption(f"Auto: {len(dk_auto)} drivers from DK API")
+            # Clear button for saved salaries
+            if has_saved_dk:
+                if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
                     try:
-                        practice_data[parts[0]] = float(parts[1])
-                    except (ValueError, IndexError):
-                        pass
-    with s_cols[3]:
-        st.markdown("**Betting Odds**")
-        # Action Network only has Cup odds — don't show for other series
-        is_cup = (series_id == 1)
-        if is_cup and auto_odds:
-            st.caption(f"✅ Auto: {len(auto_odds)} drivers from Action Network")
-        elif not is_cup:
-            st.caption(f"⚠️ Auto odds not available for {series_name} series (Cup only)")
-        else:
-            st.caption("⚠️ No odds — Action Network may be down, or no upcoming race listed")
-        odds_text = st.text_area("Odds", placeholder="Chase Elliott, +1200\nDenny Hamlin, +800",
-                                 height=80, label_visibility="collapsed",
-                                 help="Paste to override auto-fetched odds (American format)")
-        odds_data = {}
-        odds_source = ""
-        # Manual text overrides auto if provided
-        if odds_text.strip():
-            for line in odds_text.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 2:
+                        import sqlite3 as _sql
+                        _conn = _sql.connect(str(DB_PATH))
+                        _db_race = _conn.execute(
+                            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                        ).fetchone()
+                        if _db_race:
+                            _conn.execute(
+                                "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
+                                (_db_race[0],))
+                            _conn.commit()
+                        _conn.close()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to clear salaries: {e}")
+        with s_cols[1]:
+            st.markdown("**FD Salary CSV**")
+            if has_saved_fd:
+                st.caption(f"Saved: {len(db_fd_df)} drivers in DB for this race")
+            fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed",
+                                       key=f"fd_upload_{race_id}")
+            if fd_file:
+                st.caption("CSV uploaded — will save to DB")
+            if has_saved_fd:
+                if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
                     try:
-                        odds_data[parts[0]] = parts[1]
-                    except (ValueError, IndexError):
-                        pass
-            odds_source = "manual"
-        elif is_cup and auto_odds:
-            # Only use auto-fetched odds for Cup series
-            odds_data = auto_odds
-            odds_source = "action_network"
-        # Fallback: estimate odds from DK salary when no real odds available
-        _salary_for_odds = dk_auto if not dk_auto.empty else (
-            db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]]
-            if has_saved_dk else pd.DataFrame()
-        )
-        if not odds_data and not _salary_for_odds.empty:
-            odds_data = estimate_odds_from_salaries(_salary_for_odds)
-            if odds_data:
-                odds_source = "salary_estimate"
-                reason = "Action Network unavailable" if is_cup else f"no odds source for {series_name} series"
-                st.caption(f"📊 Using salary-estimated odds ({reason})")
+                        import sqlite3 as _sql
+                        _conn = _sql.connect(str(DB_PATH))
+                        _db_race = _conn.execute(
+                            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                        ).fetchone()
+                        if _db_race:
+                            _conn.execute(
+                                "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
+                                (_db_race[0],))
+                            _conn.commit()
+                        _conn.close()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to clear salaries: {e}")
+        with s_cols[2]:
+            st.markdown("**Manual Practice**")
+            practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
+                                         height=80, label_visibility="collapsed")
+            if practice_text.strip():
+                for line in practice_text.strip().split("\n"):
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 2:
+                        try:
+                            practice_data[parts[0]] = float(parts[1])
+                        except (ValueError, IndexError):
+                            pass
+        with s_cols[3]:
+            st.markdown("**Betting Odds**")
+            if is_cup and auto_odds:
+                st.caption(f"Auto: {len(auto_odds)} drivers from Action Network")
+            elif not is_cup:
+                st.caption(f"Auto odds not available for {series_name} series (Cup only)")
+            else:
+                st.caption("No odds — Action Network may be down, or no upcoming race listed")
+            odds_text = st.text_area("Odds", placeholder="Chase Elliott, +1200\nDenny Hamlin, +800",
+                                     height=80, label_visibility="collapsed",
+                                     help="Paste to override auto-fetched odds (American format)")
+            # Manual text overrides auto if provided
+            if odds_text.strip():
+                for line in odds_text.strip().split("\n"):
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 2:
+                        try:
+                            odds_data[parts[0]] = parts[1]
+                        except (ValueError, IndexError):
+                            pass
+                odds_source = "manual"
+    else:
+        # Read-only view for non-admin users
+        st.caption("Read-only mode — enter admin password to upload data")
+        if has_saved_dk:
+            st.caption(f"DK Salary: {len(db_dk_df)} drivers saved for this race")
+        if has_saved_fd:
+            st.caption(f"FD Salary: {len(db_fd_df)} drivers saved for this race")
+
+    # Auto odds (available to everyone, read-only)
+    if not odds_data and is_cup and auto_odds:
+        odds_data = auto_odds
+        odds_source = "action_network"
+
+    # Fallback: estimate odds from DK salary when no real odds available
+    _salary_for_odds = dk_auto if not dk_auto.empty else (
+        db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]]
+        if has_saved_dk else pd.DataFrame()
+    )
+    if not odds_data and not _salary_for_odds.empty:
+        odds_data = estimate_odds_from_salaries(_salary_for_odds)
+        if odds_data:
+            odds_source = "salary_estimate"
+            reason = "Action Network unavailable" if is_cup else f"no odds source for {series_name} series"
+            st.caption(f"Using salary-estimated odds ({reason})")
 
     # Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
     if odds_data:
         odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
 
-    # Persist odds to DB for historical backtesting (with prop odds if available)
-    if odds_data and race_id:
+    # Persist odds to DB for historical backtesting (admin only)
+    if is_admin and odds_data and race_id:
         prop_odds = fetch_nascar_prop_odds()
         save_odds_to_db(odds_data, race_id,
                         top3_data=prop_odds.get("top3"),
