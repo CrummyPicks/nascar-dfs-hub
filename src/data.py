@@ -422,6 +422,8 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
             df = df.drop(columns=["Detail"], errors="ignore")
             for col in df.columns:
                 if col != "Driver":
+                    # Strip commas from numbers like "1,027" before conversion
+                    df[col] = df[col].astype(str).str.replace(",", "", regex=False)
                     df[col] = pd.to_numeric(df[col], errors="coerce")
             return df
 
