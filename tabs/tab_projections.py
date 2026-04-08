@@ -304,24 +304,32 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         w_track = w_cols[1].number_input("Track History", 0, 100, 35, 5, key="pw_track")
         w_prac = w_cols[2].number_input("Practice", 0, 100, 25, 5, key="pw_prac")
 
-    # Smart weight handling: if odds not available, redistribute that weight
+    # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
+    has_practice = bool(practice_data)
     effective_odds = w_odds if has_odds else 0
-    raw_total = w_track + w_prac + effective_odds
+    effective_prac = w_prac if has_practice else 0
+
+    raw_total = w_track + effective_prac + effective_odds
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
             "track_type": 0,
             "qual": 0,
-            "practice": w_prac / raw_total,
+            "practice": effective_prac / raw_total,
             "odds": effective_odds / raw_total,
         }
     else:
-        wn = {"track": 0.35, "track_type": 0, "qual": 0, "practice": 0.30, "odds": 0.35}
+        # Fallback: 60% track, 40% odds
+        wn = {"track": 0.60, "track_type": 0, "qual": 0, "practice": 0, "odds": 0.40}
 
+    redist_msgs = []
     if not has_odds:
-        st.caption("⚠️ No odds data — odds weight redistributed to other signals. "
-                   "Paste odds manually or check Action Network availability.")
+        redist_msgs.append("No odds data")
+    if not has_practice:
+        redist_msgs.append("No practice data")
+    if redist_msgs:
+        st.caption(f"⚠️ {' | '.join(redist_msgs)} — weight redistributed to available signals.")
 
     # ── Dynamic dominator ceiling from DB ────────────────────────────────────
     calibration = _get_track_dominator_calibration(track_name, track_type)
@@ -1000,6 +1008,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     proj = proj.sort_values("Proj DK", ascending=False).reset_index(drop=True)
     proj.index = proj.index + 1
     proj.index.name = "Rank"
+
+    # Share Proj DK with optimizer tab via session state
+    st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
 
     # Rename Start to Qual Pos for clarity in projections context
     if "Start" in proj.columns:

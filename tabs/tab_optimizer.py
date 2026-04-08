@@ -8,7 +8,7 @@ import sqlite3
 import os
 
 from src.config import SALARY_CAP, ROSTER_SIZE, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
-from src.utils import safe_fillna, format_display_df, fuzzy_match_name
+from src.utils import safe_fillna, format_display_df, fuzzy_match_name, fuzzy_get, build_norm_lookup
 
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
@@ -30,26 +30,28 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         return pd.DataFrame(), "no salary data"
 
     # Read weights from session state (set by Projections tab sliders)
-    w_track = st.session_state.get("pw_track", 30)
-    w_type  = st.session_state.get("pw_type", 20)
-    w_qual  = st.session_state.get("pw_qual", 15)
-    w_prac  = st.session_state.get("pw_prac", 20)
-    w_odds  = st.session_state.get("pw_odds", 15)
+    w_track = st.session_state.get("pw_track", 35)
+    w_odds  = st.session_state.get("pw_odds", 35)
+    w_prac  = st.session_state.get("pw_prac", 25)
 
-    # Smart weight handling: if odds not available, redistribute
+    # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
+    has_practice = bool(practice_data)
     effective_odds = w_odds if has_odds else 0
-    raw_total = w_track + w_type + w_qual + w_prac + effective_odds
+    effective_prac = w_prac if has_practice else 0
+
+    raw_total = w_track + effective_prac + effective_odds
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
-            "track_type": w_type / raw_total,
-            "qual": w_qual / raw_total,
-            "practice": w_prac / raw_total,
+            "track_type": 0,
+            "qual": 0,
+            "practice": effective_prac / raw_total,
             "odds": effective_odds / raw_total,
         }
     else:
-        wn = {"track": 0.30, "track_type": 0.20, "qual": 0.15, "practice": 0.20, "odds": 0.15}
+        # Fallback: 60% track, 40% odds (no practice)
+        wn = {"track": 0.60, "track_type": 0, "qual": 0, "practice": 0, "odds": 0.40}
 
     pool = dk_df.drop_duplicates("Driver").copy()
     field_size = len(pool)
@@ -64,9 +66,11 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
+        th_names = th_idx.index.tolist()
         for d in drivers:
-            if d in th_idx.index:
-                row = th_idx.loc[d]
+            matched = d if d in th_idx.index else fuzzy_match_name(d, th_names)
+            if matched and matched in th_idx.index:
+                row = th_idx.loc[matched]
                 af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
                 ar = row.get("Avg Rating", 80) if pd.notna(row.get("Avg Rating")) else 80
                 finish_s = max(0, (40 - af) / 39 * 100) * 0.5
@@ -100,9 +104,11 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
                 af = r.get("Avg Finish")
                 if d and pd.notna(af):
                     type_finishes.setdefault(d, []).append(af)
+        tf_norm = build_norm_lookup(type_finishes)
         for d in drivers:
-            if d in type_finishes:
-                avg_f = np.mean(type_finishes[d])
+            tf_val = fuzzy_get(d, type_finishes, tf_norm)
+            if tf_val is not None:
+                avg_f = np.mean(tf_val)
                 tt_scores[d] = max(5, min(95, (40 - avg_f) / 39 * 100))
             else:
                 tt_scores[d] = 35
@@ -114,10 +120,12 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         qclean = qualifying_df.dropna(subset=["Driver"]).copy()
         qclean["Qualifying Position"] = pd.to_numeric(qclean["Qualifying Position"], errors="coerce")
         qidx = qclean.drop_duplicates("Driver").set_index("Driver")["Qualifying Position"]
+        q_names = qidx.index.tolist()
         max_q = qidx.max() if not qidx.empty else field_size
         for d in drivers:
-            if d in qidx.index:
-                qp = qidx[d]
+            matched = d if d in qidx.index else fuzzy_match_name(d, q_names)
+            if matched and matched in qidx.index:
+                qp = qidx[matched]
                 qual_scores[d] = max(5, 100 - (qp - 1) / max(max_q - 1, 1) * 95)
             else:
                 qual_scores[d] = 35
@@ -126,10 +134,12 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     # ── 4. Practice Score ───────────────────────────────────────────────────
     prac_scores = {}
     if practice_data:
+        prac_norm = build_norm_lookup(practice_data)
         max_p = max(practice_data.values()) if practice_data else field_size
         for d in drivers:
-            if d in practice_data:
-                prac_scores[d] = max(5, 100 - (practice_data[d] - 1) / max(max_p - 1, 1) * 95)
+            pval = fuzzy_get(d, practice_data, prac_norm)
+            if pval is not None:
+                prac_scores[d] = max(5, 100 - (pval - 1) / max(max_p - 1, 1) * 95)
             else:
                 prac_scores[d] = 35
     pool["PracScore"] = pool["Driver"].map(lambda d: prac_scores.get(d, 50))
@@ -159,19 +169,31 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
                     odds_scores[d] = 20
     pool["OddsScore"] = pool["Driver"].map(lambda d: odds_scores.get(d, 35))
 
-    # ── Weighted composite ──────────────────────────────────────────────────
-    pool["Proj Score"] = (
-        pool["TrackScore"] * wn["track"] +
-        pool["TypeScore"]  * wn["track_type"] +
-        pool["QualScore"]  * wn["qual"] +
-        pool["PracScore"]  * wn["practice"] +
-        pool["OddsScore"]  * wn["odds"]
-    ).round(1)
+    # ── Use Proj DK from Projections tab when available ──────────────────────
+    proj_dk_map = st.session_state.get("proj_dk_map", {})
+    if proj_dk_map:
+        proj_dk_norm = build_norm_lookup(proj_dk_map)
+        pool["Proj Score"] = pool["Driver"].map(
+            lambda d: fuzzy_get(d, proj_dk_map, proj_dk_norm) or 0).round(1)
+    else:
+        # Fallback: weighted composite from individual signals
+        pool["Proj Score"] = (
+            pool["TrackScore"] * wn["track"] +
+            pool["TypeScore"]  * wn["track_type"] +
+            pool["QualScore"]  * wn["qual"] +
+            pool["PracScore"]  * wn["practice"] +
+            pool["OddsScore"]  * wn["odds"]
+        ).round(1)
 
-    pool["Value"] = (pool["Proj Score"] / (pool["DK Salary"] / 1000)).round(2)
+    pool["Value"] = np.where(
+        pool["DK Salary"] > 0,
+        (pool["Proj Score"] / (pool["DK Salary"] / 1000)).round(2),
+        0
+    )
 
     # Build signal label
     signals_used = []
+    if proj_dk_map: signals_used.append("proj_dk")
     if th_scores: signals_used.append("track")
     if tt_scores: signals_used.append("type")
     if qual_scores: signals_used.append("qual")
