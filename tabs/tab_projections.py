@@ -297,28 +297,28 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
-        st.caption("Adjust signal weights — auto-normalizes to 100%")
-        w_cols = st.columns(5)
-        w_odds = w_cols[0].number_input("Odds", 0, 100, 25, 5, key="pw_odds")
-        w_track = w_cols[1].number_input("Track History", 0, 100, 20, 5, key="pw_track")
-        w_prac = w_cols[2].number_input("Practice", 0, 100, 20, 5, key="pw_prac")
-        w_qual = w_cols[3].number_input("Qualifying", 0, 100, 15, 5, key="pw_qual")
-        w_type = w_cols[4].number_input("Track Type", 0, 100, 10, 5, key="pw_type")
+        st.caption("Adjust signal weights — auto-normalizes to 100%. "
+                   "Qualifying position is used for start pos only (not weighted).")
+        w_cols = st.columns(4)
+        w_odds = w_cols[0].number_input("Odds", 0, 100, 30, 5, key="pw_odds")
+        w_track = w_cols[1].number_input("Track History", 0, 100, 30, 5, key="pw_track")
+        w_prac = w_cols[2].number_input("Practice", 0, 100, 25, 5, key="pw_prac")
+        w_type = w_cols[3].number_input("Track Type", 0, 100, 15, 5, key="pw_type")
 
     # Smart weight handling: if odds not available, redistribute that weight
     has_odds = bool(odds_data)
     effective_odds = w_odds if has_odds else 0
-    raw_total = w_track + w_type + w_qual + w_prac + effective_odds
+    raw_total = w_track + w_type + w_prac + effective_odds
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
             "track_type": w_type / raw_total,
-            "qual": w_qual / raw_total,
+            "qual": 0,  # qualifying only used for start position, not finish prediction
             "practice": w_prac / raw_total,
             "odds": effective_odds / raw_total,
         }
     else:
-        wn = {"track": 0.30, "track_type": 0.20, "qual": 0.15, "practice": 0.20, "odds": 0.15}
+        wn = {"track": 0.30, "track_type": 0.20, "qual": 0, "practice": 0.25, "odds": 0.25}
 
     if not has_odds:
         st.caption("⚠️ No odds data — odds weight redistributed to other signals. "
@@ -559,12 +559,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             finish_signals.append(tt["avg_finish"])
             signal_weights.append(wn["track_type"])
 
-        if qp:
-            # Qualifying position: regress toward mid-field (noisy pre-race signal)
-            regress = 0.15
-            qual_finish = qp * (1 - regress) + (field_size * 0.5) * regress
-            finish_signals.append(qual_finish)
-            signal_weights.append(wn["qual"])
+        # NOTE: Qualifying is NOT a finish signal — it only determines start
+        # position. Place differential (start - proj finish) should reflect
+        # the gap between where a driver starts and where their talent signals
+        # say they'll finish. Including qualifying here would dampen that gap.
+        # The qualifying weight is redistributed proportionally to the other
+        # active finish signals.
 
         if pr:
             # Practice rank: regress toward mid-field (noisiest signal)
@@ -605,7 +605,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             if qp and qp <= field_size:
                 qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 30
                 dom_signals.append(qual_dom)
-                dom_weights_list.append(wn.get("qual", 0.15))
+                dom_weights_list.append(0.15)  # fixed weight — qual speed predicts domination
 
             if od and wn.get("odds", 0) > 0:
                 odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
@@ -637,7 +637,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             if qp and qp <= field_size:
                 qual_fl = max(0, (field_size + 1 - qp) / field_size) * 15
                 fl_signals.append(qual_fl)
-                fl_signal_weights.append(wn.get("qual", 0.15))
+                fl_signal_weights.append(0.15)  # fixed weight — qual speed predicts fast laps
 
             if pr:
                 max_p_val = max(practice_data.values()) if practice_data else field_size
