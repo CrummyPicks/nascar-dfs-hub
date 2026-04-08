@@ -22,6 +22,21 @@ PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
+def _api_race_id_to_db(api_race_id):
+    """Resolve a NASCAR API race_id to the internal DB race_id."""
+    if not api_race_id or not os.path.exists(PROJ_DB):
+        return None
+    try:
+        conn = sqlite3.connect(PROJ_DB)
+        row = conn.execute(
+            "SELECT id FROM races WHERE api_race_id = ?", (api_race_id,)
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
 def _ensure_saved_projections_table():
     """Create the saved_projections table if it doesn't exist."""
     if not os.path.exists(PROJ_DB):
@@ -178,8 +193,11 @@ def _load_actual_results(race, series_id):
 
 # ── DB-backed track stats (fast, no API calls) ──────────────────────────────
 
-def _query_driver_track_stats(track_name, series_id):
+def _query_driver_track_stats(track_name, series_id, exclude_race_id=None):
     """Query per-driver stats at a specific track from race_results table.
+
+    Args:
+        exclude_race_id: DB race ID to exclude (prevents data leakage in backtests)
 
     Returns dict of {driver_name: {avg_finish, avg_start, laps_led_per_race,
     fastest_laps_per_race, races, dnf_rate, crash_rate, speed_score}}
@@ -188,7 +206,13 @@ def _query_driver_track_stats(track_name, series_id):
         return {}
 
     conn = sqlite3.connect(PROJ_DB)
-    rows = conn.execute('''
+    where = "WHERE t.name LIKE ? AND r.series_id = ?"
+    params = [f"%{track_name}%", series_id]
+    if exclude_race_id:
+        where += " AND r.id != ?"
+        params.append(exclude_race_id)
+
+    rows = conn.execute(f'''
         SELECT d.full_name,
                COUNT(*) as races,
                AVG(rr.finish_pos) as avg_finish,
@@ -201,9 +225,9 @@ def _query_driver_track_stats(track_name, series_id):
         JOIN drivers d ON d.id = rr.driver_id
         JOIN races r ON r.id = rr.race_id
         JOIN tracks t ON t.id = r.track_id
-        WHERE t.name LIKE ? AND r.series_id = ?
+        {where}
         GROUP BY d.id
-    ''', (f"%{track_name}%", series_id)).fetchall()
+    ''', params).fetchall()
     conn.close()
 
     result = {}
@@ -225,17 +249,19 @@ def _query_driver_track_stats(track_name, series_id):
     return result
 
 
-def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
+def _query_driver_track_type_stats(track_type, series_id, exclude_track=None,
+                                    exclude_race_id=None):
     """Query per-driver stats across all tracks of a given type.
 
-    Uses track name filtering via TRACK_TYPE_MAP to handle subtypes correctly.
-    For parent types (e.g., "intermediate"), includes all subtypes.
+    Args:
+        exclude_track: Track name to exclude (for track-type cross-validation)
+        exclude_race_id: DB race ID to exclude (prevents data leakage)
+
     Returns dict of {driver_name: {avg_finish, laps_led_per_race, speed_score, ...}}
     """
     if not os.path.exists(PROJ_DB):
         return {}
 
-    # Find all tracks that belong to this type or whose parent matches
     from src.config import TRACK_TYPE_MAP as _TTM
     matching_tracks = [t for t, tt in _TTM.items()
                        if tt == track_type
@@ -247,6 +273,12 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
 
     conn = sqlite3.connect(PROJ_DB)
     placeholders = ",".join("?" for _ in matching_tracks)
+    where_extra = ""
+    params = matching_tracks + [series_id]
+    if exclude_race_id:
+        where_extra = " AND r.id != ?"
+        params.append(exclude_race_id)
+
     query = f'''
         SELECT d.full_name,
                COUNT(*) as races,
@@ -258,10 +290,9 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None):
         JOIN drivers d ON d.id = rr.driver_id
         JOIN races r ON r.id = rr.race_id
         JOIN tracks t ON t.id = r.track_id
-        WHERE t.name IN ({placeholders}) AND r.series_id = ?
+        WHERE t.name IN ({placeholders}) AND r.series_id = ?{where_extra}
         GROUP BY d.id
     '''
-    params = matching_tracks + [series_id]
 
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -348,10 +379,13 @@ def _generate_race_projections(race, series_id, weights=None):
     drivers = actuals["Driver"].unique().tolist()
     field_size = len(drivers)
 
-    th_data = _query_driver_track_stats(track_name, series_id)
+    # Exclude this race from its own history to prevent data leakage
+    db_rid = _api_race_id_to_db(race_id)
+    th_data = _query_driver_track_stats(track_name, series_id, exclude_race_id=db_rid)
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     tt_data = _query_driver_track_type_stats(parent_type, series_id,
-                                              exclude_track=track_name)
+                                              exclude_track=track_name,
+                                              exclude_race_id=db_rid)
 
     start_positions = {}
     for _, row in actuals.iterrows():
@@ -1179,13 +1213,15 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
 
         drivers = results["Driver"].unique().tolist()
 
-        # DB-backed track history (instant query, no API)
-        th_data = _query_driver_track_stats(track_name, series_id)
+        # DB-backed track history — exclude this race to prevent data leakage
+        db_rid = _api_race_id_to_db(race_id)
+        th_data = _query_driver_track_stats(track_name, series_id, exclude_race_id=db_rid)
 
         # DB-backed track type history — use parent type for broader data
         parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
         tt_data = _query_driver_track_type_stats(parent_type, series_id,
-                                                  exclude_track=track_name)
+                                                  exclude_track=track_name,
+                                                  exclude_race_id=db_rid)
 
         # Start positions from actual results (qualifying proxy)
         start_positions = {}

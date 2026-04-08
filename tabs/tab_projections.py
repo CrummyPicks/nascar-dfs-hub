@@ -355,14 +355,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         entry_list_df, qualifying_df, lap_averages_df,
         practice_data, wn, track_name, series_id, dk_df, race_laps,
         odds_data=odds_data or {}, calibration=calibration,
-        race_id=race_id, race_name=race_name,
+        race_id=race_id, race_name=race_name, is_prerace=is_prerace,
     )
 
 
 def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                             practice_data, wn, track_name, series_id, dk_df,
                             race_laps, odds_data=None, calibration=None,
-                            race_id=None, race_name=""):
+                            race_id=None, race_name="", is_prerace=True):
     """Build DFS-aware projections that estimate actual DK point components."""
     if odds_data is None:
         odds_data = {}
@@ -785,6 +785,22 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     if "Value" in proj.columns:
         display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]
+
+    # Auto-save pre-race projections for historical record
+    if is_prerace and race_id:
+        _auto_save_key = f"proj_autosaved_{race_id}"
+        if _auto_save_key not in st.session_state:
+            try:
+                from tabs.tab_accuracy import save_projections_to_db
+                from datetime import datetime
+                season = datetime.now().year
+                save_projections_to_db(
+                    proj, race_id, race_name, track_name,
+                    series_id, season, wn
+                )
+                st.session_state[_auto_save_key] = True
+            except Exception:
+                pass
 
     # Export and Save — above the table for easy access
     exp_cols = st.columns([1, 1, 3])

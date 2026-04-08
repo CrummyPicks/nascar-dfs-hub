@@ -14,30 +14,21 @@ venv/
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store
 Thumbs.db
 *.fuse_hidden*
 
-# Project — keep out of repo
-legacy/
-dev/
-exports/
-cache/
-.claude/
-
-# Logs
-*.log
-ROADMAP.md
-RUN ME/
-START_HUB.bat
-
-# Local reference prompts
-CLAUDE_CODE_PROMPT.md
-
 # Database (rebuilt by setup_db.py / refresh_data.py)
 nascar.db
 
-# Windows batch scripts (local convenience only)
+# Secrets (never commit API keys)
+.streamlit/secrets.toml
+
+# Local-only files
+exports/
+cache/
 *.bat
+*.log
