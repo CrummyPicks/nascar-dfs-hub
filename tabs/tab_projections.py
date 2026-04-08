@@ -470,27 +470,35 @@ def _query_races_to_subtract(track_name, series_id, race_date, db_race_id=None):
     Returns dict: {driver_name: [{finish_pos, start_pos, laps_led, ...}, ...]}
     These results need to be subtracted from the scraped driveraverages.com
     aggregates to prevent data leakage in completed race projections.
+
+    Deduplicates by (driver, date) to handle duplicate DB race entries
+    for the same real-world race (e.g. two entries for same date).
     """
     if not os.path.exists(PROJ_DB):
         return {}
 
     conn = sqlite3.connect(PROJ_DB)
-    where = "WHERE t.name LIKE ? AND r.series_id = ? AND r.race_date >= ?"
-    params = [f"%{track_name}%", series_id, race_date]
+    # Use SUBSTR to truncate datetime strings to just the date portion
+    # and pick one result per driver per date to avoid double-counting
+    # from duplicate DB race entries.
+    where = "WHERE t.name LIKE ? AND r.series_id = ? AND SUBSTR(r.race_date, 1, 10) >= ?"
+    params = [f"%{track_name}%", series_id, race_date[:10]]
 
     rows = conn.execute(f'''
         SELECT d.full_name, rr.finish_pos, rr.start_pos, rr.laps_led,
-               CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END as is_dnf
+               CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END as is_dnf,
+               SUBSTR(r.race_date, 1, 10) as race_dt
         FROM race_results rr
         JOIN drivers d ON d.id = rr.driver_id
         JOIN races r ON r.id = rr.race_id
         JOIN tracks t ON t.id = r.track_id
         {where}
+        GROUP BY d.full_name, SUBSTR(r.race_date, 1, 10)
     ''', params).fetchall()
     conn.close()
 
     result = {}
-    for name, fp, sp, ll, dnf in rows:
+    for name, fp, sp, ll, dnf, dt in rows:
         result.setdefault(name, []).append({
             "finish_pos": fp, "start_pos": sp,
             "laps_led": ll or 0, "is_dnf": dnf,
