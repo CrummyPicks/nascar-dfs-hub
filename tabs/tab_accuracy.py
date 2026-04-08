@@ -508,8 +508,8 @@ def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
 
 
 DEFAULT_WEIGHTS = {
-    "track": 0.30, "track_type": 0.15, "practice": 0.25,
-    "odds": 0.30, "qual": 0,  # qualifying only used for start position, not finish
+    "track": 0.35, "track_type": 0, "practice": 0.25,
+    "odds": 0.35, "qual": 0,  # qualifying is 15% fixed, track_type removed from model
 }
 
 
@@ -538,10 +538,7 @@ def _generate_race_projections(race, series_id, weights=None):
     # Hybrid approach: scrape driveraverages.com baseline, subtract future races
     race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
     th_data = _hybrid_track_stats(track_name, series_id, race_date=race_date)
-    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    tt_data = _hybrid_track_type_stats(parent_type, series_id,
-                                        exclude_track=track_name,
-                                        race_date=race_date)
+    tt_data = {}  # Track type removed from model
 
     start_positions = {}
     for _, row in actuals.iterrows():
@@ -646,12 +643,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             finish_signals.append(regressed_finish)
             signal_weights.append(wn["track"])
 
-        if tt and wn.get("track_type", 0) > 0:
-            races = tt.get("races", 1)
-            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            regressed_finish = tt["avg_finish"] * trust + mid_field * (1 - trust)
-            finish_signals.append(regressed_finish)
-            signal_weights.append(wn["track_type"])
+        # Track type signal removed from model — tt_data kept as empty dict for compatibility
 
         # Qualifying position — a meaningful finish signal.
         if sp and sp <= field_size:
@@ -707,10 +699,6 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             if th and th.get("laps_led_per_race", 0) > 0:
                 dom_signals.append(th["laps_led_per_race"])
                 dom_w.append(wn.get("track", 0.20))
-
-            if tt and tt.get("laps_led_per_race", 0) > 0:
-                dom_signals.append(tt["laps_led_per_race"])
-                dom_w.append(wn.get("track_type", 0.10))
 
             if sp and sp <= field_size:
                 qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30
@@ -930,7 +918,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 f"Odds {w_row.get('w_odds', 0):.0%} | "
                 f"Track {w_row.get('w_track', 0):.0%} | "
                 f"Practice {w_row.get('w_practice', 0):.0%} | "
-                f"Track Type {w_row.get('w_track_type', 0):.0%}"
+                f"Qual 15% (fixed)"
             )
         else:
             # Auto-generate projections using default weights
@@ -967,8 +955,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             w = DEFAULT_WEIGHTS
             weights_str = (
                 f"Odds {w['odds']:.0%} | Track {w['track']:.0%} | "
-                f"Practice {w['practice']:.0%} | "
-                f"Track Type {w['track_type']:.0%}"
+                f"Practice {w['practice']:.0%} | Qual 15% (fixed)"
             )
 
             if meta and not meta.get("has_odds"):
@@ -1319,29 +1306,27 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
     # ── Per-signal weight constraints ──────────────────────────────────────
     # These define the realistic min/max for each signal.
     # Rationale:
-    #   track_history (15-45%): strongest predictor, actual results at this track
-    #   odds (15-45%): Vegas pricing is very efficient, reflects overall form
-    #   practice (10-35%): noisy — teams sandbag, run diff programs
-    #   track_type (5-30%): useful supplement but less predictive than track-specific
-    #   qualifying: NOT a finish signal — only used for start position / place diff
+    #   track_history (20-50%): strongest predictor, actual results at this track
+    #   odds (20-50%): Vegas pricing is very efficient, reflects overall form
+    #   practice (10-40%): noisy — teams sandbag, run diff programs
+    #   qualifying: 15% fixed — predicts finish position and place differential
+    #   track_type: removed from model (too noisy, diluted track-specific signal)
     SIGNAL_RANGES = {
-        "odds":       (15, 45),
-        "track":      (15, 45),
-        "practice":   (10, 35),
-        "track_type": (5, 30),
+        "odds":       (20, 50),
+        "track":      (20, 50),
+        "practice":   (10, 40),
     }
 
     weight_combos = []
     for odds in range(SIGNAL_RANGES["odds"][0], SIGNAL_RANGES["odds"][1] + 1, grid_step):
         for track in range(SIGNAL_RANGES["track"][0], SIGNAL_RANGES["track"][1] + 1, grid_step):
-            for prac in range(SIGNAL_RANGES["practice"][0], SIGNAL_RANGES["practice"][1] + 1, grid_step):
-                tt = 100 - odds - track - prac
-                if SIGNAL_RANGES["track_type"][0] <= tt <= SIGNAL_RANGES["track_type"][1]:
-                    weight_combos.append({
-                        "odds": odds, "track": track,
-                        "qual": 0, "practice": prac,
-                        "track_type": tt,
-                    })
+            prac = 100 - odds - track
+            if SIGNAL_RANGES["practice"][0] <= prac <= SIGNAL_RANGES["practice"][1]:
+                weight_combos.append({
+                    "odds": odds, "track": track,
+                    "qual": 0, "practice": prac,
+                    "track_type": 0,
+                })
 
     ranges_str = " | ".join(f"{k}: {v[0]}-{v[1]}%" for k, v in SIGNAL_RANGES.items())
     st.caption(f"Testing **{len(weight_combos)}** weight combinations across "
@@ -1389,11 +1374,8 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
         th_data = _hybrid_track_stats(track_name, series_id, race_date=race_date)
 
-        # Hybrid track type history — use parent type for broader data
-        parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-        tt_data = _hybrid_track_type_stats(parent_type, series_id,
-                                            exclude_track=track_name,
-                                            race_date=race_date)
+        # Track type removed from model
+        tt_data = {}
 
         # DNF data — also time-bounded
         dnf_data = _query_driver_career_dnf(series_id, before_date=race_date) if include_dnf else {}
@@ -1436,7 +1418,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         # Track which signals are available for this race
         has_signals = {
             "track": bool(th_data),
-            "track_type": bool(tt_data),
+            "track_type": False,  # removed from model
             "qual": bool(start_positions),
             "practice": bool(th_data),  # uses speed_score from track history
             "odds": bool(odds_finish),
@@ -1475,7 +1457,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         return
 
     # Show signal availability summary
-    signal_summary = {"track": 0, "track_type": 0, "qual": 0, "practice": 0, "odds": 0}
+    signal_summary = {"track": 0, "qual": 0, "practice": 0, "odds": 0}
     for rd in race_data:
         for sig, available in rd["has_signals"].items():
             if available:
@@ -1559,7 +1541,6 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 "Odds": combo["odds"],
                 "Track": combo["track"],
                 "Practice": combo["practice"],
-                "Track Type": combo["track_type"],
                 "MAE": np.mean(all_errors),
                 "Rank Corr": np.mean(all_rank_corrs) if all_rank_corrs else 0,
             })
@@ -1619,23 +1600,21 @@ def _display_backtest_results(results_df, series_name):
         f"**Best weights ({series_name}):** Odds **{int(best['Odds'])}%** | "
         f"Track **{int(best['Track'])}%** | "
         f"Practice **{int(best['Practice'])}%** | "
-        f"Track Type **{int(best['Track Type'])}%** | "
+        f"Qual **15%** (fixed) | "
         f"MAE: {best['MAE']:.1f} | Rank Corr: {best['Rank Corr']:.3f}"
     )
 
     # Show current vs optimal comparison
     current_weights = {
-        "Odds": st.session_state.get("pw_odds", 30),
-        "Track": st.session_state.get("pw_track", 30),
+        "Odds": st.session_state.get("pw_odds", 35),
+        "Track": st.session_state.get("pw_track", 35),
         "Practice": st.session_state.get("pw_prac", 25),
-        "Track Type": st.session_state.get("pw_type", 15),
     }
 
     current_match = results_df[
         (results_df["Odds"] == current_weights["Odds"]) &
         (results_df["Track"] == current_weights["Track"]) &
-        (results_df["Practice"] == current_weights["Practice"]) &
-        (results_df["Track Type"] == current_weights["Track Type"])
+        (results_df["Practice"] == current_weights["Practice"])
     ]
 
     if not current_match.empty:
@@ -1671,8 +1650,7 @@ def _display_backtest_results(results_df, series_name):
         for idx, row in top15.iterrows():
             lbl = (f"#{len(combo_labels) + 1}: "
                    f"Odds {int(row['Odds'])}% | Track {int(row['Track'])}% | "
-                   f"Prac {int(row['Practice'])}% | "
-                   f"Type {int(row['Track Type'])}% — "
+                   f"Prac {int(row['Practice'])}% — "
                    f"MAE {row['MAE']:.1f}, Rank Corr {row['Rank Corr']:.3f}")
             combo_labels.append((lbl, row))
 
@@ -1701,7 +1679,7 @@ def _display_backtest_results(results_df, series_name):
                 "track": int(selected_row["Track"]),
                 "practice": int(selected_row["Practice"]),
                 "qual": 0,
-                "track_type": int(selected_row["Track Type"]),
+                "track_type": 0,
             }
             total_w = sum(combo.values())
             nominal_wn = {k: v / total_w for k, v in combo.items()}
@@ -1758,10 +1736,13 @@ def _display_backtest_results(results_df, series_name):
                     if th and wn.get("track", 0) > 0:
                         finish_signals.append(th["avg_finish"])
                         signal_weights.append(wn["track"])
-                    if tt and wn.get("track_type", 0) > 0:
-                        finish_signals.append(tt["avg_finish"])
-                        signal_weights.append(wn["track_type"])
-                    # Qualifying excluded from finish signals — only used for start pos
+                    # Track type removed from model
+                    # Qualifying as finish signal (15% fixed)
+                    mid_field = field_size * 0.5
+                    if sp and sp <= field_size:
+                        qual_finish = sp * 0.80 + mid_field * 0.20
+                        finish_signals.append(qual_finish)
+                        signal_weights.append(0.15)
                     if th and th.get("speed_score", 0) > 0 and wn.get("practice", 0) > 0:
                         max_spd = max((t.get("speed_score", 0) for t in rd["th_data"].values()), default=1)
                         if max_spd > 0:
@@ -1780,11 +1761,9 @@ def _display_backtest_results(results_df, series_name):
                     dom_dw = []
                     if th and th.get("laps_led_per_race", 0) > 0:
                         dom_s.append(th["laps_led_per_race"]); dom_dw.append(wn.get("track", 0.20))
-                    if tt and tt.get("laps_led_per_race", 0) > 0:
-                        dom_s.append(tt["laps_led_per_race"]); dom_dw.append(wn.get("track_type", 0.10))
                     if sp and sp <= field_size:
                         dom_s.append(max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30)
-                        dom_dw.append(wn.get("qual", 0.15))
+                        dom_dw.append(0.15)
                     if od and wn.get("odds", 0) > 0:
                         dom_s.append(max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35)
                         dom_dw.append(wn.get("odds", 0.15))

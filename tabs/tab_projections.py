@@ -298,27 +298,26 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
         st.caption("Adjust signal weights — auto-normalizes to 100%. "
-                   "Qualifying position is used for start pos only (not weighted).")
-        w_cols = st.columns(4)
-        w_odds = w_cols[0].number_input("Odds", 0, 100, 30, 5, key="pw_odds")
-        w_track = w_cols[1].number_input("Track History", 0, 100, 30, 5, key="pw_track")
+                   "Qualifying contributes a fixed 15% as a finish signal.")
+        w_cols = st.columns(3)
+        w_odds = w_cols[0].number_input("Odds", 0, 100, 35, 5, key="pw_odds")
+        w_track = w_cols[1].number_input("Track History", 0, 100, 35, 5, key="pw_track")
         w_prac = w_cols[2].number_input("Practice", 0, 100, 25, 5, key="pw_prac")
-        w_type = w_cols[3].number_input("Track Type", 0, 100, 15, 5, key="pw_type")
 
     # Smart weight handling: if odds not available, redistribute that weight
     has_odds = bool(odds_data)
     effective_odds = w_odds if has_odds else 0
-    raw_total = w_track + w_type + w_prac + effective_odds
+    raw_total = w_track + w_prac + effective_odds
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
-            "track_type": w_type / raw_total,
-            "qual": 0,  # qualifying only used for start position, not finish prediction
+            "track_type": 0,
+            "qual": 0,
             "practice": w_prac / raw_total,
             "odds": effective_odds / raw_total,
         }
     else:
-        wn = {"track": 0.30, "track_type": 0.20, "qual": 0, "practice": 0.25, "odds": 0.25}
+        wn = {"track": 0.35, "track_type": 0, "qual": 0, "practice": 0.30, "odds": 0.35}
 
     if not has_odds:
         st.caption("⚠️ No odds data — odds weight redistributed to other signals. "
@@ -690,82 +689,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     "dnf": row.get("DNF", 0) if pd.notna(row.get("DNF")) else 0,
                 }
 
-    # ── 2. Track Type Signal ─────────────────────────────────────────────────
-    # First try exact subtype (e.g. "short_concrete"), then fall back to
-    # parent type (e.g. "short") if subtype has fewer than 2 comparable tracks.
-    tt_data = {}
-    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
-                        if tt == track_type and t != track_name]
-    if len(same_type_tracks) < 2 and parent_type != track_type:
-        # Subtype too small — include all parent type tracks
-        same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
-                            if TRACK_TYPE_PARENT.get(tt, tt) == parent_type
-                            and t != track_name]
-
-    if same_type_tracks:
-        with st.spinner(f"Loading {track_type} track type data..."):
-            type_finishes = {}
-            type_laps_led = {}
-            type_races = {}
-            scraped_any = False
-            for sim_track in same_type_tracks[:6]:
-                sim_th = scrape_track_history(sim_track, series_id)
-                if sim_th.empty:
-                    continue
-                scraped_any = True
-                # For completed races, subtract future data from each similar track
-                if not is_prerace and race_date:
-                    removals = _query_races_to_subtract(
-                        sim_track, series_id, race_date
-                    )
-                    if removals:
-                        sim_th = _subtract_races_from_scraped(sim_th, removals)
-                for col in ["Avg Finish", "Laps Led", "Races"]:
-                    if col in sim_th.columns:
-                        sim_th[col] = pd.to_numeric(sim_th[col], errors="coerce")
-                for _, r in sim_th.iterrows():
-                    d = r.get("Driver")
-                    if not d:
-                        continue
-                    af = r.get("Avg Finish")
-                    ll = r.get("Laps Led", 0)
-                    races = r.get("Races", 1)
-                    if pd.notna(af):
-                        type_finishes.setdefault(d, []).append(af)
-                    if pd.notna(ll) and pd.notna(races) and races > 0:
-                        type_laps_led.setdefault(d, []).append(ll / races)
-                    if pd.notna(races):
-                        type_races.setdefault(d, []).append(races)
-
-            # If scraping returned nothing (e.g. Xfinity/Trucks), fall back to DB
-            if not scraped_any:
-                db_tt = _query_db_track_type_history(
-                    track_type, series_id,
-                    exclude_track=track_name,
-                    exclude_race_id=db_race_id,
-                    before_date=race_date if not is_prerace else None,
-                )
-                for d_name, stats in db_tt.items():
-                    matched = d_name if d_name in drivers else fuzzy_match_name(d_name, drivers)
-                    if matched:
-                        tt_data[matched] = {
-                            "avg_finish": stats["avg_finish"],
-                            "laps_led_per_race": stats.get("laps_led_per_race", 0),
-                            "races": stats.get("races", 1),
-                        }
-
-            if scraped_any:
-                tt_names = list(type_finishes.keys())
-                for d in drivers:
-                    matched = d if d in type_finishes else fuzzy_match_name(d, tt_names)
-                    if matched and matched in type_finishes:
-                        total_races = sum(type_races.get(matched, [1]))
-                        tt_data[d] = {
-                            "avg_finish": np.mean(type_finishes[matched]),
-                            "laps_led_per_race": np.mean(type_laps_led.get(matched, [0])),
-                            "races": total_races,
-                        }
+    # ── 2. Track Type Signal — REMOVED from projection model ───────────────
+    # Track type added noise (e.g. Phoenix dragging down Martinsville-specific
+    # data) and had contamination risks with the scrape+subtract approach.
+    # Track type data is still shown informationally in the Track History tab.
+    tt_data = {}  # empty — not used in scoring, kept for display column
 
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
     qual_pos = {}
@@ -875,12 +803,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             finish_signals.append(regressed)
             signal_weights.append(wn["track"])
 
-        if tt:
-            races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 5
-            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            regressed = tt["avg_finish"] * trust + mid_field * (1 - trust)
-            finish_signals.append(regressed)
-            signal_weights.append(wn["track_type"])
+        # Track type signal removed from model — tt_data kept as empty dict
 
         # Qualifying position — a meaningful finish signal. Drivers who
         # qualify well tend to finish well (especially at short tracks).
@@ -923,10 +846,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 ll_per_race = th["laps_led"] / th["races"]
                 dom_signals.append(ll_per_race)
                 dom_weights_list.append(wn.get("track", 0.20))
-
-            if tt and tt.get("laps_led_per_race", 0) > 0:
-                dom_signals.append(tt["laps_led_per_race"])
-                dom_weights_list.append(wn.get("track_type", 0.10))
 
             if qp and qp <= field_size:
                 qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 30
@@ -1040,12 +959,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             ll_per_race = th["laps_led"] / max(th["races"], 1)
             ll_comp = min(100, ll_per_race * 2.5)  # ~40 ll/race = 100
             track_score = round(finish_comp * 0.45 + rating_comp * 0.30 + ll_comp * 0.25, 1)
-        tt_score = None
-        if tt:
-            finish_comp = max(0, (40 - tt["avg_finish"]) / 39 * 100)
-            ll_comp = min(100, tt.get("laps_led_per_race", 0) * 2.5)
-            tt_score = round(finish_comp * 0.70 + ll_comp * 0.30, 1)
-
         odds_info = driver_odds_display.get(d, {})
         odds_val = odds_info.get("odds_str", None)
         # odds_str is now numeric from round_odds()
@@ -1064,7 +977,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "Proj Laps Led": round(proj_laps_led),
             "Proj Fast Laps": round(proj_fastest),
             "Track": track_score,
-            "Track Type": tt_score,
             "Start": start_pos,
         })
 
