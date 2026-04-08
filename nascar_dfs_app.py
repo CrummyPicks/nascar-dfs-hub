@@ -309,6 +309,13 @@ with st.spinner("Loading data..."):
 
 is_prerace = detect_prerace(feed)
 
+# For completed races, use saved odds from DB (not live odds which are for the current race)
+if not is_prerace and race_id:
+    saved_odds = load_race_odds(race_id)
+    if saved_odds:
+        odds_data = saved_odds
+        odds_source = "saved"
+
 results_df = extract_race_results(feed) if feed and not is_prerace else pd.DataFrame()
 fl_counts = compute_fastest_laps(lap_data) if lap_data and not is_prerace else {}
 
