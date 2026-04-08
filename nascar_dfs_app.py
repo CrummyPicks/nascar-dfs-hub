@@ -433,15 +433,17 @@ elif has_saved_fd:
 else:
     fd_df = pd.DataFrame()
 
-# Sync salaries to DB — CSV upload or auto-fetch overwrites saved data
-if dk_file or (not has_saved_dk and not dk_auto.empty):
-    source_df = dk_df if dk_file else dk_auto
-    if not source_df.empty:
-        sync_dk_salaries_to_db(source_df, race_id, series_id, race_name)
+# Sync salaries to DB:
+#   CSV upload → always sync (explicit intent for this race)
+#   Auto-fetch → only sync for prerace (auto-fetch is for the upcoming race, not historical)
+if is_admin:
+    if dk_file and not dk_df.empty:
+        sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
+    elif is_prerace and not has_saved_dk and not dk_auto.empty:
+        sync_dk_salaries_to_db(dk_auto, race_id, series_id, race_name)
 
-# Sync FD salaries to DB when uploaded
-if fd_file and not fd_df.empty:
-    sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
+    if fd_file and not fd_df.empty:
+        sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
 
 
 # ============================================================
