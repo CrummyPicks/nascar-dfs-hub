@@ -19,6 +19,7 @@ try:
         sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
         fetch_nascar_prop_odds, load_race_prop_odds,
+        _fetch_all_nascar_odds,
     )
 except ImportError as e:
     import streamlit as st
@@ -206,7 +207,7 @@ with st.expander("Settings & Data Upload", expanded=False):
     ref_cols = st.columns([1, 1, 4])
     with ref_cols[0]:
         if st.button("Refresh All Data", key="refresh_all_btn", type="primary"):
-            fetch_nascar_odds.clear()
+            _fetch_all_nascar_odds.clear()
             fetch_dk_salaries_live.clear()
             fresh_odds = fetch_nascar_odds()
             fresh_dk = fetch_dk_salaries_live()

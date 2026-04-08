@@ -853,15 +853,10 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
 # ============================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_nascar_odds() -> dict:
+def _fetch_all_nascar_odds() -> dict:
     """Fetch upcoming NASCAR race odds from Action Network.
 
-    Parses the __NEXT_DATA__ JSON embedded in the page which contains
-    structured competition data with odds from multiple books.
-
-    Returns dict of {driver_name: odds_string} for win odds.
-    Also populates session_state with top5/top10 odds if available.
-    Falls back to empty dict on failure.
+    Returns {"win": {name: odds_str}, "top5": {name: odds_str}, "top10": {name: odds_str}}.
     """
     import json as _json
 
@@ -873,26 +868,26 @@ def fetch_nascar_odds() -> dict:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    empty = {"win": {}, "top5": {}, "top10": {}}
     try:
         r = requests.get(url, headers=headers, timeout=20)
         if r.status_code != 200:
-            return {}
+            return empty
 
-        # Extract __NEXT_DATA__ JSON from the page
         marker = "__NEXT_DATA__"
         idx = r.text.find(marker)
         if idx < 0:
-            return {}
+            return empty
         json_start = r.text.find("{", idx)
         json_end = r.text.find("</script>", json_start)
         if json_start < 0 or json_end < 0:
-            return {}
+            return empty
 
         data = _json.loads(r.text[json_start:json_end])
         sb = data.get("props", {}).get("pageProps", {}).get("scoreboardResponse", {})
         comps = sb.get("competitions", [])
         if not comps:
-            return {}
+            return empty
 
         comp = comps[0]
 
@@ -914,7 +909,6 @@ def fetch_nascar_odds() -> dict:
 
         for mk, mv in markets.items():
             event = mv.get("event", {})
-            mk_lower = mk.lower() if mk else ""
 
             # Win odds (moneyline)
             ml = event.get("moneyline", [])
@@ -927,7 +921,6 @@ def fetch_nascar_odds() -> dict:
                         odds_result[name] = str(odds_val)
 
             # Search for top 5 / top 10 finish markets
-            # Action Network may use various keys: top_5, top5, top_5_finish, etc.
             for market_key, market_data in event.items():
                 if not isinstance(market_data, list):
                     continue
@@ -944,26 +937,25 @@ def fetch_nascar_odds() -> dict:
                         if name and odds_val is not None:
                             target[name] = str(odds_val)
 
-        # Store top5/top10 separately — caller can retrieve via fetch_nascar_prop_odds()
-        _PROP_ODDS_CACHE["top5"] = top5_result
-        _PROP_ODDS_CACHE["top10"] = top10_result
-
-        return odds_result
+        return {"win": odds_result, "top5": top5_result, "top10": top10_result}
 
     except Exception:
-        return {}
+        return empty
 
 
-# Module-level cache for prop odds (top5/top10) from last fetch
-_PROP_ODDS_CACHE: dict = {"top5": {}, "top10": {}}
+def fetch_nascar_odds() -> dict:
+    """Fetch win odds from Action Network. Returns {driver_name: odds_string}."""
+    all_odds = _fetch_all_nascar_odds()
+    return all_odds.get("win", {})
 
 
 def fetch_nascar_prop_odds() -> dict:
-    """Return top5/top10 prop odds from the last fetch_nascar_odds() call.
+    """Fetch top5/top10 prop odds from Action Network.
 
     Returns {"top5": {name: odds_str}, "top10": {name: odds_str}}.
     """
-    return dict(_PROP_ODDS_CACHE)
+    all_odds = _fetch_all_nascar_odds()
+    return {"top5": all_odds.get("top5", {}), "top10": all_odds.get("top10", {})}
 
 
 def round_odds(odds_val: int) -> int:
