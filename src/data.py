@@ -854,38 +854,46 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _fetch_all_nascar_odds() -> dict:
-    """Fetch upcoming NASCAR race odds from Action Network.
+    """Fetch upcoming NASCAR race odds from Action Network direct JSON API.
 
-    Returns {"win": {name: odds_str}, "top5": {name: odds_str}, "top10": {name: odds_str}}.
+    Uses the public scoreboard API endpoint which returns structured JSON
+    with win/top3/top5/top10 markets from multiple sportsbooks.
+
+    Returns {"win": {}, "top3": {}, "top5": {}, "top10": {}}.
     """
-    import json as _json
+    empty = {"win": {}, "top3": {}, "top5": {}, "top10": {}}
 
-    url = "https://www.actionnetwork.com/nascar/odds"
+    # --- Primary: Action Network JSON API ---
+    result = _fetch_action_network_odds()
+    if result.get("win"):
+        return result
+
+    # --- Backup: Bovada API ---
+    result = _fetch_bovada_odds()
+    if result.get("win"):
+        return result
+
+    return empty
+
+
+def _fetch_action_network_odds() -> dict:
+    """Fetch odds from Action Network's public scoreboard JSON API."""
+    empty = {"win": {}, "top3": {}, "top5": {}, "top10": {}}
+
+    url = "https://api.actionnetwork.com/web/v2/scoreboard/nascar_cup"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "application/json",
     }
 
-    empty = {"win": {}, "top5": {}, "top10": {}}
     try:
         r = requests.get(url, headers=headers, timeout=20)
         if r.status_code != 200:
             return empty
 
-        marker = "__NEXT_DATA__"
-        idx = r.text.find(marker)
-        if idx < 0:
-            return empty
-        json_start = r.text.find("{", idx)
-        json_end = r.text.find("</script>", json_start)
-        if json_start < 0 or json_end < 0:
-            return empty
-
-        data = _json.loads(r.text[json_start:json_end])
-        sb = data.get("props", {}).get("pageProps", {}).get("scoreboardResponse", {})
-        comps = sb.get("competitions", [])
+        data = r.json()
+        comps = data.get("competitions", [])
         if not comps:
             return empty
 
@@ -901,43 +909,132 @@ def _fetch_all_nascar_odds() -> dict:
             if pid and name:
                 pid_to_name[pid] = name
 
-        # Extract odds from all available markets
+        # Extract odds from markets — prefer Consensus (book_id=15), fallback to any
         markets = comp.get("markets", {})
-        odds_result = {}
+        win_result = {}
+        top3_result = {}
         top5_result = {}
         top10_result = {}
 
-        for mk, mv in markets.items():
-            event = mv.get("event", {})
+        # Market key mapping from Action Network API
+        # moneyline = win, core_bet_type_211_top_3, core_bet_type_3_top_5, core_bet_type_4_top_10
+        market_targets = {
+            "moneyline": win_result,
+            "core_bet_type_211_top_3": top3_result,
+            "top_3": top3_result,
+            "core_bet_type_3_top_5": top5_result,
+            "top_5": top5_result,
+            "core_bet_type_4_top_10": top10_result,
+            "top_10": top10_result,
+        }
 
-            # Win odds (moneyline)
-            ml = event.get("moneyline", [])
-            if ml and not odds_result:
-                for entry in ml:
+        for book_key, book_data in markets.items():
+            event = book_data.get("event", {})
+            if not isinstance(event, dict):
+                continue
+
+            for market_key, market_entries in event.items():
+                if not isinstance(market_entries, list):
+                    continue
+
+                # Match market key to target dict
+                mk_lower = market_key.lower().replace(" ", "_")
+                target = None
+                for pattern, tgt in market_targets.items():
+                    if pattern in mk_lower:
+                        target = tgt
+                        break
+
+                if target is None:
+                    continue
+                # Only fill if not already populated
+                if target:
+                    continue
+
+                for entry in market_entries:
                     pid = entry.get("player_id")
                     odds_val = entry.get("odds")
                     name = pid_to_name.get(pid)
                     if name and odds_val is not None:
-                        odds_result[name] = str(odds_val)
+                        target[name] = str(odds_val)
 
-            # Search for top 5 / top 10 finish markets
-            for market_key, market_data in event.items():
-                if not isinstance(market_data, list):
+        return {"win": win_result, "top3": top3_result, "top5": top5_result, "top10": top10_result}
+
+    except Exception:
+        return empty
+
+
+def _fetch_bovada_odds() -> dict:
+    """Fetch NASCAR odds from Bovada's public API as a backup source."""
+    empty = {"win": {}, "top3": {}, "top5": {}, "top10": {}}
+
+    url = "https://www.bovada.lv/services/sports/event/v2/events/A/description/motor-sports/nascar"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            return empty
+
+        events = r.json()
+        if not isinstance(events, list) or not events:
+            return empty
+
+        # Find the first event that looks like a race (not futures/championship)
+        race_event = None
+        for ev in events:
+            path = (ev.get("path") or [{}])
+            desc = ev.get("description", "").lower()
+            # Skip championship/futures markets
+            if "champion" in desc or "future" in desc or "season" in desc:
+                continue
+            race_event = ev
+            break
+
+        if not race_event:
+            return empty
+
+        win_result = {}
+        top3_result = {}
+        top5_result = {}
+        top10_result = {}
+
+        display_groups = race_event.get("displayGroups", [])
+        for group in display_groups:
+            group_desc = (group.get("description") or "").lower()
+            markets_list = group.get("markets", [])
+
+            for market in markets_list:
+                market_desc = (market.get("description") or "").lower()
+                outcomes = market.get("outcomes", [])
+
+                # Determine which target dict based on market description
+                if "top 3" in market_desc or "top3" in market_desc:
+                    target = top3_result
+                elif "top 5" in market_desc or "top5" in market_desc:
+                    target = top5_result
+                elif "top 10" in market_desc or "top10" in market_desc:
+                    target = top10_result
+                elif "outright" in market_desc or "winner" in market_desc or group_desc == "outright":
+                    target = win_result
+                else:
                     continue
-                mk_key_lower = market_key.lower().replace(" ", "_")
-                is_top5 = ("top_5" in mk_key_lower or "top5" in mk_key_lower) and not top5_result
-                is_top10 = ("top_10" in mk_key_lower or "top10" in mk_key_lower) and not top10_result
 
-                if is_top5 or is_top10:
-                    target = top5_result if is_top5 else top10_result
-                    for entry in market_data:
-                        pid = entry.get("player_id")
-                        odds_val = entry.get("odds")
-                        name = pid_to_name.get(pid)
-                        if name and odds_val is not None:
-                            target[name] = str(odds_val)
+                if target:  # already populated
+                    continue
 
-        return {"win": odds_result, "top5": top5_result, "top10": top10_result}
+                for outcome in outcomes:
+                    name = outcome.get("description", "")
+                    price = outcome.get("price", {})
+                    american = price.get("american")
+                    if name and american is not None:
+                        target[name] = str(american)
+
+        return {"win": win_result, "top3": top3_result, "top5": top5_result, "top10": top10_result}
 
     except Exception:
         return empty
@@ -950,22 +1047,16 @@ def fetch_nascar_odds() -> dict:
 
 
 def fetch_nascar_prop_odds() -> dict:
-    """Fetch top5/top10 prop odds. Tries Action Network first, then The Odds API.
+    """Fetch top3/top5/top10 prop odds from Action Network or Bovada.
 
-    Returns {"top5": {name: odds_str}, "top10": {name: odds_str}}.
+    Returns {"top3": {name: odds_str}, "top5": {name: odds_str}, "top10": {name: odds_str}}.
     """
-    # Try Action Network first (already cached from win odds fetch)
     all_odds = _fetch_all_nascar_odds()
+    top3 = all_odds.get("top3", {})
     top5 = all_odds.get("top5", {})
     top10 = all_odds.get("top10", {})
 
-    # Fall back to The Odds API if Action Network didn't have prop odds
-    if not top5 and not top10:
-        api_props = fetch_odds_api_props()
-        top5 = api_props.get("top5", {})
-        top10 = api_props.get("top10", {})
-
-    return {"top5": top5, "top10": top10}
+    return {"top3": top3, "top5": top5, "top10": top10}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1200,16 +1291,17 @@ def _resolve_db_race_id_with_fallback(race_id: int):
 
 
 def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_network",
-                    top5_data: dict = None, top10_data: dict = None):
+                    top3_data: dict = None, top5_data: dict = None, top10_data: dict = None):
     """Persist odds dict to the odds table, keyed by race_id.
 
-    Smart update: only overwrites top5/top10 odds when new valid data is provided.
-    If top5_data or top10_data is empty/None, existing values are preserved.
+    Smart update: only overwrites top3/top5/top10 odds when new valid data is provided.
+    If prop data is empty/None, existing values are preserved.
 
     Args:
         odds_data: {driver_name: odds_string} e.g. {"Kyle Larson": "+350"}
         race_id: NASCAR API race ID (will be resolved to internal DB race_id)
         sportsbook: source label
+        top3_data: {driver_name: odds_string} for top 3 finish odds
         top5_data: {driver_name: odds_string} for top 5 finish odds
         top10_data: {driver_name: odds_string} for top 10 finish odds
     """
@@ -1223,29 +1315,34 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
     from src.utils import fuzzy_match_name
 
     conn = sqlite3.connect(str(DB_PATH))
+
+    # Ensure top3_odds column exists (migration for older DBs)
+    try:
+        conn.execute("SELECT top3_odds FROM odds LIMIT 1")
+    except Exception:
+        try:
+            conn.execute("ALTER TABLE odds ADD COLUMN top3_odds REAL")
+            conn.commit()
+        except Exception:
+            pass
+
     db_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
     name_to_id = {row[1]: row[0] for row in db_drivers}
     driver_names = list(name_to_id.keys())
 
-    # Build top5/top10 lookup by driver_id (fuzzy matched)
+    # Build top3/top5/top10 lookup by driver_id (fuzzy matched)
+    t3_by_id = {}
     t5_by_id = {}
     t10_by_id = {}
-    if top5_data:
-        for name, odds_str in top5_data.items():
+    for prop_data, target_dict in [(top3_data, t3_by_id), (top5_data, t5_by_id), (top10_data, t10_by_id)]:
+        if not prop_data:
+            continue
+        for name, odds_str in prop_data.items():
             try:
                 val = float(str(odds_str).replace("+", ""))
                 matched = fuzzy_match_name(name, driver_names)
                 if matched:
-                    t5_by_id[name_to_id[matched]] = val
-            except (ValueError, TypeError):
-                continue
-    if top10_data:
-        for name, odds_str in top10_data.items():
-            try:
-                val = float(str(odds_str).replace("+", ""))
-                matched = fuzzy_match_name(name, driver_names)
-                if matched:
-                    t10_by_id[name_to_id[matched]] = val
+                    target_dict[name_to_id[matched]] = val
             except (ValueError, TypeError):
                 continue
 
@@ -1261,26 +1358,29 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
             continue
         driver_id = name_to_id[matched]
 
-        # Check if row exists with top5/top10 data we should preserve
+        # Check if row exists with prop data we should preserve
         existing = conn.execute(
-            "SELECT top5_odds, top10_odds FROM odds WHERE race_id = ? AND driver_id = ? AND sportsbook = ?",
+            "SELECT top3_odds, top5_odds, top10_odds FROM odds WHERE race_id = ? AND driver_id = ? AND sportsbook = ?",
             (db_race_id, driver_id, sportsbook)
         ).fetchone()
 
         # Use new prop data if available, else preserve existing
+        t3_val = t3_by_id.get(driver_id)
         t5_val = t5_by_id.get(driver_id)
         t10_val = t10_by_id.get(driver_id)
         if existing:
-            if t5_val is None and existing[0] is not None:
-                t5_val = existing[0]  # preserve existing top5
-            if t10_val is None and existing[1] is not None:
-                t10_val = existing[1]  # preserve existing top10
+            if t3_val is None and existing[0] is not None:
+                t3_val = existing[0]
+            if t5_val is None and existing[1] is not None:
+                t5_val = existing[1]
+            if t10_val is None and existing[2] is not None:
+                t10_val = existing[2]
 
         conn.execute('''
             INSERT OR REPLACE INTO odds
-            (race_id, driver_id, sportsbook, win_odds, top5_odds, top10_odds, scraped_at)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-        ''', (db_race_id, driver_id, sportsbook, odds_val, t5_val, t10_val))
+            (race_id, driver_id, sportsbook, win_odds, top3_odds, top5_odds, top10_odds, scraped_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ''', (db_race_id, driver_id, sportsbook, odds_val, t3_val, t5_val, t10_val))
         count += 1
 
     conn.commit()
@@ -1322,39 +1422,54 @@ def load_race_odds(race_id: int) -> dict:
 
 
 def load_race_prop_odds(race_id: int) -> dict:
-    """Load top5 and top10 finish odds for a race from the DB.
+    """Load top3/top5/top10 finish odds for a race from the DB.
 
     Args:
         race_id: NASCAR API race ID
 
-    Returns {"top5": {driver_name: odds_int}, "top10": {driver_name: odds_int}}.
+    Returns {"top3": {name: odds_int}, "top5": {name: odds_int}, "top10": {name: odds_int}}.
     """
     if not DB_PATH.exists():
-        return {"top5": {}, "top10": {}}
+        return {"top3": {}, "top5": {}, "top10": {}}
 
     db_race_id = _resolve_db_race_id(race_id)
     if not db_race_id:
-        return {"top5": {}, "top10": {}}
+        return {"top3": {}, "top5": {}, "top10": {}}
 
     conn = sqlite3.connect(str(DB_PATH))
-    rows = conn.execute('''
-        SELECT d.full_name, o.top5_odds, o.top10_odds
-        FROM odds o
-        JOIN drivers d ON d.id = o.driver_id
-        WHERE o.race_id = ?
-    ''', (db_race_id,)).fetchall()
+    # Gracefully handle missing top3_odds column in older DBs
+    try:
+        rows = conn.execute('''
+            SELECT d.full_name, o.top3_odds, o.top5_odds, o.top10_odds
+            FROM odds o
+            JOIN drivers d ON d.id = o.driver_id
+            WHERE o.race_id = ?
+        ''', (db_race_id,)).fetchall()
+        has_top3 = True
+    except Exception:
+        rows = conn.execute('''
+            SELECT d.full_name, NULL, o.top5_odds, o.top10_odds
+            FROM odds o
+            JOIN drivers d ON d.id = o.driver_id
+            WHERE o.race_id = ?
+        ''', (db_race_id,)).fetchall()
+        has_top3 = False
     conn.close()
 
+    top3 = {}
     top5 = {}
     top10 = {}
-    for name, t5, t10 in rows:
+    for name, t3, t5, t10 in rows:
+        if t3 is not None:
+            ov = int(t3) if t3 == int(t3) else t3
+            top3[name] = ov
         if t5 is not None:
             ov = int(t5) if t5 == int(t5) else t5
             top5[name] = ov
         if t10 is not None:
             ov = int(t10) if t10 == int(t10) else t10
             top10[name] = ov
-    return {"top5": top5, "top10": top10}
+    return {"top3": top3, "top5": top5, "top10": top10}
 
 
 # ============================================================

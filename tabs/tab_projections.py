@@ -280,7 +280,7 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
 
 def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
-           odds_data=None, scheduled_laps=0):
+           odds_data=None, scheduled_laps=0, race_date="", season=2026):
     """Render the Projections tab."""
     st.markdown(f"### Projections — {race_name}")
 
@@ -356,13 +356,133 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         practice_data, wn, track_name, series_id, dk_df, race_laps,
         odds_data=odds_data or {}, calibration=calibration,
         race_id=race_id, race_name=race_name, is_prerace=is_prerace,
+        race_date=race_date, season=season,
     )
+
+
+def _query_db_track_history(track_name, series_id, exclude_race_id=None,
+                             before_date=None):
+    """Query per-driver track history from DB with date filtering.
+
+    Used for completed races to prevent data leakage — the scraped
+    driveraverages.com data always includes the current race's results.
+    """
+    if not os.path.exists(PROJ_DB):
+        return pd.DataFrame()
+
+    conn = sqlite3.connect(PROJ_DB)
+    where = "WHERE t.name LIKE ? AND r.series_id = ?"
+    params = [f"%{track_name}%", series_id]
+    if exclude_race_id:
+        where += " AND r.id != ?"
+        params.append(exclude_race_id)
+    if before_date:
+        where += " AND r.race_date < ?"
+        params.append(before_date)
+
+    query = f'''
+        SELECT d.full_name as Driver,
+               COUNT(*) as Races,
+               ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
+               ROUND(AVG(rr.start_pos), 1) as "Avg Start",
+               SUM(rr.laps_led) as "Laps Led",
+               ROUND(AVG(COALESCE(rr.driver_rating, 0)), 1) as "Avg Rating",
+               SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
+               SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
+               SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+               SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        {where}
+        GROUP BY d.id
+        HAVING COUNT(*) >= 1
+    '''
+    try:
+        df = pd.read_sql_query(query, conn, params=params)
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+
+def _query_db_track_type_history(track_type, series_id, exclude_track=None,
+                                  exclude_race_id=None, before_date=None):
+    """Query per-driver stats across all tracks of a given type from DB.
+
+    Used for completed races to prevent data leakage.
+    """
+    if not os.path.exists(PROJ_DB):
+        return {}
+
+    from src.config import TRACK_TYPE_MAP as _TTM
+    matching_tracks = [t for t, tt in _TTM.items()
+                       if tt == track_type
+                       or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+    if exclude_track:
+        matching_tracks = [t for t in matching_tracks if exclude_track not in t]
+    if not matching_tracks:
+        return {}
+
+    conn = sqlite3.connect(PROJ_DB)
+    placeholders = ",".join("?" for _ in matching_tracks)
+    where_extra = ""
+    params = matching_tracks + [series_id]
+    if exclude_race_id:
+        where_extra += " AND r.id != ?"
+        params.append(exclude_race_id)
+    if before_date:
+        where_extra += " AND r.race_date < ?"
+        params.append(before_date)
+
+    query = f'''
+        SELECT d.full_name,
+               COUNT(*) as races,
+               AVG(rr.finish_pos) as avg_finish,
+               SUM(rr.laps_led) as total_laps_led
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE t.name IN ({placeholders})
+          AND r.series_id = ?
+          {where_extra}
+        GROUP BY d.id
+    '''
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    result = {}
+    for name, races, avg_f, ll in rows:
+        if races and races > 0:
+            result[name] = {
+                "avg_finish": avg_f or 20,
+                "laps_led_per_race": (ll or 0) / races,
+            }
+    return result
+
+
+def _resolve_db_race_id(api_race_id, series_id):
+    """Resolve NASCAR API race_id to internal DB race_id."""
+    if not api_race_id or not os.path.exists(PROJ_DB):
+        return None
+    try:
+        conn = sqlite3.connect(PROJ_DB)
+        row = conn.execute(
+            "SELECT id FROM races WHERE api_race_id = ?", (api_race_id,)
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 
 def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                             practice_data, wn, track_name, series_id, dk_df,
                             race_laps, odds_data=None, calibration=None,
-                            race_id=None, race_name="", is_prerace=True):
+                            race_id=None, race_name="", is_prerace=True,
+                            race_date="", season=2026):
     """Build DFS-aware projections that estimate actual DK point components."""
     if odds_data is None:
         odds_data = {}
@@ -385,9 +505,27 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
 
     # ── 1. Track History Signal ──────────────────────────────────────────────
+    # For completed races, use DB queries with date filtering to prevent data
+    # leakage (driveraverages.com always includes the current race's results).
+    # For upcoming/prerace, scrape driveraverages.com for the latest data.
     th_data = {}  # driver -> {avg_finish, avg_start, laps_led, races, avg_rating}
-    with st.spinner("Loading track history..."):
-        th_df = scrape_track_history(track_name, series_id)
+
+    # Resolve DB race ID for exclusion
+    db_race_id = _resolve_db_race_id(race_id, series_id) if race_id else None
+
+    if not is_prerace and race_date:
+        # Completed race — use DB with date filter to exclude this race + future
+        with st.spinner("Loading track history (DB, date-filtered)..."):
+            th_df = _query_db_track_history(
+                track_name, series_id,
+                exclude_race_id=db_race_id,
+                before_date=race_date,
+            )
+    else:
+        # Upcoming race — scrape live data (includes all historical)
+        with st.spinner("Loading track history..."):
+            th_df = scrape_track_history(track_name, series_id)
+
     if not th_df.empty:
         for col in ["Avg Finish", "Avg Start", "Laps Led", "Races", "Avg Rating",
                      "Wins", "Top 5", "Top 10", "DNF"]:
@@ -423,7 +561,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         same_type_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
                             if TRACK_TYPE_PARENT.get(tt, tt) == parent_type
                             and t != track_name]
-    if same_type_tracks:
+
+    if not is_prerace and race_date:
+        # Completed race — use DB query with date filtering
+        with st.spinner(f"Loading {track_type} track type data (DB)..."):
+            tt_raw = _query_db_track_type_history(
+                track_type, series_id,
+                exclude_track=track_name,
+                exclude_race_id=db_race_id,
+                before_date=race_date,
+            )
+            tt_names = list(tt_raw.keys())
+            for d in drivers:
+                matched = d if d in tt_raw else fuzzy_match_name(d, tt_names)
+                if matched and matched in tt_raw:
+                    tt_data[d] = tt_raw[matched]
+    elif same_type_tracks:
+        # Upcoming race — scrape live data
         with st.spinner(f"Loading {track_type} track type data..."):
             type_finishes = {}
             type_laps_led = {}

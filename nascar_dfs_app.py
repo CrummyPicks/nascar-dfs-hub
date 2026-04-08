@@ -168,12 +168,14 @@ if races:
     track_name = selected_race.get("track_name", "Unknown Track")
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
     scheduled_laps = selected_race.get("scheduled_laps", 0) or 0
+    race_date_raw = (selected_race.get("race_date") or "")[:10]  # YYYY-MM-DD
 else:
     st.warning("Could not fetch race list from API")
     race_id, race_name = 5596, "Daytona 500"
     track_name = "Daytona International Speedway"
     track_type = "superspeedway"
     scheduled_laps = 200
+    race_date_raw = ""
     completed_races = []
     upcoming_races = []
 
@@ -292,6 +294,7 @@ with st.expander("Settings & Data Upload", expanded=False):
     if odds_data and race_id:
         prop_odds = fetch_nascar_prop_odds()
         save_odds_to_db(odds_data, race_id,
+                        top3_data=prop_odds.get("top3"),
                         top5_data=prop_odds.get("top5"),
                         top10_data=prop_odds.get("top10"))
 
@@ -352,7 +355,7 @@ from tabs import tab_accuracy as tacc
 
 with tab_data:
     # Load prop odds (top5/top10) from DB — always available even if live fetch fails
-    _prop_odds = load_race_prop_odds(race_id) if race_id else {"top5": {}, "top10": {}}
+    _prop_odds = load_race_prop_odds(race_id) if race_id else {"top3": {}, "top5": {}, "top10": {}}
     td.render(
         feed=feed, lap_data=lap_data, lap_averages_df=lap_averages_df,
         entry_list_df=entry_list_df, qualifying_df=qualifying_df,
@@ -388,6 +391,7 @@ with tab_proj:
         is_prerace=is_prerace, race_name=race_name, race_id=race_id,
         track_name=track_name, series_id=series_id, dk_df=dk_df,
         odds_data=odds_data, scheduled_laps=scheduled_laps,
+        race_date=race_date_raw, season=selected_year,
     )
 
 with tab_optimizer:

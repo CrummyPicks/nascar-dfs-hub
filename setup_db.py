@@ -163,6 +163,7 @@ def create_database():
         driver_id    INTEGER NOT NULL REFERENCES drivers(id),
         sportsbook   TEXT,
         win_odds     REAL,
+        top3_odds    REAL,
         top5_odds    REAL,
         top10_odds   REAL,
         scraped_at   TEXT,
