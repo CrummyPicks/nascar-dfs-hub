@@ -882,12 +882,15 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             finish_signals.append(regressed)
             signal_weights.append(wn["track_type"])
 
-        # NOTE: Qualifying is NOT a finish signal — it only determines start
-        # position. Place differential (start - proj finish) should reflect
-        # the gap between where a driver starts and where their talent signals
-        # say they'll finish. Including qualifying here would dampen that gap.
-        # The qualifying weight is redistributed proportionally to the other
-        # active finish signals.
+        # Qualifying position — a meaningful finish signal. Drivers who
+        # qualify well tend to finish well (especially at short tracks).
+        # Uses a fixed 15% weight to anchor projections toward start position
+        # and prevent absurd negative place differentials for fast qualifiers
+        # with mediocre track history.
+        if qp and qp <= field_size:
+            qual_finish = qp * 0.80 + mid_field * 0.20  # regress toward mid
+            finish_signals.append(qual_finish)
+            signal_weights.append(0.15)  # fixed 15% weight
 
         if pr:
             # Practice rank: regress toward mid-field (noisiest signal)

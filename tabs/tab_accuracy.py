@@ -653,9 +653,11 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             finish_signals.append(regressed_finish)
             signal_weights.append(wn["track_type"])
 
-        # Qualifying is NOT a finish signal — it only determines start position.
-        # Place differential = start - proj_finish, so qualifying must stay
-        # independent to allow meaningful position gain/loss projections.
+        # Qualifying position — a meaningful finish signal.
+        if sp and sp <= field_size:
+            qual_finish = sp * 0.80 + mid_field * 0.20
+            finish_signals.append(qual_finish)
+            signal_weights.append(0.15)
 
         # Practice proxy: use speed_score from track history OR track type
         speed_source = th if (th and th.get("speed_score", 0) > 0) else (
