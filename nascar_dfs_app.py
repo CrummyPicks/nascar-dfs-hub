@@ -18,7 +18,7 @@ try:
         parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
         sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
-        fetch_nascar_prop_odds, load_race_prop_odds,
+        fetch_nascar_prop_odds, load_race_prop_odds, load_race_odds,
         _fetch_all_nascar_odds,
     )
 except ImportError as e:
