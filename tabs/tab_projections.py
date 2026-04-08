@@ -24,7 +24,7 @@ from src.data import (
     query_projections, scrape_track_history,
 )
 # projection_bar no longer used — replaced with inline stacked bar
-from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name
+from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
@@ -989,8 +989,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     # Merge salary
     if not dk_df.empty:
-        proj = proj.merge(dk_df.drop_duplicates("Driver")[["Driver", "DK Salary"]],
-                          on="Driver", how="left")
+        proj = fuzzy_merge(proj, dk_df, on="Driver", how="left",
+                           right_cols=["DK Salary"])
         proj["Value"] = np.where(
             proj["DK Salary"].notna() & (proj["DK Salary"] > 0),
             (proj["Proj DK"] / (proj["DK Salary"] / 1000)).round(2),

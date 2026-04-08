@@ -10,7 +10,7 @@ from src.data import (
     extract_race_results, compute_fastest_laps, compute_avg_running_position,
     filter_point_races, query_salaries,
 )
-from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df
+from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df, fuzzy_merge, fuzzy_get, build_norm_lookup
 from src.components import render_driver_race_log
 from src.charts import race_scatter
 
@@ -190,7 +190,7 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
     sal_df = query_salaries(race_id=race_id, platform="DraftKings")
     if not sal_df.empty:
         sal_df = sal_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]]
-        results = results.merge(sal_df, on="Driver", how="left")
+        results = fuzzy_merge(results, sal_df, on="Driver", how="left")
 
     field_size = len(results)
     results["Rating"] = results.apply(
@@ -269,14 +269,18 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
         rc_id = rc.get("race_id")
         sal_df = query_salaries(race_id=rc_id, platform="DraftKings")
         sal_map = {}
+        sal_norm = {}
         if not sal_df.empty:
             sal_map = dict(zip(sal_df["Driver"], sal_df["Salary"]))
+            sal_norm = build_norm_lookup(sal_map)
+        fl_norm = build_norm_lookup(fl)
+        arp_norm = build_norm_lookup(avg_run)
         for _, row in results.iterrows():
             driver = row["Driver"]
             fp = row["Finish Position"]
             start = row["Start"]
             ll = row["Laps Led"]
-            fl_count = fl.get(driver, 0)
+            fl_count = fuzzy_get(driver, fl, fl_norm) or 0
             dk = calc_dk_points(fp, start, ll, fl_count)
             fd = calc_fd_points(fp, start, ll, fl_count)
             all_rows.append({
@@ -290,10 +294,10 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
                 "Start": start,
                 "Laps Led": ll,
                 "Fastest Laps": fl_count,
-                "Avg Run": avg_run.get(driver),
+                "Avg Run": fuzzy_get(driver, avg_run, arp_norm),
                 "DK Pts": dk,
                 "FD Pts": fd,
-                "DK Salary": sal_map.get(driver),
+                "DK Salary": fuzzy_get(driver, sal_map, sal_norm),
                 "Status": row.get("Status", ""),
             })
     return pd.DataFrame(all_rows)

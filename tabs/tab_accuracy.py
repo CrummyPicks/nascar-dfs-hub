@@ -16,7 +16,10 @@ from src.data import (
     filter_point_races, query_salaries, load_race_odds,
     scrape_track_history,
 )
-from src.utils import calc_dk_points, safe_fillna, format_display_df, short_name_series, fuzzy_match_name
+from src.utils import (
+    calc_dk_points, safe_fillna, format_display_df, short_name_series,
+    fuzzy_match_name, fuzzy_get, build_norm_lookup, fuzzy_merge,
+)
 from tabs.tab_projections import _query_races_to_subtract, _subtract_races_from_scraped
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
@@ -198,7 +201,9 @@ def _load_actual_results(race, series_id):
         return results
 
     fl = compute_fastest_laps(rc_laps) if rc_laps else {}
-    results["Fastest Laps"] = results["Driver"].map(lambda d: fl.get(d, 0)).astype("Int64")
+    fl_norm = build_norm_lookup(fl)
+    results["Fastest Laps"] = results["Driver"].map(
+        lambda d: fuzzy_get(d, fl, fl_norm) or 0).astype("Int64")
     results["DK Pts"] = results.apply(
         lambda r: calc_dk_points(r["Finish Position"], r["Start"],
                                  r["Laps Led"], r["Fastest Laps"]), axis=1)
@@ -893,11 +898,11 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 st.warning("Could not load saved projections or actual results.")
                 return
 
-            merged = proj_df.merge(
-                actuals[["Driver", "Finish Position", "Start", "Laps Led",
-                         "Fastest Laps", "DK Pts"]],
-                left_on="driver", right_on="Driver", how="inner"
-            )
+            # Normalize driver names for matching between saved projections and actuals
+            proj_for_merge = proj_df.rename(columns={"driver": "Driver"})
+            actuals_cols = actuals[["Driver", "Finish Position", "Start", "Laps Led",
+                                    "Fastest Laps", "DK Pts"]]
+            merged = fuzzy_merge(proj_for_merge, actuals_cols, on="Driver", how="inner")
             if merged.empty:
                 st.warning("Could not match projected drivers to actual results.")
                 return
@@ -1363,7 +1368,9 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             continue
 
         fl = compute_fastest_laps(laps) if laps else {}
-        results["Fastest Laps"] = results["Driver"].map(lambda d: fl.get(d, 0))
+        _fl_norm = build_norm_lookup(fl)
+        results["Fastest Laps"] = results["Driver"].map(
+            lambda d: fuzzy_get(d, fl, _fl_norm) or 0)
         results["DK Pts"] = results.apply(
             lambda r: calc_dk_points(r["Finish Position"], r["Start"],
                                      r["Laps Led"], r["Fastest Laps"]), axis=1)

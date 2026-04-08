@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from src.config import (
     NASCAR_API_BASE, DB_PATH, DA_TRACK_IDS, EXHIBITION_KEYWORDS,
 )
-from src.utils import int_col, calc_dk_points, calc_fd_points
+from src.utils import int_col, calc_dk_points, calc_fd_points, normalize_driver_name
 import re
 
 
@@ -622,7 +622,12 @@ def query_track_type_stats(track_type: str, season: int = None) -> pd.DataFrame:
 
 
 def query_salaries(race_id: int = None, platform: str = None) -> pd.DataFrame:
-    """Query stored salaries from database."""
+    """Query stored salaries from database.
+
+    Args:
+        race_id: NASCAR API race_id (resolved to DB race_id internally).
+        platform: 'DraftKings' or 'FanDuel'.
+    """
     if not DB_PATH.exists():
         return pd.DataFrame()
     try:
@@ -635,8 +640,16 @@ def query_salaries(race_id: int = None, platform: str = None) -> pd.DataFrame:
         """
         params = []
         if race_id:
-            query += " AND s.race_id = ?"
-            params.append(race_id)
+            # Resolve API race_id to internal DB race_id
+            db_race = conn.execute(
+                "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+            ).fetchone()
+            if db_race:
+                query += " AND s.race_id = ?"
+                params.append(db_race[0])
+            else:
+                conn.close()
+                return pd.DataFrame()
         if platform:
             query += " AND s.platform = ?"
             params.append(platform)
@@ -693,9 +706,21 @@ DK_CONTEST_URLS = [
 DK_DRAFTABLES_URL = "https://api.draftkings.com/draftgroups/v1/draftgroups/{}/draftables"
 
 
+SERIES_DK_KEYWORDS = {
+    1: ["cup"],
+    2: ["xfinity", "o'reilly", "oreilly"],
+    3: ["truck", "craftsman"],
+}
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_dk_salaries_live() -> pd.DataFrame:
+def fetch_dk_salaries_live(series_id: int = 1) -> pd.DataFrame:
     """Fetch upcoming DraftKings NASCAR salaries directly from DK API.
+
+    Args:
+        series_id: 1=Cup, 2=Xfinity, 3=Trucks. Filters DK draft groups by
+                   series keywords in the group name/suffix.
+
     Returns DataFrame with columns: Driver, DK Salary, Status.
     """
     headers = {
@@ -726,7 +751,23 @@ def fetch_dk_salaries_live() -> pd.DataFrame:
     if not draft_groups:
         return pd.DataFrame()
 
-    # Get the first (most upcoming) NASCAR group
+    # Try to match the specific series by keywords in group metadata
+    keywords = SERIES_DK_KEYWORDS.get(series_id, [])
+    if keywords:
+        def _group_text(g):
+            parts = [
+                g.get("ContestStartTimeSuffix") or "",
+                g.get("GameType") or "",
+                g.get("ContestTypeName") or "",
+                g.get("GameSetKey") or "",
+            ]
+            return " ".join(parts).lower()
+
+        filtered = [g for g in draft_groups if any(kw in _group_text(g) for kw in keywords)]
+        if filtered:
+            draft_groups = filtered
+
+    # Get the first (most upcoming) matching group
     group = draft_groups[0]
     group_id = group.get("DraftGroupId") or group.get("draftGroupId")
     if not group_id:
@@ -823,24 +864,124 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
                 "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
                 (db_race_id,))
 
+        # Pre-fetch all drivers for normalized matching
+        all_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
+        driver_norm_map = {}  # normalized_name → (id, full_name)
+        for dr in all_drivers:
+            nn = normalize_driver_name(dr["full_name"])
+            if nn not in driver_norm_map:
+                driver_norm_map[nn] = (dr["id"], dr["full_name"])
+
         count = 0
         for _, row in dk_df.iterrows():
             driver_name = row["Driver"]
             salary = row["DK Salary"]
             status = row.get("Status", "Available")
 
-            # Find or create driver
+            # Find driver: exact match → normalized match → create new
             d = conn.execute("SELECT id FROM drivers WHERE full_name = ?",
                              (driver_name,)).fetchone()
             if not d:
-                conn.execute("INSERT INTO drivers (full_name) VALUES (?)", (driver_name,))
-                d = conn.execute("SELECT id FROM drivers WHERE full_name = ?",
-                                 (driver_name,)).fetchone()
+                norm_key = normalize_driver_name(driver_name)
+                if norm_key in driver_norm_map:
+                    d = {"id": driver_norm_map[norm_key][0]}
+                else:
+                    conn.execute("INSERT INTO drivers (full_name) VALUES (?)", (driver_name,))
+                    d = conn.execute("SELECT id FROM drivers WHERE full_name = ?",
+                                     (driver_name,)).fetchone()
+                    # Add to norm map for subsequent iterations
+                    driver_norm_map[norm_key] = (d["id"], driver_name)
 
             conn.execute("""
                 INSERT INTO salaries (race_id, driver_id, platform, salary, status)
                 VALUES (?, ?, 'DraftKings', ?, ?)
             """, (db_race_id, d["id"], salary, status))
+            count += 1
+
+        conn.commit()
+        conn.close()
+        return count
+    except Exception:
+        return 0
+
+
+def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
+                            race_name: str) -> int:
+    """Save FanDuel salary data into the database.
+
+    Mirrors sync_dk_salaries_to_db but for the FanDuel platform.
+    Returns count of salaries written.
+    """
+    if fd_df.empty or not os.path.exists(str(DB_PATH)):
+        return 0
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+
+        # Find or match DB race
+        db_race = conn.execute(
+            "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
+            (series_id, race_name)
+        ).fetchone()
+
+        if not db_race and race_id:
+            db_race = conn.execute(
+                "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+            ).fetchone()
+
+        if not db_race:
+            from datetime import datetime as _dt
+            today = _dt.now().strftime("%Y-%m-%d")
+            db_race = conn.execute(
+                """SELECT id FROM races
+                   WHERE series_id = ?
+                   AND ABS(julianday(race_date) - julianday(?)) <= 7
+                   ORDER BY ABS(julianday(race_date) - julianday(?))
+                   LIMIT 1""",
+                (series_id, today, today)
+            ).fetchone()
+
+        if not db_race:
+            conn.close()
+            return 0
+
+        db_race_id = db_race["id"]
+
+        # Delete old FD salaries and replace
+        conn.execute(
+            "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
+            (db_race_id,))
+
+        # Pre-fetch all drivers for normalized matching
+        all_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
+        driver_norm_map = {}
+        for dr in all_drivers:
+            nn = normalize_driver_name(dr["full_name"])
+            if nn not in driver_norm_map:
+                driver_norm_map[nn] = (dr["id"], dr["full_name"])
+
+        count = 0
+        for _, row in fd_df.iterrows():
+            driver_name = row["Driver"]
+            salary = row["FD Salary"]
+
+            d = conn.execute("SELECT id FROM drivers WHERE full_name = ?",
+                             (driver_name,)).fetchone()
+            if not d:
+                norm_key = normalize_driver_name(driver_name)
+                if norm_key in driver_norm_map:
+                    d = {"id": driver_norm_map[norm_key][0]}
+                else:
+                    conn.execute("INSERT INTO drivers (full_name) VALUES (?)", (driver_name,))
+                    d = conn.execute("SELECT id FROM drivers WHERE full_name = ?",
+                                     (driver_name,)).fetchone()
+                    driver_norm_map[norm_key] = (d["id"], driver_name)
+
+            conn.execute("""
+                INSERT INTO salaries (race_id, driver_id, platform, salary, status)
+                VALUES (?, ?, 'FanDuel', ?, 'Available')
+            """, (db_race_id, d["id"], salary))
             count += 1
 
         conn.commit()

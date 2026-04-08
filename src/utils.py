@@ -142,6 +142,67 @@ def short_name_series(names: list) -> list:
     return [short_name(n, names) for n in names]
 
 
+def build_norm_lookup(mapping: dict) -> dict:
+    """Build a {normalized_driver_name: value} dict from {display_name: value}."""
+    return {normalize_driver_name(k): v for k, v in mapping.items()}
+
+
+def fuzzy_get(name: str, mapping: dict, norm_cache: dict = None):
+    """Look up a driver in a dict using normalized name matching.
+
+    Args:
+        name: Driver name to look up.
+        mapping: Original {display_name: value} dict.
+        norm_cache: Optional pre-built {normalized_name: value} dict from
+                    build_norm_lookup() — avoids rebuilding each call.
+    """
+    if name in mapping:
+        return mapping[name]
+    norm = normalize_driver_name(name)
+    if norm_cache is None:
+        norm_cache = build_norm_lookup(mapping)
+    return norm_cache.get(norm)
+
+
+def fuzzy_merge(left: pd.DataFrame, right: pd.DataFrame, on: str = "Driver",
+                how: str = "left", right_cols: list = None) -> pd.DataFrame:
+    """Merge two DataFrames using normalized driver name matching.
+
+    Normalizes the *on* column on both sides to find matches, then performs
+    a standard pandas merge.  Falls back to fuzzy_match_name() when
+    normalization alone doesn't find a match.
+    """
+    right_dedup = right.drop_duplicates(on)
+    if right_cols:
+        keep = [on] + [c for c in right_cols if c in right_dedup.columns and c != on]
+        right_dedup = right_dedup[keep]
+
+    # Build norm→original mapping for right side
+    right_norm = {}
+    for n in right_dedup[on]:
+        nn = normalize_driver_name(n)
+        if nn not in right_norm:
+            right_norm[nn] = n
+
+    right_names = list(right_dedup[on])
+
+    def _match(name):
+        if name in right_names:
+            return name
+        nn = normalize_driver_name(name)
+        if nn in right_norm:
+            return right_norm[nn]
+        # Expensive fallback — only when normalization fails
+        return fuzzy_match_name(name, right_names)
+
+    left = left.copy()
+    left["_merge_key"] = left[on].map(_match)
+    right_dedup = right_dedup.rename(columns={on: "_merge_key"})
+    result = left.merge(right_dedup, on="_merge_key", how=how)
+    result = result.drop(columns=["_merge_key"])
+    return result
+
+
 def int_col(series: pd.Series) -> pd.Series:
     """Convert a pandas Series to nullable integer type, safely handling any input."""
     numeric = pd.to_numeric(series, errors="coerce")

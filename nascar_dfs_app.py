@@ -9,7 +9,7 @@ import pandas as pd
 
 try:
     from src.config import (
-        SERIES_OPTIONS, SERIES_LABELS, TRACK_TYPE_MAP, TRACK_TYPE_COLORS,
+        SERIES_OPTIONS, SERIES_LABELS, TRACK_TYPE_MAP, TRACK_TYPE_COLORS, DB_PATH,
     )
     from src.data import (
         fetch_race_list, fetch_weekend_feed, fetch_lap_times, fetch_lap_averages,
@@ -19,7 +19,7 @@ try:
         sync_dk_salaries_to_db, fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
         fetch_nascar_prop_odds, load_race_prop_odds, load_race_odds,
-        _fetch_all_nascar_odds,
+        _fetch_all_nascar_odds, query_salaries,
     )
 except ImportError as e:
     import streamlit as st
@@ -185,7 +185,7 @@ else:
 with st.expander("Settings & Data Upload", expanded=False):
     # ── Auto-fetch status row ──────────────────────────────────────────────
     auto_odds = fetch_nascar_odds()
-    dk_auto = fetch_dk_salaries_live()
+    dk_auto = fetch_dk_salaries_live(series_id=series_id)
 
     # Persist last good odds — never lose data from a failed refresh
     if auto_odds:
@@ -212,7 +212,7 @@ with st.expander("Settings & Data Upload", expanded=False):
             _fetch_all_nascar_odds.clear()
             fetch_dk_salaries_live.clear()
             fresh_odds = fetch_nascar_odds()
-            fresh_dk = fetch_dk_salaries_live()
+            fresh_dk = fetch_dk_salaries_live(series_id=series_id)
             msgs = []
             if fresh_odds:
                 auto_odds = fresh_odds
@@ -227,15 +227,66 @@ with st.expander("Settings & Data Upload", expanded=False):
                 msgs.append("DK Salary: failed")
             st.success(f"Refreshed — {' | '.join(msgs)}")
 
+    # Check for saved salaries in DB for this race
+    db_dk_df = query_salaries(race_id=race_id, platform="DraftKings")
+    db_fd_df = query_salaries(race_id=race_id, platform="FanDuel")
+    has_saved_dk = not db_dk_df.empty
+    has_saved_fd = not db_fd_df.empty
+
     s_cols = st.columns([1, 1, 1, 1])
     with s_cols[0]:
         st.markdown("**DK Salary**")
-        dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed", key="dk_upload")
-        if not dk_auto.empty:
+        if has_saved_dk:
+            st.caption(f"Saved: {len(db_dk_df)} drivers in DB for this race")
+        dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed",
+                                   key=f"dk_upload_{race_id}")
+        if dk_file:
+            st.caption("CSV uploaded — will save to DB")
+        elif not dk_auto.empty and not has_saved_dk:
             st.caption(f"Auto: {len(dk_auto)} drivers from DK API")
+        # Clear button for saved salaries
+        if has_saved_dk:
+            if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
+                import sqlite3 as _sql
+                try:
+                    _conn = _sql.connect(str(DB_PATH))
+                    _db_race = _conn.execute(
+                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                    ).fetchone()
+                    if _db_race:
+                        _conn.execute(
+                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
+                            (_db_race[0],))
+                        _conn.commit()
+                    _conn.close()
+                    st.rerun()
+                except Exception:
+                    st.error("Failed to clear salaries")
     with s_cols[1]:
         st.markdown("**FD Salary CSV**")
-        fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed", key="fd_upload")
+        if has_saved_fd:
+            st.caption(f"Saved: {len(db_fd_df)} drivers in DB for this race")
+        fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed",
+                                   key=f"fd_upload_{race_id}")
+        if fd_file:
+            st.caption("CSV uploaded — will save to DB")
+        if has_saved_fd:
+            if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
+                import sqlite3 as _sql
+                try:
+                    _conn = _sql.connect(str(DB_PATH))
+                    _db_race = _conn.execute(
+                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                    ).fetchone()
+                    if _db_race:
+                        _conn.execute(
+                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
+                            (_db_race[0],))
+                        _conn.commit()
+                    _conn.close()
+                    st.rerun()
+                except Exception:
+                    st.error("Failed to clear salaries")
     with s_cols[2]:
         st.markdown("**Manual Practice**")
         practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
@@ -279,8 +330,12 @@ with st.expander("Settings & Data Upload", expanded=False):
             odds_data = auto_odds
             odds_source = "action_network"
         # Fallback: estimate odds from DK salary when no real odds available
-        if not odds_data and not dk_auto.empty:
-            odds_data = estimate_odds_from_salaries(dk_auto)
+        _salary_for_odds = dk_auto if not dk_auto.empty else (
+            db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]]
+            if has_saved_dk else pd.DataFrame()
+        )
+        if not odds_data and not _salary_for_odds.empty:
+            odds_data = estimate_odds_from_salaries(_salary_for_odds)
             if odds_data:
                 odds_source = "salary_estimate"
                 reason = "Action Network unavailable" if is_cup else f"no odds source for {series_name} series"
@@ -330,19 +385,33 @@ if not lap_averages_df.empty and "Overall Rank" in lap_averages_df.columns and n
         if driver and rank and not pd.isna(rank):
             practice_data[driver] = int(rank)
 
-# Parse salary CSVs (CSV upload overrides auto-fetch)
+# Parse salary CSVs — priority: CSV upload > auto-fetch > saved DB
 if dk_file:
     dk_df = parse_dk_csv(dk_file)
 elif not dk_auto.empty:
     dk_df = dk_auto[dk_auto["Status"] != "Out"][["Driver", "DK Salary"]].copy()
+elif has_saved_dk:
+    dk_df = db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
 else:
     dk_df = pd.DataFrame()
-fd_df = parse_fd_csv(fd_file) if fd_file else pd.DataFrame()
 
-# Auto-sync DK salaries to DB for projection engine and historical tracking
-if not dk_df.empty:
-    synced = sync_dk_salaries_to_db(dk_auto if not dk_auto.empty else dk_df,
-                                     race_id, series_id, race_name)
+if fd_file:
+    fd_df = parse_fd_csv(fd_file)
+elif has_saved_fd:
+    fd_df = db_fd_df.rename(columns={"Salary": "FD Salary"})[["Driver", "FD Salary"]].copy()
+else:
+    fd_df = pd.DataFrame()
+
+# Sync salaries to DB — CSV upload or auto-fetch overwrites saved data
+if dk_file or (not has_saved_dk and not dk_auto.empty):
+    source_df = dk_df if dk_file else dk_auto
+    if not source_df.empty:
+        sync_dk_salaries_to_db(source_df, race_id, series_id, race_name)
+
+# Sync FD salaries to DB when uploaded
+if fd_file and not fd_df.empty:
+    from src.data import sync_fd_salaries_to_db
+    sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
 
 
 # ============================================================

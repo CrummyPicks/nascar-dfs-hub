@@ -8,7 +8,10 @@ from src.data import (
     scrape_track_history,
     compute_fastest_laps, compute_avg_running_position,
 )
-from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df, fuzzy_match_name
+from src.utils import (
+    calc_dk_points, calc_fd_points, safe_fillna, format_display_df,
+    fuzzy_match_name, fuzzy_merge, fuzzy_get, build_norm_lookup,
+)
 from src.charts import (
     dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
 )
@@ -39,8 +42,12 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         avg_run_pos = compute_avg_running_position(lap_data) if lap_data else {}
         res = results_df.copy()
         res = res.sort_values("Finish Position", na_position="last").reset_index(drop=True)
-        res["Fastest Laps"] = res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")
-        res["Avg Run"] = res["Driver"].map(lambda d: avg_run_pos.get(d))
+        fl_norm = build_norm_lookup(fl_counts)
+        arp_norm = build_norm_lookup(avg_run_pos)
+        res["Fastest Laps"] = res["Driver"].map(
+            lambda d: fuzzy_get(d, fl_counts, fl_norm) or 0).astype("Int64")
+        res["Avg Run"] = res["Driver"].map(
+            lambda d: fuzzy_get(d, avg_run_pos, arp_norm))
         res["DK Pts"] = res.apply(
             lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
         res["FD Pts"] = res.apply(
@@ -64,9 +71,9 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     # DK/FD Salary
     if not dk_df.empty:
-        master = master.merge(dk_df.drop_duplicates("Driver"), on="Driver", how="left")
+        master = fuzzy_merge(master, dk_df, on="Driver", how="left")
     if not fd_df.empty:
-        master = master.merge(fd_df.drop_duplicates("Driver"), on="Driver", how="left")
+        master = fuzzy_merge(master, fd_df, on="Driver", how="left")
 
     # Betting odds (store as numeric for proper sorting, rounded for display)
     if odds_data:
@@ -113,7 +120,9 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     # Sponsor from lap averages
     if not lap_averages_df.empty and "Sponsor" in lap_averages_df.columns and "Sponsor" not in master.columns:
         sponsor_map = lap_averages_df.drop_duplicates("Driver").set_index("Driver")["Sponsor"].to_dict()
-        master["Sponsor"] = master["Driver"].map(sponsor_map)
+        sponsor_norm = build_norm_lookup(sponsor_map)
+        master["Sponsor"] = master["Driver"].map(
+            lambda d: fuzzy_get(d, sponsor_map, sponsor_norm))
 
     # Practice lap average ranks
     if not lap_averages_df.empty:
