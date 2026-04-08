@@ -38,7 +38,11 @@ def _api_race_id_to_db(api_race_id):
 
 
 def _ensure_saved_projections_table():
-    """Create the saved_projections table if it doesn't exist."""
+    """Create the saved_projections table if it doesn't exist.
+
+    Also clears any pre-existing projections that were contaminated by
+    data leakage (saved before the date-filtering fix was applied).
+    """
     if not os.path.exists(PROJ_DB):
         return
     conn = sqlite3.connect(PROJ_DB)
@@ -67,6 +71,14 @@ def _ensure_saved_projections_table():
             UNIQUE(race_id, driver, series_id)
         )
     ''')
+    # One-time migration: clear projections saved before 2026-04-08
+    # (contaminated by data leakage — track history included future results)
+    try:
+        conn.execute(
+            "DELETE FROM saved_projections WHERE saved_at < '2026-04-08'"
+        )
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -371,8 +383,8 @@ def _query_driver_career_dnf(series_id, before_date=None):
 
 
 DEFAULT_WEIGHTS = {
-    "track": 0.25, "track_type": 0.20, "practice": 0.20,
-    "odds": 0.15, "qual": 0.12,
+    "track": 0.30, "track_type": 0.15, "practice": 0.25,
+    "odds": 0.30, "qual": 0,  # qualifying only used for start position, not finish
 }
 
 
@@ -500,12 +512,24 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         signal_weights = []
         has_history = bool(th or tt)
 
+        # Sample-size regression: regress avg_finish toward mid-field for
+        # drivers with very few races. This prevents 1-race wonders from
+        # being ranked as if their small sample is reliable.
+        mid_field = field_size * 0.5
+        MIN_RACES_FULL_TRUST = 5  # fully trust avg_finish at 5+ races
+
         if th and wn.get("track", 0) > 0:
-            finish_signals.append(th["avg_finish"])
+            races = th.get("races", 1)
+            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
+            regressed_finish = th["avg_finish"] * trust + mid_field * (1 - trust)
+            finish_signals.append(regressed_finish)
             signal_weights.append(wn["track"])
 
         if tt and wn.get("track_type", 0) > 0:
-            finish_signals.append(tt["avg_finish"])
+            races = tt.get("races", 1)
+            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
+            regressed_finish = tt["avg_finish"] * trust + mid_field * (1 - trust)
+            finish_signals.append(regressed_finish)
             signal_weights.append(wn["track_type"])
 
         # Qualifying is NOT a finish signal — it only determines start position.
@@ -533,7 +557,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             total_w = sum(signal_weights)
             raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
-            raw_finish = field_size * 0.65
+            raw_finish = field_size * 0.75
 
         # DNF risk adjustment
         dnf = dnf_data.get(d)
@@ -568,7 +592,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             if sp and sp <= field_size:
                 qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30
                 dom_signals.append(qual_dom)
-                dom_w.append(wn.get("qual", 0.15))
+                dom_w.append(0.15)  # fixed weight — qual speed predicts domination
 
             if od and wn.get("odds", 0) > 0:
                 odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
@@ -577,7 +601,10 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
             if dom_signals:
                 total_dw = sum(dom_w)
-                dom_score = sum(s * w for s, w in zip(dom_signals, dom_w)) / total_dw
+                if total_dw > 0:
+                    dom_score = sum(s * w for s, w in zip(dom_signals, dom_w)) / total_dw
+                else:
+                    dom_score = max(0, (field_size - raw_finish) / field_size) * 5
             else:
                 dom_score = max(0, (field_size - raw_finish) / field_size) * 5
 
@@ -596,7 +623,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             if sp and sp <= field_size:
                 qual_fl = max(0, (field_size + 1 - sp) / field_size) * 15
                 fl_signals.append(qual_fl)
-                fl_w.append(wn.get("qual", 0.15))
+                fl_w.append(0.15)  # fixed weight — qual speed predicts fast laps
 
             if od and wn.get("odds", 0) > 0:
                 odds_fl = max(0, (field_size + 1 - od) / field_size) * 12
@@ -817,7 +844,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             w = DEFAULT_WEIGHTS
             weights_str = (
                 f"Odds {w['odds']:.0%} | Track {w['track']:.0%} | "
-                f"Practice {w['practice']:.0%} | Qual {w['qual']:.0%} | "
+                f"Practice {w['practice']:.0%} | "
                 f"Track Type {w['track_type']:.0%}"
             )
 

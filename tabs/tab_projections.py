@@ -386,7 +386,7 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
                ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
                ROUND(AVG(rr.start_pos), 1) as "Avg Start",
                SUM(rr.laps_led) as "Laps Led",
-               ROUND(AVG(COALESCE(rr.driver_rating, 0)), 1) as "Avg Rating",
+               0 as "Avg Rating",
                SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
                SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
@@ -401,7 +401,8 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
     '''
     try:
         df = pd.read_sql_query(query, conn, params=params)
-    except Exception:
+    except Exception as e:
+        st.warning(f"Track history query error: {e}")
         df = pd.DataFrame()
     conn.close()
     return df
@@ -705,12 +706,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         signal_weights = []
         has_history = bool(th or tt)
 
+        # Sample-size regression: regress avg_finish toward mid-field for
+        # drivers with very few races to prevent small-sample overvaluation.
+        mid_field = field_size * 0.5
+        MIN_RACES_FULL_TRUST = 5
+
         if th:
-            finish_signals.append(th["avg_finish"])
+            races = th.get("races", 1)
+            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
+            regressed = th["avg_finish"] * trust + mid_field * (1 - trust)
+            finish_signals.append(regressed)
             signal_weights.append(wn["track"])
 
         if tt:
-            finish_signals.append(tt["avg_finish"])
+            races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 5
+            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
+            regressed = tt["avg_finish"] * trust + mid_field * (1 - trust)
+            finish_signals.append(regressed)
             signal_weights.append(wn["track_type"])
 
         # NOTE: Qualifying is NOT a finish signal — it only determines start
@@ -735,7 +747,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             total_w = sum(signal_weights)
             raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
-            raw_finish = field_size * 0.65  # default: below mid-field
+            raw_finish = field_size * 0.75  # default: well below mid-field
 
         driver_raw_scores[d] = raw_finish
 
