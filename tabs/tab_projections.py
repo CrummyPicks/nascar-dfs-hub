@@ -1,4 +1,4 @@
-"""Tab 5: Projections — DFS-Optimized Projection Engine.
+"""Tab 5: Projections — DFS-Optimized Projection Engine.  # v3 — track type removed
 
 Projects actual DraftKings points by estimating each scoring component:
   - Finish position points (from DK_FINISH_POINTS table)
@@ -1019,7 +1019,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         display_cols.append("Qual Pos")
     display_cols.extend(["Proj DK", "Proj Finish", "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
-                         "Track", "Track Type"])
+                         "Track"])
     if "Value" in proj.columns:
         display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]
@@ -1109,8 +1109,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             f"FL Pts: {row.get('FL Pts', 0):.1f}<br>"
             f"Laps Led: {row.get('Proj Laps Led', 0):.0f}<br>"
             f"Fast Laps: {row.get('Proj Fast Laps', 0):.0f}<br>"
-            f"Track: {pd.to_numeric(row.get('Track', 0), errors='coerce') or 0:.1f} | "
-            f"Type: {pd.to_numeric(row.get('Track Type', 0), errors='coerce') or 0:.1f}"
+            f"Track: {pd.to_numeric(row.get('Track', 0), errors='coerce') or 0:.1f}"
         )
         custom_hover.append(text)
 
