@@ -192,9 +192,19 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         mask = display_df.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         display_df = display_df[mask]
 
-    # Fill null odds with large sentinel so they sort to bottom
+    # Fill nulls with sentinel values so missing data sorts to bottom
     if "Win Odds" in display_df.columns:
         display_df["Win Odds"] = display_df["Win Odds"].fillna(999999)
+
+    # Track history: large sentinel for "lower is better" cols, 0 for count/rating cols
+    th_high_sentinel = {"TH_Avg Finish": 99, "TH_Avg Start": 99, "TH_DNF": 0}
+    th_zero_fill = ["TH_Races", "TH_Rating", "TH_Wins", "TH_T5", "TH_T10", "TH_T20", "TH_Laps Led"]
+    for col, val in th_high_sentinel.items():
+        if col in display_df.columns:
+            display_df[col] = display_df[col].fillna(val)
+    for col in th_zero_fill:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].fillna(0)
 
     # Sort: by Finish Position if postrace, by Qual if prerace
     if not is_prerace and "Finish Position" in display_df.columns:
