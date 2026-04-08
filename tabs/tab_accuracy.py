@@ -193,11 +193,14 @@ def _load_actual_results(race, series_id):
 
 # ── DB-backed track stats (fast, no API calls) ──────────────────────────────
 
-def _query_driver_track_stats(track_name, series_id, exclude_race_id=None):
+def _query_driver_track_stats(track_name, series_id, exclude_race_id=None,
+                               before_date=None):
     """Query per-driver stats at a specific track from race_results table.
 
     Args:
         exclude_race_id: DB race ID to exclude (prevents data leakage in backtests)
+        before_date: Only include races before this date (YYYY-MM-DD) to prevent
+                     using future data when backtesting historical races
 
     Returns dict of {driver_name: {avg_finish, avg_start, laps_led_per_race,
     fastest_laps_per_race, races, dnf_rate, crash_rate, speed_score}}
@@ -211,6 +214,9 @@ def _query_driver_track_stats(track_name, series_id, exclude_race_id=None):
     if exclude_race_id:
         where += " AND r.id != ?"
         params.append(exclude_race_id)
+    if before_date:
+        where += " AND r.race_date < ?"
+        params.append(before_date)
 
     rows = conn.execute(f'''
         SELECT d.full_name,
@@ -250,12 +256,13 @@ def _query_driver_track_stats(track_name, series_id, exclude_race_id=None):
 
 
 def _query_driver_track_type_stats(track_type, series_id, exclude_track=None,
-                                    exclude_race_id=None):
+                                    exclude_race_id=None, before_date=None):
     """Query per-driver stats across all tracks of a given type.
 
     Args:
         exclude_track: Track name to exclude (for track-type cross-validation)
         exclude_race_id: DB race ID to exclude (prevents data leakage)
+        before_date: Only include races before this date (YYYY-MM-DD)
 
     Returns dict of {driver_name: {avg_finish, laps_led_per_race, speed_score, ...}}
     """
@@ -276,8 +283,11 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None,
     where_extra = ""
     params = matching_tracks + [series_id]
     if exclude_race_id:
-        where_extra = " AND r.id != ?"
+        where_extra += " AND r.id != ?"
         params.append(exclude_race_id)
+    if before_date:
+        where_extra += " AND r.race_date < ?"
+        params.append(before_date)
 
     query = f'''
         SELECT d.full_name,
@@ -312,8 +322,11 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None,
     return result
 
 
-def _query_driver_career_dnf(series_id):
+def _query_driver_career_dnf(series_id, before_date=None):
     """Query career DNF and crash rates for all drivers.
+
+    Args:
+        before_date: Only include races before this date (YYYY-MM-DD)
 
     Returns dict of {driver_name: {dnf_rate, crash_rate, speed_score, races}}
     """
@@ -321,7 +334,13 @@ def _query_driver_career_dnf(series_id):
         return {}
 
     conn = sqlite3.connect(PROJ_DB)
-    rows = conn.execute('''
+    where = "WHERE r.series_id = ?"
+    params = [series_id]
+    if before_date:
+        where += " AND r.race_date < ?"
+        params.append(before_date)
+
+    rows = conn.execute(f'''
         SELECT d.full_name,
                COUNT(*) as races,
                SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as dnfs,
@@ -331,10 +350,10 @@ def _query_driver_career_dnf(series_id):
         FROM race_results rr
         JOIN drivers d ON d.id = rr.driver_id
         JOIN races r ON r.id = rr.race_id
-        WHERE r.series_id = ?
+        {where}
         GROUP BY d.id
         HAVING races >= 5
-    ''', (series_id,)).fetchall()
+    ''', params).fetchall()
     conn.close()
 
     result = {}
@@ -379,13 +398,17 @@ def _generate_race_projections(race, series_id, weights=None):
     drivers = actuals["Driver"].unique().tolist()
     field_size = len(drivers)
 
-    # Exclude this race from its own history to prevent data leakage
+    # Exclude this race AND all future races to prevent data leakage
     db_rid = _api_race_id_to_db(race_id)
-    th_data = _query_driver_track_stats(track_name, series_id, exclude_race_id=db_rid)
+    race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
+    th_data = _query_driver_track_stats(track_name, series_id,
+                                         exclude_race_id=db_rid,
+                                         before_date=race_date)
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     tt_data = _query_driver_track_type_stats(parent_type, series_id,
                                               exclude_track=track_name,
-                                              exclude_race_id=db_rid)
+                                              exclude_race_id=db_rid,
+                                              before_date=race_date)
 
     start_positions = {}
     for _, row in actuals.iterrows():
@@ -424,7 +447,7 @@ def _generate_race_projections(race, series_id, weights=None):
     except (ValueError, TypeError):
         race_laps = 0
 
-    dnf_data = _query_driver_career_dnf(series_id)
+    dnf_data = _query_driver_career_dnf(series_id, before_date=race_date)
 
     proj_dk = _project_race_backtest(
         drivers, field_size, weights, th_data, tt_data,
@@ -1176,8 +1199,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
     st.caption(f"Signal constraints: {ranges_str}")
     progress = st.progress(0)
 
-    # Pre-load career DNF data (once for all races)
-    dnf_data = _query_driver_career_dnf(series_id) if include_dnf else {}
+    # DNF data loaded per-race (with before_date) to prevent future data leakage
 
     # Pre-load all race data from DB (fast — no API calls for track stats)
     race_data = []
@@ -1213,15 +1235,22 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
 
         drivers = results["Driver"].unique().tolist()
 
-        # DB-backed track history — exclude this race to prevent data leakage
+        # Exclude this race AND all future races to prevent data leakage
         db_rid = _api_race_id_to_db(race_id)
-        th_data = _query_driver_track_stats(track_name, series_id, exclude_race_id=db_rid)
+        race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
+        th_data = _query_driver_track_stats(track_name, series_id,
+                                             exclude_race_id=db_rid,
+                                             before_date=race_date)
 
         # DB-backed track type history — use parent type for broader data
         parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
         tt_data = _query_driver_track_type_stats(parent_type, series_id,
                                                   exclude_track=track_name,
-                                                  exclude_race_id=db_rid)
+                                                  exclude_race_id=db_rid,
+                                                  before_date=race_date)
+
+        # DNF data — also time-bounded
+        dnf_data = _query_driver_career_dnf(series_id, before_date=race_date) if include_dnf else {}
 
         # Start positions from actual results (qualifying proxy)
         start_positions = {}
@@ -1292,6 +1321,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             "race_laps": race_laps,
             "track_type": track_type,
             "actual_dk": actual_dk,
+            "dnf_data": dnf_data,
         })
 
     if not race_data:
@@ -1355,7 +1385,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 drivers, field_size, wn,
                 rd["th_data"], rd["tt_data"],
                 rd["start_positions"], rd["odds_finish"],
-                dnf_data if include_dnf else {},
+                rd.get("dnf_data", {}),
                 race_laps=rd.get("race_laps", 0),
                 track_type=rd.get("track_type", "intermediate"),
             )
@@ -1419,7 +1449,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
     st.session_state["acc_opt_results"] = results_df
     st.session_state["acc_opt_series"] = series_name
     st.session_state["acc_opt_race_data"] = race_data
-    st.session_state["acc_opt_dnf_data"] = dnf_data if include_dnf else {}
+    # dnf_data is now per-race inside race_data dicts
 
     _display_backtest_results(results_df, series_name)
 
@@ -1487,7 +1517,6 @@ def _display_backtest_results(results_df, series_name):
     st.caption("Select a weight combination to see projected vs actual driver details")
 
     race_data = st.session_state.get("acc_opt_race_data", [])
-    dnf_data = st.session_state.get("acc_opt_dnf_data", {})
 
     if race_data and len(results_df) > 0:
         # Build selectable labels from top 15
@@ -1496,7 +1525,7 @@ def _display_backtest_results(results_df, series_name):
         for idx, row in top15.iterrows():
             lbl = (f"#{len(combo_labels) + 1}: "
                    f"Odds {int(row['Odds'])}% | Track {int(row['Track'])}% | "
-                   f"Prac {int(row['Practice'])}% | Qual {int(row['Qualifying'])}% | "
+                   f"Prac {int(row['Practice'])}% | "
                    f"Type {int(row['Track Type'])}% — "
                    f"MAE {row['MAE']:.1f}, Rank Corr {row['Rank Corr']:.3f}")
             combo_labels.append((lbl, row))
@@ -1562,7 +1591,7 @@ def _display_backtest_results(results_df, series_name):
                     drivers, field_size, wn,
                     rd["th_data"], rd["tt_data"],
                     rd["start_positions"], rd["odds_finish"],
-                    dnf_data,
+                    rd.get("dnf_data", {}),
                     race_laps=rd.get("race_laps", 0),
                     track_type=rd.get("track_type", "intermediate"),
                 )
