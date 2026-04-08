@@ -1025,7 +1025,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             f"FL Pts: {row.get('FL Pts', 0):.1f}<br>"
             f"Laps Led: {row.get('Proj Laps Led', 0):.0f}<br>"
             f"Fast Laps: {row.get('Proj Fast Laps', 0):.0f}<br>"
-            f"Track: {row.get('Track', 0):.1f} | Type: {row.get('Track Type', 0):.1f}"
+            f"Track: {pd.to_numeric(row.get('Track', 0), errors='coerce') or 0:.1f} | "
+            f"Type: {pd.to_numeric(row.get('Track Type', 0), errors='coerce') or 0:.1f}"
         )
         custom_hover.append(text)
 
