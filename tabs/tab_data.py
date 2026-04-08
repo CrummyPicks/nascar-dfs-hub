@@ -192,6 +192,10 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         mask = display_df.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         display_df = display_df[mask]
 
+    # Fill null odds with large sentinel so they sort to bottom
+    if "Win Odds" in display_df.columns:
+        display_df["Win Odds"] = display_df["Win Odds"].fillna(999999)
+
     # Sort: by Finish Position if postrace, by Qual if prerace
     if not is_prerace and "Finish Position" in display_df.columns:
         display_df = display_df.sort_values("Finish Position", na_position="last")
