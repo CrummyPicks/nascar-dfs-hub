@@ -222,9 +222,13 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         if col in display_df.columns:
             display_df[col] = display_df[col].fillna(0)
 
-    # Sort: by Finish Position if postrace, by Qual if prerace
+    # Sort: by Finish Position if postrace; by Win Odds (then TH Avg Finish) if prerace
     if not is_prerace and "Finish Position" in display_df.columns:
         display_df = display_df.sort_values("Finish Position", na_position="last")
+    elif is_prerace and "Win Odds" in display_df.columns and display_df["Win Odds"].notna().any() and (display_df["Win Odds"] != 999999).any():
+        display_df = display_df.sort_values("Win Odds", na_position="last")
+    elif is_prerace and "TH_Avg Finish" in display_df.columns:
+        display_df = display_df.sort_values("TH_Avg Finish", na_position="last")
     elif "Qual" in display_df.columns:
         display_df = display_df.sort_values("Qual", na_position="last")
 
