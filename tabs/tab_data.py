@@ -285,7 +285,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     status = "Post-race" if not is_prerace else "Pre-race"
     st.caption(f"{field_count} drivers  •  {status}")
 
-    st.dataframe(safe_fillna(display_df), use_container_width=True, hide_index=True, height=600)
+    st.dataframe(safe_fillna(display_df), width="stretch", hide_index=True, height=600)
 
     # Export
     if not master.empty:
@@ -307,10 +307,10 @@ def _render_charts_view(completed_races, series_id, selected_year,
             lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
 
         fig = dfs_histogram(res)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         fig = start_vs_finish_scatter(res)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     # Race lap-by-lap chart (from race lap-times data)
     if not is_prerace and lap_data:
@@ -348,7 +348,7 @@ def _render_charts_view(completed_races, series_id, selected_year,
 
             fig = race_lap_chart(filtered_data, sel_drivers)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
     # Single race scatter — Avg Running Pos vs DK Points for THIS race
     if not is_prerace and not results_df.empty and lap_data:
@@ -362,4 +362,4 @@ def _render_charts_view(completed_races, series_id, selected_year,
 
         fig = race_scatter(race_res)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="data_race_scatter")
+            st.plotly_chart(fig, width="stretch", key="data_race_scatter")

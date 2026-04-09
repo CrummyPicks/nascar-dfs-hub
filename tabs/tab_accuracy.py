@@ -973,7 +973,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     )
     st.caption(f"Weights: {weights_str}")
 
-    st.dataframe(safe_fillna(format_display_df(comp)), use_container_width=True,
+    st.dataframe(safe_fillna(format_display_df(comp)), width="stretch",
                  hide_index=False, height=500)
 
     # Scatter: Projected vs Actual DK Points
@@ -1008,7 +1008,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                       title="Projected vs Actual DK Points",
                       xaxis_title="Actual DK Points",
                       yaxis_title="Projected DK Points")
-    st.plotly_chart(fig, use_container_width=True, key="acc_scatter_dk")
+    st.plotly_chart(fig, width="stretch", key="acc_scatter_dk")
 
     # Scatter: Projected vs Actual Finish
     fig2 = go.Figure()
@@ -1037,7 +1037,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                        xaxis_title="Actual Finish", yaxis_title="Projected Finish",
                        xaxis=dict(autorange="reversed"),
                        yaxis=dict(autorange="reversed"))
-    st.plotly_chart(fig2, use_container_width=True, key="acc_scatter_finish")
+    st.plotly_chart(fig2, width="stretch", key="acc_scatter_finish")
 
     # Error distribution
     fig3 = go.Figure()
@@ -1048,7 +1048,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                        title="DK Points Error Distribution (Projected - Actual)",
                        xaxis_title="Error (+ = over-projected, - = under-projected)",
                        yaxis_title="Count")
-    st.plotly_chart(fig3, use_container_width=True, key="acc_error_dist")
+    st.plotly_chart(fig3, width="stretch", key="acc_error_dist")
 
     csv = comp.to_csv(index=True).encode("utf-8")
     st.download_button("Export Comparison CSV", csv,
@@ -1183,7 +1183,7 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
     race_disp = metrics_df.copy()
     for col in ["DK MAE", "Finish MAE", "DK Corr", "Finish Corr", "Rank Corr", "Avg Bias"]:
         race_disp[col] = race_disp[col].round(2)
-    st.dataframe(safe_fillna(race_disp), use_container_width=True, hide_index=True, height=300)
+    st.dataframe(safe_fillna(race_disp), width="stretch", hide_index=True, height=300)
 
     st.markdown("**Accuracy by Track Type**")
     type_agg = all_comp_df.groupby("Track Type").agg(
@@ -1192,7 +1192,7 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         MAE=("Error", lambda x: x.abs().mean()),
         Bias=("Error", "mean"),
     ).round(2).sort_values("MAE")
-    st.dataframe(type_agg, use_container_width=True)
+    st.dataframe(type_agg, width="stretch")
 
     st.caption(
         "Track your projection accuracy over time. Lower MAE and higher correlation = better model. "
@@ -1581,7 +1581,7 @@ def _display_backtest_results(results_df, series_name):
     top.index = range(1, len(top) + 1)
     top.index.name = "Rank"
 
-    st.dataframe(top, use_container_width=True, hide_index=False)
+    st.dataframe(top, width="stretch", hide_index=False)
 
     best = results_df.iloc[0]
     st.success(
@@ -1868,7 +1868,7 @@ def _display_backtest_results(results_df, series_name):
                 detail_df.index.name = "Rank"
 
                 st.dataframe(safe_fillna(format_display_df(detail_df)),
-                             use_container_width=True, hide_index=False, height=500)
+                             width="stretch", hide_index=False, height=500)
 
                 # Summary metrics for this combo
                 valid = detail_df.dropna(subset=["Actual DK"])
@@ -1926,7 +1926,7 @@ def _display_backtest_results(results_df, series_name):
                         xaxis_title="Actual DK Points",
                         yaxis_title="Projected DK Points",
                     )
-                    st.plotly_chart(fig, use_container_width=True, key="acc_drill_scatter")
+                    st.plotly_chart(fig, width="stretch", key="acc_drill_scatter")
 
                 csv_detail = detail_df.to_csv(index=True).encode("utf-8")
                 st.download_button("Export Detail CSV", csv_detail,

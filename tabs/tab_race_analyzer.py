@@ -215,12 +215,12 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
         disp = disp[mask]
 
     st.caption(f"Track: **{race.get('track_name', '')}** | {len(results)} drivers")
-    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=True, height=520)
+    st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=520)
 
     # Chart
     fig = race_scatter(results)
     if fig:
-        st.plotly_chart(fig, use_container_width=True, key="ra_single_scatter")
+        st.plotly_chart(fig, width="stretch", key="ra_single_scatter")
 
     # Export
     csv = disp.to_csv(index=False).encode("utf-8")
@@ -365,7 +365,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
         mask = disp.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         disp = disp[mask]
 
-    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=False, height=550)
+    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550)
 
     # Season charts
     import plotly.graph_objects as go
@@ -389,7 +389,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
         fig_dk.update_layout(**DARK_LAYOUT, height=max(400, len(top_dk) * 18),
                              title=f"Top 25 Avg DK Points — {year_label}",
                              xaxis_title="Avg DK Points", yaxis_title="")
-        st.plotly_chart(fig_dk, use_container_width=True, key="ra_season_dk_bar")
+        st.plotly_chart(fig_dk, width="stretch", key="ra_season_dk_bar")
 
     # Top 25 Avg Finish bar chart
     top_finish = agg.nsmallest(25, "Avg Finish").copy()
@@ -408,7 +408,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
         fig_fin.update_layout(**DARK_LAYOUT, height=max(400, len(top_finish) * 18),
                               title=f"Top 25 Avg Finish — {year_label}",
                               xaxis_title="Avg Finish Position", yaxis_title="")
-        st.plotly_chart(fig_fin, use_container_width=True, key="ra_season_fin_bar")
+        st.plotly_chart(fig_fin, width="stretch", key="ra_season_fin_bar")
 
     # Season scatter
     if not season_df.empty and "Avg Run" in season_df.columns:
@@ -419,7 +419,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
 
         fig = season_scatter(avg_data)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     csv = agg.to_csv(index=True).encode("utf-8")
     st.download_button("Export Season CSV", csv,
@@ -560,7 +560,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
         mask = disp.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         disp = disp[mask]
 
-    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=False, height=550)
+    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550)
 
     # Avg Running Pos vs Rating scatter chart
     if "Avg Run" in agg.columns and agg["Avg Run"].notna().any():
@@ -573,7 +573,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
         fig = season_scatter(scatter_data)
         if fig:
             fig.update_layout(title=f"Avg Running Pos vs Rating — {chosen_type.title()} Tracks")
-            st.plotly_chart(fig, use_container_width=True, key="ra_tt_scatter")
+            st.plotly_chart(fig, width="stretch", key="ra_tt_scatter")
     else:
         # Fallback: plot Avg Finish vs Avg DK
         import plotly.graph_objects as go
@@ -596,7 +596,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
                 yaxis_title="Avg DK Points",
                 xaxis=dict(autorange="reversed"),
             )
-            st.plotly_chart(fig, use_container_width=True, key="ra_tt_fallback_scatter")
+            st.plotly_chart(fig, width="stretch", key="ra_tt_fallback_scatter")
 
     # Export
     csv = agg.to_csv(index=True).encode("utf-8")
@@ -674,7 +674,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
         if len(type_agg) > 1:
             with st.expander("Performance by Track Type", expanded=False):
                 st.dataframe(safe_fillna(format_display_df(type_agg)),
-                             use_container_width=True, hide_index=False)
+                             width="stretch", hide_index=False)
 
     # ── Race Log Table ─────────────────────────────────────────────────────
     st.markdown(f"#### {driver_pick} — Race Log")
@@ -684,7 +684,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
         show_cols.insert(6, "DK Salary")
     avail = [c for c in show_cols if c in m.columns]
     disp = format_display_df(m[avail].copy())
-    st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=True, height=400)
+    st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=400)
 
     # ── Charts ─────────────────────────────────────────────────────────────
     import plotly.graph_objects as go
@@ -714,7 +714,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
                              xaxis_title="", yaxis_title="DK Points",
                              showlegend=len(m) >= 4,
                              xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
-        st.plotly_chart(fig_dk, use_container_width=True, key="ra_lookup_dk_trend")
+        st.plotly_chart(fig_dk, width="stretch", key="ra_lookup_dk_trend")
 
     # Finish Position trend
     if len(m) >= 2 and "Finish" in m.columns:
@@ -732,7 +732,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
                               xaxis_title="", yaxis_title="Finish Position",
                               yaxis=dict(autorange="reversed"),
                               xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
-        st.plotly_chart(fig_fin, use_container_width=True, key="ra_lookup_fin_trend")
+        st.plotly_chart(fig_fin, width="stretch", key="ra_lookup_fin_trend")
 
     # Export
     csv = m[avail].to_csv(index=False).encode("utf-8")
@@ -805,7 +805,7 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
         })
 
     comp_df = pd.DataFrame(comp_rows)
-    st.dataframe(comp_df, use_container_width=True, hide_index=True, height=420)
+    st.dataframe(comp_df, width="stretch", hide_index=True, height=420)
 
     # Race-by-race charts
     import plotly.graph_objects as go
@@ -829,7 +829,7 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
                           title="DK Points by Race",
                           xaxis_title="", yaxis_title="DK Points",
                           xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
@@ -843,4 +843,4 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
                            xaxis_title="", yaxis_title="Finish Position",
                            yaxis=dict(autorange="reversed"),
                            xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")

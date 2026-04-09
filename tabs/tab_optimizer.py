@@ -601,7 +601,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 pool_display["Driver"].str.contains(search, case=False, na=False)]
 
         disp = format_display_df(pool_display[avail].copy())
-        st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=True, height=400)
+        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=400)
 
         # Quick lock/exclude controls
         lk_col, ex_col, clr_col = st.columns([2, 2, 1])
@@ -680,7 +680,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     "DK Salary": match.iloc[0]["DK Salary"] if not match.empty else 0,
                 })
             exp_df = format_display_df(pd.DataFrame(exp_rows))
-            st.dataframe(safe_fillna(exp_df), use_container_width=True, hide_index=True, height=350)
+            st.dataframe(safe_fillna(exp_df), width="stretch", hide_index=True, height=350)
 
         # Lineup cards
         for i, lu in enumerate(multi_lineups):
@@ -697,7 +697,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     "Proj Score": round(d["Proj Score"], 1),
                     "Value": round(d.get("Value", 0), 2),
                 } for d in sorted(lu, key=lambda x: x["Proj Score"], reverse=True)])
-                st.dataframe(lu_df, use_container_width=True, hide_index=True)
+                st.dataframe(lu_df, width="stretch", hide_index=True)
 
         # Export
         st.markdown("---")
@@ -742,4 +742,4 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         Avg_Proj=("Proj Score", "mean"),
         Avg_Value=("Value", "mean"),
     ).round(1)
-    st.dataframe(tier_summary, use_container_width=True)
+    st.dataframe(tier_summary, width="stretch")

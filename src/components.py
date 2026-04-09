@@ -133,10 +133,10 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
     # Apply heatmap styling or plain display
     if show_heatmap:
         styled = style_heatmap(disp, avail_rank_display, max_rank=len(disp))
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=560)
+        st.dataframe(styled, width="stretch", hide_index=True, height=560)
     else:
         from src.utils import safe_fillna
-        st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=True, height=560)
+        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
 
 
 def render_driver_race_log(driver_name: str, race_data: list):
@@ -157,7 +157,7 @@ def render_driver_race_log(driver_name: str, race_data: list):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    st.dataframe(df.fillna("-"), use_container_width=True, hide_index=True)
+    st.dataframe(df.fillna("-"), width="stretch", hide_index=True)
 
     # Season summary metrics
     num_df = df.copy()

@@ -106,20 +106,20 @@ def render(*, track_name, track_type, series_id):
         if not hist_df.empty:
             st.caption(f"Next Gen era (2022+) — {track_name}")
             display = format_display_df(hist_df)
-            st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
 
             fig = track_history_bar(hist_df, track_name)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             # ARP vs Avg Finish scatter — shows wreck luck
             arp_fig = arp_vs_finish_scatter(hist_df, track_name)
             if arp_fig:
-                st.plotly_chart(arp_fig, use_container_width=True)
+                st.plotly_chart(arp_fig, width="stretch")
 
             fig2 = rating_vs_finish_scatter(hist_df, track_name)
             if fig2:
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width="stretch")
         else:
             st.info(f"No data found for {track_name}")
 
@@ -129,7 +129,7 @@ def render(*, track_name, track_type, series_id):
         if not alltime_df.empty:
             st.caption(f"Source: driveraverages.com — All-time at {track_name}")
             display = format_display_df(alltime_df)
-            st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
             st.info(f"No all-time data found for {track_name}")
 
@@ -144,7 +144,7 @@ def render(*, track_name, track_type, series_id):
         tt_df = query_track_type_stats(track_type)
         if not tt_df.empty:
             display = format_display_df(tt_df)
-            st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
             # Try parent type as fallback
             if track_type != parent_type:
@@ -152,7 +152,7 @@ def render(*, track_name, track_type, series_id):
                 parent_df = query_track_type_stats(parent_type)
                 if not parent_df.empty:
                     display = format_display_df(parent_df)
-                    st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+                    st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
                 else:
                     st.info(f"No track-type data in database. Run `python refresh_data.py` to populate race data.")
             else:
@@ -164,7 +164,7 @@ def render(*, track_name, track_type, series_id):
                                        series_id=series_id)
         if not season_df.empty:
             display = format_display_df(season_df)
-            st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
             st.info(f"No 2026 data at {track_name}. Data appears after races are completed and synced.")
 
@@ -213,10 +213,10 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
                 agg = combined.groupby("Driver").agg(agg_dict).reset_index()
                 agg = agg.sort_values("Avg Finish", na_position="last")
                 display = format_display_df(agg)
-                st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+                st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
             else:
                 st.dataframe(safe_fillna(format_display_df(combined)),
-                             use_container_width=True, hide_index=True, height=550)
+                             width="stretch", hide_index=True, height=550)
         else:
             st.info(f"No data found for {track_type_filter} tracks.")
 
@@ -227,7 +227,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
         tt_df = query_track_type_stats(track_type_filter)
         if not tt_df.empty:
             display = format_display_df(tt_df)
-            st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
             st.info(f"No data for {_format_type_label(track_type_filter)} in database. "
                     f"Run `python refresh_data.py` to populate race data.")
@@ -238,7 +238,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
         season_df = query_track_type_stats(track_type_filter, season=2026)
         if not season_df.empty:
             display = format_display_df(season_df)
-            st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
+            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
             st.info(f"No season data for {_format_type_label(track_type_filter)}. "
                     f"Run `python refresh_data.py` to populate race data.")

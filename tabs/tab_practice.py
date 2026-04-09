@@ -39,7 +39,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         avail = [c for c in time_cols if c in lap_averages_df.columns]
         disp = lap_averages_df[avail].copy()
         disp = format_display_df(disp)
-        st.dataframe(safe_fillna(disp), use_container_width=True, hide_index=True, height=560)
+        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
 
     elif prac_mode == "Lap Chart":
         _render_lap_chart_with_data(practice_laps, lap_averages_df)
@@ -59,7 +59,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
 
         fig = practice_bar_chart(lap_averages_df, metric_col=bar_interval)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     # Export
     csv = lap_averages_df.to_csv(index=False).encode("utf-8")
@@ -124,7 +124,7 @@ def _render_lap_chart_with_data(practice_laps, lap_averages_df):
     if filtered_laps:
         fig = practice_lap_chart(filtered_laps)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("Could not build lap chart.")
     else:
