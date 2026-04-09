@@ -464,10 +464,14 @@ def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
     return result
 
 
-DEFAULT_WEIGHTS = {
-    "track": 0.35, "track_type": 0, "practice": 0.25,
-    "odds": 0.35, "qual": 0,  # qualifying is 15% fixed, track_type removed from model
+# Track-type-specific default weights (matching projections tab)
+TRACK_TYPE_WEIGHT_DEFAULTS = {
+    "superspeedway": {"track": 0.20, "track_type": 0.25, "odds": 0.45, "practice": 0.10, "qual": 0},
+    "short":         {"track": 0.35, "track_type": 0.15, "odds": 0.30, "practice": 0.20, "qual": 0},
+    "road":          {"track": 0.25, "track_type": 0.20, "odds": 0.25, "practice": 0.30, "qual": 0},
+    "intermediate":  {"track": 0.30, "track_type": 0.20, "odds": 0.35, "practice": 0.15, "qual": 0},
 }
+DEFAULT_WEIGHTS = TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"]  # fallback
 
 
 def _generate_race_projections(race, series_id, weights=None):
@@ -477,12 +481,13 @@ def _generate_race_projections(race, series_id, weights=None):
     proj_dict: {driver: proj_dk_points}
     actuals_df: DataFrame with actual results
     """
-    if weights is None:
-        weights = DEFAULT_WEIGHTS.copy()
-
     race_id = race.get("race_id")
     track_name = race.get("track_name", "")
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
+
+    if weights is None:
+        parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
+        weights = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_type, DEFAULT_WEIGHTS).copy()
     yr = _get_race_year(race)
 
     actuals = _load_actual_results(race, series_id)

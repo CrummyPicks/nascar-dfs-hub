@@ -296,15 +296,29 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     race_laps = scheduled_laps or 0
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
 
+    # Track-type-specific default weights — different tracks have different
+    # predictive signals. Superspeedways are chaotic (odds matter most),
+    # short tracks reward specialists (track history matters most),
+    # road courses depend on setup (practice matters most).
+    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
+    TRACK_TYPE_DEFAULTS = {
+        "superspeedway": {"odds": 45, "track": 20, "ttype": 25, "prac": 10},
+        "short":         {"odds": 30, "track": 35, "ttype": 15, "prac": 20},
+        "road":          {"odds": 25, "track": 25, "ttype": 20, "prac": 30},
+        "intermediate":  {"odds": 35, "track": 30, "ttype": 20, "prac": 15},
+    }
+    defaults = TRACK_TYPE_DEFAULTS.get(parent_type, TRACK_TYPE_DEFAULTS["intermediate"])
+
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
-        st.caption("Adjust signal weights — auto-normalizes to 100%. "
+        st.caption(f"Defaults tuned for **{parent_type}** tracks. "
+                   "Adjust weights — auto-normalizes to 100%. "
                    "Qualifying contributes a fixed 15% as a finish signal.")
         w_cols = st.columns(4)
-        w_odds = w_cols[0].number_input("Odds", 0, 100, 35, 5, key="pw_odds")
-        w_track = w_cols[1].number_input("Track History", 0, 100, 30, 5, key="pw_track")
-        w_ttype = w_cols[2].number_input("Track Type", 0, 100, 20, 5, key="pw_ttype")
-        w_prac = w_cols[3].number_input("Practice", 0, 100, 15, 5, key="pw_prac")
+        w_odds = w_cols[0].number_input("Odds", 0, 100, defaults["odds"], 5, key="pw_odds")
+        w_track = w_cols[1].number_input("Track History", 0, 100, defaults["track"], 5, key="pw_track")
+        w_ttype = w_cols[2].number_input("Track Type", 0, 100, defaults["ttype"], 5, key="pw_ttype")
+        w_prac = w_cols[3].number_input("Practice", 0, 100, defaults["prac"], 5, key="pw_prac")
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)

@@ -30,10 +30,20 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         return pd.DataFrame(), "no salary data"
 
     # Read weights from session state (set by Projections tab sliders)
-    w_track = st.session_state.get("pw_track", 30)
-    w_ttype = st.session_state.get("pw_ttype", 20)
-    w_odds  = st.session_state.get("pw_odds", 35)
-    w_prac  = st.session_state.get("pw_prac", 15)
+    # Defaults match track-type-specific values from projections tab
+    track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
+    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
+    _tt_defaults = {
+        "superspeedway": (20, 25, 45, 10),
+        "short": (35, 15, 30, 20),
+        "road": (25, 20, 25, 30),
+        "intermediate": (30, 20, 35, 15),
+    }
+    _dt, _dtt, _do, _dp = _tt_defaults.get(parent_type, (30, 20, 35, 15))
+    w_track = st.session_state.get("pw_track", _dt)
+    w_ttype = st.session_state.get("pw_ttype", _dtt)
+    w_odds  = st.session_state.get("pw_odds", _do)
+    w_prac  = st.session_state.get("pw_prac", _dp)
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
