@@ -555,6 +555,46 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.warning("Could not build projection pool. Check salary data.")
         return
 
+    # ─── PROJECTION OVERRIDES ──────────────────────────────────────────────
+    # Allow manual override of projected points for specific drivers
+    if "opt_overrides" not in st.session_state:
+        st.session_state.opt_overrides = {}
+
+    with st.expander("Projection Overrides", expanded=False):
+        st.caption("Override projected points for specific drivers. "
+                   "Lineups will optimize using your custom values.")
+        ov_cols = st.columns([2, 1, 1])
+        with ov_cols[0]:
+            all_drivers = sorted(pool["Driver"].tolist())
+            ov_driver = st.selectbox("Driver", [""] + all_drivers,
+                                      key="opt_ov_driver", label_visibility="collapsed")
+        with ov_cols[1]:
+            current = pool[pool["Driver"] == ov_driver]["Proj Score"].values[0] if ov_driver else 0
+            ov_pts = st.number_input("Proj Pts", 0.0, 300.0, float(current), 1.0,
+                                      key="opt_ov_pts", label_visibility="collapsed")
+        with ov_cols[2]:
+            if st.button("Set Override", key="opt_ov_set") and ov_driver:
+                st.session_state.opt_overrides[ov_driver] = ov_pts
+                st.rerun()
+
+        # Show active overrides
+        if st.session_state.opt_overrides:
+            st.markdown("**Active overrides:**")
+            for drv, pts in sorted(st.session_state.opt_overrides.items()):
+                orig = pool[pool["Driver"] == drv]["Proj Score"].values[0] if drv in pool["Driver"].values else 0
+                st.caption(f"  {drv}: {orig:.1f} → **{pts:.1f}**")
+            if st.button("Clear All Overrides", key="opt_ov_clear"):
+                st.session_state.opt_overrides = {}
+                st.rerun()
+
+    # Apply overrides to pool
+    for drv, pts in st.session_state.opt_overrides.items():
+        mask = pool["Driver"] == drv
+        if mask.any():
+            pool.loc[mask, "Proj Score"] = pts
+            sal = pool.loc[mask, "DK Salary"].values[0]
+            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
+
     proj_source = engine_label
 
     # ─── OPTIMAL LINEUP PANEL ───────────────────────────────────────────────
