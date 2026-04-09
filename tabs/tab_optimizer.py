@@ -219,64 +219,12 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 # ── Lineup Generation ───────────────────────────────────────────────────────
 
 def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None, excluded=None):
-    """Build a single optimal lineup using greedy by blended score.
-
-    Locked drivers are always included. Excluded drivers are removed.
-    Returns list of dicts or empty list.
-    """
-    locked = locked or []
-    excluded = excluded or set()
-
-    available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
-    if available.empty:
-        return []
-
-    # Start with locked drivers
-    lineup = []
-    used = set()
-    remaining_sal = salary_cap
-
-    for driver in locked:
-        match = available[available["Driver"] == driver]
-        if match.empty:
-            continue
-        d = match.iloc[0].to_dict()
-        lineup.append(d)
-        used.add(driver)
-        remaining_sal -= d["DK Salary"]
-
-    if remaining_sal < 0:
-        return []
-
-    remaining_slots = roster_size - len(lineup)
-    if remaining_slots <= 0:
-        return lineup
-
-    # Fill remaining slots greedily by blended score, budget-aware
-    rest = available[~available["Driver"].isin(used)].copy()
-    rest["Blend"] = rest["Proj Score"] * 0.65 + rest["Value"] * 3.5
-    rest = rest.sort_values("Blend", ascending=False)
-
-    # Get sorted salary list for lookahead (cheapest available)
-    sorted_salaries = sorted(rest["DK Salary"].values)
-
-    for _, row in rest.iterrows():
-        if len(lineup) >= roster_size:
-            break
-        slots_left = roster_size - len(lineup) - 1  # after adding this one
-        # Reserve minimum salary for remaining slots
-        min_needed = sum(sorted_salaries[:slots_left]) if slots_left > 0 else 0
-        if row["DK Salary"] <= remaining_sal - min_needed:
-            lineup.append(row.to_dict())
-            used.add(row["Driver"])
-            remaining_sal -= row["DK Salary"]
-            # Remove this driver from sorted_salaries for future lookahead
-            try:
-                sorted_salaries.remove(row["DK Salary"])
-            except ValueError:
-                pass
-
-    return lineup if len(lineup) == roster_size else []
+    """Build the single best lineup using the full optimizer logic."""
+    results = _generate_lineups_greedy(
+        pool_df, salary_cap, roster_size, 1, 100, "cash",
+        locked=locked, excluded=excluded
+    )
+    return results[0] if results else []
 
 
 def _get_swap_candidates(pool_df, current_lineup, swap_driver, salary_cap, roster_size):
