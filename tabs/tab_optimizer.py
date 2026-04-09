@@ -317,15 +317,27 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
     if remaining_slots <= 0:
         return [locked_data] * min(num_lineups, 1)
 
+    # Filter out low-projection drivers — only keep viable candidates
+    # Top 2/3 of field by Proj Score, or at least roster_size * 3 drivers
+    variable_pool = variable_pool.sort_values("Proj Score", ascending=False)
+    min_pool = max(remaining_slots * 3, remaining_slots + 6)
+    viable_count = max(min_pool, int(len(variable_pool) * 0.67))
+    variable_pool = variable_pool.head(viable_count)
+
     candidates = variable_pool.to_dict("records")
     lineups = []
-    # Generate 3x candidates to find the best lineups
-    target_count = num_lineups * 3
+    # Generate 5x candidates to find the best lineups
+    target_count = num_lineups * 5
     exposure_count = {d["Driver"]: 0 for d in candidates}
     max_exp_count = max(1, int(target_count * max_exposure / 100))
 
+    # Identify "core" players — top projected drivers appear in most lineups
+    sorted_by_proj = sorted(candidates, key=lambda d: d["Proj Score"], reverse=True)
+    core_count = min(3, remaining_slots - 1)  # Top 3 are core (or less if roster is small)
+    core_drivers = {d["Driver"] for d in sorted_by_proj[:core_count]}
+
     attempts = 0
-    max_attempts = target_count * 250
+    max_attempts = target_count * 300
 
     while len(lineups) < target_count and attempts < max_attempts:
         attempts += 1
@@ -336,7 +348,14 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
             if len(avail_cands) < remaining_slots:
                 break
 
-            weights = [max(0.1, d["Proj Score"]) ** 1.5 for d in avail_cands]
+            # Steeper weighting — top projections heavily favored
+            # Core players get a 2x boost to ensure they appear in most lineups
+            weights = []
+            for d in avail_cands:
+                w = max(0.1, d["Proj Score"]) ** 2.5
+                if d["Driver"] in core_drivers:
+                    w *= 2.0
+                weights.append(w)
             total_w = sum(weights)
             probs = [w / total_w for w in weights]
 
