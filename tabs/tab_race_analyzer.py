@@ -8,7 +8,7 @@ from src.config import SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps, compute_avg_running_position,
-    filter_point_races, query_salaries,
+    filter_point_races, query_salaries, load_arp_from_db,
 )
 from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df, fuzzy_merge, fuzzy_get, build_norm_lookup
 from src.components import render_driver_race_log
@@ -245,6 +245,9 @@ def _load_race_results(race, series_id, year=None):
     results = extract_race_results(rc_feed)
     fl = compute_fastest_laps(rc_laps) if rc_laps else {}
     avg_run = compute_avg_running_position(rc_laps) if rc_laps else {}
+    # Fall back to DB-stored ARP when live lap data unavailable
+    if not avg_run and rc_id:
+        avg_run = load_arp_from_db(rc_id)
     return results, fl, avg_run
 
 

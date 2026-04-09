@@ -410,6 +410,13 @@ if is_admin and odds_data and race_id:
 results_df = extract_race_results(feed) if feed and not is_prerace else pd.DataFrame()
 fl_counts = compute_fastest_laps(lap_data) if lap_data and not is_prerace else {}
 
+# Auto-persist ARP to DB when viewing a completed race with lap data
+if not is_prerace and lap_data and race_id:
+    from src.data import compute_avg_running_position as _carp, save_arp_to_db
+    _arp = _carp(lap_data)
+    if _arp:
+        save_arp_to_db(_arp, race_id)
+
 qualifying_df = extract_qualifying(feed) if feed else pd.DataFrame()
 entry_list_df = extract_entry_list(feed) if feed else pd.DataFrame()
 
@@ -477,6 +484,7 @@ with tab_data:
         track_type=track_type, dk_df=dk_df, fd_df=fd_df,
         completed_races=completed_races, selected_year=selected_year,
         fl_counts=fl_counts, odds_data=odds_data, prop_odds=_prop_odds,
+        race_id=race_id,
     )
 
 with tab_practice:

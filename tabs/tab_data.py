@@ -6,7 +6,7 @@ import streamlit as st
 from src.config import SERIES_LABELS
 from src.data import (
     scrape_track_history,
-    compute_fastest_laps, compute_avg_running_position,
+    compute_fastest_laps, compute_avg_running_position, load_arp_from_db,
 )
 from src.utils import (
     calc_dk_points, calc_fd_points, safe_fillna, format_display_df,
@@ -20,7 +20,7 @@ from src.charts import (
 def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
            results_df, is_prerace, series_id, race_name, track_name, track_type,
            dk_df, fd_df, completed_races, selected_year, fl_counts, odds_data=None,
-           prop_odds=None):
+           prop_odds=None, race_id=None):
     """Render the consolidated Data tab — same wide table for pre and post race."""
 
     series_name = SERIES_LABELS.get(series_id, "Cup")
@@ -40,6 +40,9 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     # For upcoming races, use entry list or lap averages
     if not is_prerace and not results_df.empty:
         avg_run_pos = compute_avg_running_position(lap_data) if lap_data else {}
+        # Fall back to DB-stored ARP when live lap data unavailable
+        if not avg_run_pos and race_id:
+            avg_run_pos = load_arp_from_db(race_id)
         res = results_df.copy()
         res = res.sort_values("Finish Position", na_position="last").reset_index(drop=True)
         fl_norm = build_norm_lookup(fl_counts)

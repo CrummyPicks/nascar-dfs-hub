@@ -112,6 +112,7 @@ def create_database():
         status         TEXT,   -- 'Running','Accident','Engine', etc.
         points         INTEGER,
         money          REAL,
+        avg_running_position REAL,  -- avg position across all race laps
         UNIQUE(race_id, driver_id)
     );
 

@@ -395,6 +395,7 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
                ROUND(AVG(rr.start_pos), 1) as "Avg Start",
                SUM(rr.laps_led) as "Laps Led",
                0 as "Avg Rating",
+               ROUND(AVG(rr.avg_running_position), 1) as "Avg Run Pos",
                SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
                SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
@@ -449,6 +450,7 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
         SELECT d.full_name,
                COUNT(*) as races,
                AVG(rr.finish_pos) as avg_finish,
+               AVG(rr.avg_running_position) as avg_running_pos,
                SUM(rr.laps_led) as total_laps_led
         FROM race_results rr
         JOIN drivers d ON d.id = rr.driver_id
@@ -463,10 +465,12 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
     conn.close()
 
     result = {}
-    for name, races, avg_f, ll in rows:
+    for row in rows:
+        name, races, avg_f, avg_arp, ll = row
         if races and races > 0:
             result[name] = {
                 "avg_finish": avg_f or 20,
+                "avg_running_pos": avg_arp,  # None if no ARP data yet
                 "laps_led_per_race": (ll or 0) / races,
                 "races": races,
             }
@@ -691,6 +695,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 th_data[d] = {
                     "avg_finish": row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20,
                     "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
+                    "avg_running_pos": row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None,
                     "laps_led": row.get("Laps Led", 0) if pd.notna(row.get("Laps Led")) else 0,
                     "races": row.get("Races", 1) if pd.notna(row.get("Races")) and row.get("Races") > 0 else 1,
                     "avg_rating": row.get("Avg Rating", 80) if pd.notna(row.get("Avg Rating")) else 80,
@@ -823,7 +828,15 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         if th:
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            regressed = th["avg_finish"] * trust + mid_field * (1 - trust)
+            # Use ARP when available — better signal than finish pos (filters wreck luck)
+            # Blend: 60% ARP + 40% avg_finish when both available, else use what we have
+            arp = th.get("avg_running_pos")
+            af = th["avg_finish"]
+            if arp is not None:
+                base_finish = arp * 0.6 + af * 0.4
+            else:
+                base_finish = af
+            regressed = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed)
             signal_weights.append(wn["track"])
 
@@ -831,7 +844,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         if tt:
             tt_races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 3
             tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
-            tt_avg = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
+            # Use ARP when available for track type too
+            tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
+            tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
+            if tt_arp is not None:
+                tt_avg = tt_arp * 0.6 + tt_af * 0.4
+            else:
+                tt_avg = tt_af
             tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
             finish_signals.append(tt_regressed)
             signal_weights.append(wn["track_type"])

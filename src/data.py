@@ -326,6 +326,93 @@ def compute_avg_running_position(lap_data: dict) -> Dict[str, float]:
     return result
 
 
+def save_arp_to_db(arp_data: dict, race_id: int) -> int:
+    """Persist computed ARP values to the database for a given race.
+
+    Args:
+        arp_data: {driver_display_name: avg_running_position}
+        race_id: NASCAR API race_id
+
+    Returns count of rows updated.
+    """
+    if not arp_data or not DB_PATH.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        # Resolve API race_id to DB race_id
+        db_race = conn.execute(
+            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+        ).fetchone()
+        if not db_race:
+            conn.close()
+            return 0
+        db_race_id = db_race[0]
+
+        # Check if ARP already filled for this race
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM race_results WHERE race_id = ? AND avg_running_position IS NOT NULL",
+            (db_race_id,)
+        ).fetchone()[0]
+        if existing > 0:
+            conn.close()
+            return 0  # Already backfilled
+
+        # Match driver names and update
+        db_drivers = conn.execute(
+            """SELECT rr.id, d.full_name FROM race_results rr
+               JOIN drivers d ON d.id = rr.driver_id
+               WHERE rr.race_id = ?""",
+            (db_race_id,)
+        ).fetchall()
+
+        arp_norm = {normalize_driver_name(k): v for k, v in arp_data.items()}
+        count = 0
+        for rr_id, db_name in db_drivers:
+            arp = arp_data.get(db_name)
+            if arp is None:
+                norm_key = normalize_driver_name(db_name)
+                arp = arp_norm.get(norm_key)
+            if arp is not None:
+                conn.execute(
+                    "UPDATE race_results SET avg_running_position = ? WHERE id = ?",
+                    (arp, rr_id)
+                )
+                count += 1
+        conn.commit()
+        conn.close()
+        return count
+    except Exception:
+        return 0
+
+
+def load_arp_from_db(race_id: int) -> dict:
+    """Load saved ARP data from DB for a given API race_id.
+
+    Returns {driver_display_name: avg_running_position}.
+    """
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        db_race = conn.execute(
+            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+        ).fetchone()
+        if not db_race:
+            conn.close()
+            return {}
+        rows = conn.execute(
+            """SELECT d.full_name, rr.avg_running_position
+               FROM race_results rr
+               JOIN drivers d ON d.id = rr.driver_id
+               WHERE rr.race_id = ? AND rr.avg_running_position IS NOT NULL""",
+            (db_race[0],)
+        ).fetchall()
+        conn.close()
+        return {name: arp for name, arp in rows}
+    except Exception:
+        return {}
+
+
 # ============================================================
 # TRACK HISTORY SCRAPING
 # ============================================================
