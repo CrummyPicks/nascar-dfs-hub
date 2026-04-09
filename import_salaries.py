@@ -271,12 +271,17 @@ def main():
     # Git commit + push all at once
     if not args.no_push:
         race_list = ", ".join(name for name, _ in imported)
+        # Sanitize commit message (remove quotes and special chars)
+        safe_msg = race_list.replace('"', '').replace("'", "").replace('`', '')
         print(f"\n  Committing and pushing to git...")
-        os.system('git add nascar.db')
-        msg = f"Add DK salaries: {race_list}"
-        os.system(f'git commit -m "{msg}"')
-        os.system('git push')
-        print(f"  Done! Salaries are now live on Streamlit Cloud.")
+        ret1 = os.system('git add nascar.db')
+        ret2 = os.system(f'git commit -m "Add DK salaries: {safe_msg}"')
+        ret3 = os.system('git push')
+        if ret3 == 0:
+            print(f"\n  Done! Salaries are now live on Streamlit Cloud.")
+        else:
+            print(f"\n  WARNING: Git push may have failed (exit code {ret3}).")
+            print(f"  Try manually: git add nascar.db && git commit -m \"Add salaries\" && git push")
     else:
         print(f"\n  Saved to local DB. To deploy:")
         print(f'    git add nascar.db && git commit -m "Add salaries" && git push')
