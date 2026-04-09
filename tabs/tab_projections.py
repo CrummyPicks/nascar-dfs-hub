@@ -695,42 +695,20 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
 
     # ── 1. Track History Signal ──────────────────────────────────────────────
-    # Hybrid approach: scrape driveraverages.com for rich baseline data, then
-    # for completed races, subtract the current race + future races using DB
-    # to prevent data leakage. This gives us full historical depth without
-    # contamination from races that haven't happened yet (from this race's POV).
-    th_data = {}  # driver -> {avg_finish, avg_start, laps_led, races, avg_rating}
+    # Always use DB for projections — cleaner data, has ARP, fastest laps,
+    # and filtered to Next Gen era (2022+). The scraper is only used for
+    # the Track History display tab.
+    th_data = {}
 
     # Resolve DB race ID for exclusion
     db_race_id = _resolve_db_race_id(race_id, series_id) if race_id else None
 
-    # Try scraping driveraverages.com as the baseline (rich historical depth).
-    # Falls back to DB-only queries for series where the scraper returns empty
-    # (e.g. O'Reilly/Xfinity, Trucks if the site doesn't serve that series).
     with st.spinner("Loading track history..."):
-        th_df = scrape_track_history(track_name, series_id)
-
-    if th_df.empty:
-        # Scrape failed — fall back to DB-only track history
-        db_th = _query_db_track_history(
+        th_df = _query_db_track_history(
             track_name, series_id,
             exclude_race_id=db_race_id,
             before_date=race_date if not is_prerace else None,
         )
-        if not db_th.empty:
-            th_df = db_th
-
-    if not is_prerace and race_date and not th_df.empty:
-        # Completed race — subtract current race + future races from scraped data.
-        # Only needed for scraped data; DB queries already filter via before_date.
-        # Check if this DF came from scraping (has "Avg Rating" column) vs DB.
-        is_scraped = "Avg Rating" in th_df.columns
-        if is_scraped:
-            races_to_remove = _query_races_to_subtract(
-                track_name, series_id, race_date, db_race_id
-            )
-            if races_to_remove:
-                th_df = _subtract_races_from_scraped(th_df, races_to_remove)
 
     # ── Historical DK points at this track (for display + th_data enrichment) ──
     dk_history = query_driver_dk_points_at_track(
@@ -934,11 +912,16 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         # Qualifying position — a meaningful finish signal. Drivers who
         # qualify well tend to finish well (especially at short tracks).
-        # Uses a fixed 15% weight to anchor projections toward start position
-        # and prevent absurd negative place differentials for fast qualifiers
-        # with mediocre track history.
+        # For drivers with NO track history, regress qualifying much more
+        # toward mid-pack — a good qualifying run without track data
+        # shouldn't project them as a top finisher.
         if qp and qp <= field_size:
-            qual_finish = qp * 0.80 + mid_field * 0.20  # regress toward mid
+            has_history = bool(th or tt)
+            if has_history:
+                qual_finish = qp * 0.80 + mid_field * 0.20
+            else:
+                # No history: heavily regress qualifying toward mid-pack
+                qual_finish = qp * 0.40 + mid_field * 0.60
             finish_signals.append(qual_finish)
             signal_weights.append(0.15)  # fixed 15% weight
 
