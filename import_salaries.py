@@ -37,34 +37,55 @@ SERIES_NAMES = {1: "Cup", 2: "Xfinity", 3: "Truck"}
 
 
 def find_csv_file(file_arg):
-    """Find the DK CSV file — from argument, or search common locations."""
+    """Find the DK CSV file — from argument, or search common locations.
+
+    Handles Windows download patterns like DKSalaries (3).csv.
+    When multiple recent CSVs exist, lets the user pick.
+    """
     if file_arg and os.path.exists(file_arg):
         return file_arg
 
-    # Search common locations
-    search_paths = [
-        os.path.expanduser("~/Downloads/DKSalaries*.csv"),
-        os.path.expanduser("~/Downloads/dk*.csv"),
-        os.path.expanduser("~/Desktop/DKSalaries*.csv"),
-        os.path.join(os.path.dirname(__file__), "DKSalaries*.csv"),
-        os.path.join(os.path.dirname(__file__), "*.csv"),
+    # Search common locations — glob handles "DKSalaries (3).csv" patterns
+    search_dirs = [
+        os.path.expanduser("~/Downloads"),
+        os.path.expanduser("~/Desktop"),
+        os.path.dirname(__file__),
     ]
 
     candidates = []
-    for pattern in search_paths:
-        matches = glob.glob(pattern)
-        candidates.extend(matches)
+    seen = set()
+    for d in search_dirs:
+        for pattern in ["DKSalaries*.csv", "DKsalaries*.csv", "dksalaries*.csv"]:
+            for f in glob.glob(os.path.join(d, pattern)):
+                real = os.path.realpath(f)
+                if real not in seen:
+                    seen.add(real)
+                    candidates.append(f)
 
-    # Filter to recent files (last 7 days) and sort by modification time
+    # Filter to recent files (last 7 days) and sort newest first
     now = datetime.now().timestamp()
     recent = [(f, os.path.getmtime(f)) for f in candidates
-              if now - os.path.getmtime(f) < 7 * 86400
-              and "DK" in os.path.basename(f).upper()]
+              if now - os.path.getmtime(f) < 7 * 86400]
     recent.sort(key=lambda x: x[1], reverse=True)
 
-    if recent:
+    if not recent:
+        return None
+
+    if len(recent) == 1:
         return recent[0][0]
-    return None
+
+    # Multiple recent CSVs — let user pick (common when importing 3 series)
+    print("Found multiple recent DK CSV files:")
+    for i, (f, mtime) in enumerate(recent[:10], 1):
+        mod = datetime.fromtimestamp(mtime).strftime("%m/%d %H:%M")
+        size_kb = os.path.getsize(f) / 1024
+        print(f"  [{i}] {os.path.basename(f):40s} ({mod}, {size_kb:.0f} KB)")
+
+    choice = input(f"\nSelect file [1]: ").strip()
+    idx = int(choice) - 1 if choice.isdigit() else 0
+    if idx < 0 or idx >= len(recent):
+        idx = 0
+    return recent[idx][0]
 
 
 def get_upcoming_races(series_id, year=None):
