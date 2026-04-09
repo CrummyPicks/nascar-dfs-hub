@@ -506,8 +506,7 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
     # Order by median
     df["Driver"] = pd.Categorical(df["Driver"], categories=top_drivers, ordered=True)
 
-    fig = px.box(df, x="Driver", y="Finish", color="Finish",
-                 color_continuous_scale="RdYlGn_r",
+    fig = px.box(df, x="Driver", y="Finish",
                  title=f"Finish Distribution at {track_name} (2022+)")
     fig.update_layout(**DARK_LAYOUT, height=height,
                       yaxis=dict(autorange="reversed"),
