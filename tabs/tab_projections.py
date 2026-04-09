@@ -394,7 +394,7 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
                ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
                ROUND(AVG(rr.start_pos), 1) as "Avg Start",
                SUM(rr.laps_led) as "Laps Led",
-               0 as "Avg Rating",
+               SUM(rr.fastest_laps) as "Fastest Laps",
                ROUND(AVG(rr.avg_running_position), 1) as "Avg Run Pos",
                SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
@@ -692,13 +692,21 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             matched = d if d in th_idx.index else fuzzy_match_name(d, th_names)
             if matched and matched in th_idx.index:
                 row = th_idx.loc[matched]
+                races = row.get("Races", 1) if pd.notna(row.get("Races")) and row.get("Races") > 0 else 1
+                laps_led = row.get("Laps Led", 0) if pd.notna(row.get("Laps Led")) else 0
+                fastest_laps = row.get("Fastest Laps", 0) if pd.notna(row.get("Fastest Laps")) else 0
+                # Look up avg DK points for this driver at this track
+                dk_hist_entry = dk_history.get(matched) or dk_history.get(d) or {}
                 th_data[d] = {
                     "avg_finish": row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20,
                     "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
                     "avg_running_pos": row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None,
-                    "laps_led": row.get("Laps Led", 0) if pd.notna(row.get("Laps Led")) else 0,
-                    "races": row.get("Races", 1) if pd.notna(row.get("Races")) and row.get("Races") > 0 else 1,
-                    "avg_rating": row.get("Avg Rating", 80) if pd.notna(row.get("Avg Rating")) else 80,
+                    "laps_led": laps_led,
+                    "fastest_laps": fastest_laps,
+                    "laps_led_per_race": laps_led / races,
+                    "fastest_laps_per_race": fastest_laps / races,
+                    "races": races,
+                    "avg_dk": dk_hist_entry.get("avg_dk"),
                     "wins": row.get("Wins", 0) if pd.notna(row.get("Wins")) else 0,
                     "top5": row.get("Top 5", 0) if pd.notna(row.get("Top 5")) else 0,
                     "dnf": row.get("DNF", 0) if pd.notna(row.get("DNF")) else 0,
@@ -815,6 +823,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     dom_raw_scores = {}     # d -> raw dominator score (for allocation)
     fl_raw_scores = {}      # d -> raw fastest lap score (for allocation)
 
+    # Pre-compute field-wide avg DK for percentile scaling
+    all_avg_dk = [h.get("avg_dk") for h in dk_history.values() if h.get("avg_dk") is not None]
+    field_avg_dk = sum(all_avg_dk) / len(all_avg_dk) if all_avg_dk else 30.0
+    field_max_dk = max(all_avg_dk) if all_avg_dk else 60.0
+
     for d in drivers:
         th = th_data.get(d)
         tt = tt_data.get(d)
@@ -823,36 +836,59 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         od = odds_finish.get(d)
 
         # --- Compute raw weighted finish estimate (avg-of-averages approach) ---
-        # We'll collect these but then use rank-ordering to spread the field
         finish_signals = []
         signal_weights = []
-        has_history = bool(th or tt)
 
-        # Sample-size regression: regress avg_finish toward mid-field for
-        # drivers with very few races to prevent small-sample overvaluation.
         mid_field = field_size * 0.5
         MIN_RACES_FULL_TRUST = 5
 
         if th:
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            # Use ARP when available — better signal than finish pos (filters wreck luck)
-            # Blend: 60% ARP + 40% avg_finish when both available, else use what we have
+
+            # Rich composite: ARP (best signal), avg finish, and DK-implied finish
+            # ARP filters wreck luck; avg_dk captures dominator upside
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
-            if arp is not None:
-                base_finish = arp * 0.6 + af * 0.4
+            avg_dk = th.get("avg_dk")
+
+            # Convert avg DK to an implied finish position:
+            # Higher DK pts → better finish. Scale relative to field average.
+            if avg_dk is not None and field_max_dk > 0:
+                # Map DK points to finish position: top DK → ~3rd, field avg → mid-field
+                dk_pctile = min(1.0, max(0.0, avg_dk / field_max_dk))
+                dk_implied_finish = 1 + (field_size - 1) * (1 - dk_pctile)
             else:
-                base_finish = af
+                dk_implied_finish = None
+
+            # Build composite: weight ARP highest (real speed), then DK (overall value),
+            # then finish (actual outcomes including wreck luck)
+            components = []
+            comp_weights = []
+            if arp is not None:
+                components.append(arp)
+                comp_weights.append(0.45)  # ARP: true speed, wreck-filtered
+            if dk_implied_finish is not None:
+                components.append(dk_implied_finish)
+                comp_weights.append(0.25)  # DK: captures dominator upside
+            components.append(af)
+            comp_weights.append(0.30 if arp is not None else 0.60)  # Finish: heavier when ARP missing
+
+            total_cw = sum(comp_weights)
+            base_finish = sum(c * w for c, w in zip(components, comp_weights)) / total_cw
             regressed = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed)
             signal_weights.append(wn["track"])
 
-        # Track type signal — avg finish at similar track types (DB-backed)
-        if tt:
+        # Track type signal — if no track history, absorb the track weight too
+        tt_weight = wn.get("track_type", 0)
+        if not th and tt and wn.get("track", 0) > 0:
+            # No track-specific data: give track type the combined weight
+            tt_weight = wn.get("track_type", 0) + wn.get("track", 0)
+
+        if tt and tt_weight > 0:
             tt_races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 3
             tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
-            # Use ARP when available for track type too
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
             if tt_arp is not None:
@@ -861,7 +897,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 tt_avg = tt_af
             tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
             finish_signals.append(tt_regressed)
-            signal_weights.append(wn["track_type"])
+            signal_weights.append(tt_weight)
 
         # Qualifying position — a meaningful finish signal. Drivers who
         # qualify well tend to finish well (especially at short tracks).

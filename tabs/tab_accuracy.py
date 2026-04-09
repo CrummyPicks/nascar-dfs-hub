@@ -543,7 +543,9 @@ def _generate_race_projections(race, series_id, weights=None):
     # Hybrid approach: scrape driveraverages.com baseline, subtract future races
     race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
     th_data = _hybrid_track_stats(track_name, series_id, race_date=race_date)
-    tt_data = {}  # Track type removed from model
+    tt_data = _hybrid_track_type_stats(track_type, series_id,
+                                        exclude_track=track_name,
+                                        race_date=race_date)
 
     start_positions = {}
     for _, row in actuals.iterrows():
@@ -644,11 +646,28 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         if th and wn.get("track", 0) > 0:
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            regressed_finish = th["avg_finish"] * trust + mid_field * (1 - trust)
+            # Rich composite: ARP (wreck-filtered) + avg finish
+            arp = th.get("avg_running_pos")
+            af = th["avg_finish"]
+            if arp is not None:
+                base_finish = arp * 0.6 + af * 0.4
+            else:
+                base_finish = af
+            regressed_finish = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed_finish)
             signal_weights.append(wn["track"])
 
-        # Track type signal removed from model — tt_data kept as empty dict for compatibility
+        # Track type — absorb track weight if no track-specific data
+        tt_weight = wn.get("track_type", 0)
+        if not th and tt and wn.get("track", 0) > 0:
+            tt_weight = wn.get("track_type", 0) + wn.get("track", 0)
+        if tt and tt_weight > 0:
+            tt_races = tt.get("races", 3)
+            tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
+            tt_af = tt.get("avg_finish", mid_field)
+            tt_regressed = tt_af * tt_trust + mid_field * (1 - tt_trust)
+            finish_signals.append(tt_regressed)
+            signal_weights.append(tt_weight)
 
         # Qualifying position — a meaningful finish signal.
         if sp and sp <= field_size:

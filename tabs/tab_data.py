@@ -5,7 +5,7 @@ import streamlit as st
 
 from src.config import SERIES_LABELS
 from src.data import (
-    scrape_track_history, query_db_track_history,
+    scrape_track_history, query_db_track_history, query_driver_dk_points_at_track,
     compute_fastest_laps, compute_avg_running_position, load_arp_from_db,
 )
 from src.utils import (
@@ -166,6 +166,19 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         master = master.merge(th_dedup, on="_th_key", how="left")
         master = master.drop(columns=["_th_key"])
 
+    # Historical DK points at this track
+    dk_hist = query_driver_dk_points_at_track(track_name, series_id, min_season=2022)
+    if dk_hist:
+        dk_hist_names = list(dk_hist.keys())
+        for col, key in [("TH_Avg DK", "avg_dk"), ("TH_Best DK", "best_dk"), ("TH_Worst DK", "worst_dk")]:
+            def _get_dk(d, _key=key):
+                h = dk_hist.get(d)
+                if not h:
+                    m = fuzzy_match_name(d, dk_hist_names)
+                    h = dk_hist.get(m) if m else None
+                return h[_key] if h else None
+            master[col] = master["Driver"].map(_get_dk)
+
     # Search
     search = st.text_input("Search driver / team / make...", "", placeholder="Type to filter...",
                            label_visibility="collapsed", key="data_search")
@@ -202,7 +215,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
             practice.append(c)
 
     track_history = []
-    for c in ["TH_Races", "TH_Avg Finish", "TH_Avg Start", "TH_Avg Run Pos",
+    for c in ["TH_Races", "TH_Avg DK", "TH_Best DK", "TH_Worst DK",
+              "TH_Avg Finish", "TH_Avg Start", "TH_Avg Run Pos",
               "TH_Wins", "TH_T5", "TH_T10", "TH_Laps Led", "TH_DNF"]:
         if c in master.columns:
             track_history.append(c)
