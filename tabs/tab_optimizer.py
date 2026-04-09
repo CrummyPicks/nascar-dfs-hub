@@ -359,21 +359,35 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
         all_lineups.append((total_pts, locked_data + lineup))
 
     def _greedy_fill(must_include, pool, cap):
-        """Greedy fill remaining slots from pool within cap."""
+        """Greedy fill remaining slots from pool within cap.
+
+        Uses a balanced approach: sort by projection but ensure salary fits.
+        Tries projection-first, then falls back to value-first if salary tight.
+        """
         lineup = list(must_include)
         used = {d["Driver"] for d in lineup}
         rem = cap - sum(d["DK Salary"] for d in lineup)
         need = remaining_slots - len(lineup)
-        # Sort remaining by value (pts per $1k)
-        remaining = [d for d in pool if d["Driver"] not in used and d["DK Salary"] <= rem]
-        remaining.sort(key=lambda d: d.get("Value", 0), reverse=True)
+
+        remaining = [d for d in pool if d["Driver"] not in used]
+
+        # Sort by projection (best players first, salary permitting)
+        remaining.sort(key=lambda d: d.get("Proj Score", 0), reverse=True)
         for d in remaining:
             if len(lineup) >= remaining_slots:
                 break
             if d["DK Salary"] <= rem:
-                lineup.append(d)
-                used.add(d["Driver"])
-                rem -= d["DK Salary"]
+                # Check if adding this driver leaves enough budget for remaining slots
+                slots_after = remaining_slots - len(lineup) - 1
+                min_salary_needed = slots_after * min(
+                    (r["DK Salary"] for r in pool if r["Driver"] not in used
+                     and r["Driver"] != d["Driver"]),
+                    default=0
+                )
+                if rem - d["DK Salary"] >= min_salary_needed:
+                    lineup.append(d)
+                    used.add(d["Driver"])
+                    rem -= d["DK Salary"]
         return lineup
 
     # === Strategy 1: Pure greedy by value ===
@@ -387,26 +401,37 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
             lineup = _greedy_fill(top_picks, candidates, remaining_cap)
             _try_lineup(lineup)
 
-    # === Strategy 3: Every pair of top-12 drivers as anchors ===
-    top_12 = candidates[:min(12, len(candidates))]
-    for i in range(len(top_12)):
-        for j in range(i + 1, len(top_12)):
-            pair = [top_12[i], top_12[j]]
+    # === Strategy 3: Every pair of top-15 drivers as anchors ===
+    top_15 = candidates[:min(15, len(candidates))]
+    for i in range(len(top_15)):
+        for j in range(i + 1, len(top_15)):
+            pair = [top_15[i], top_15[j]]
             pair_sal = sum(d["DK Salary"] for d in pair)
             if pair_sal <= remaining_cap:
                 lineup = _greedy_fill(pair, candidates, remaining_cap)
                 _try_lineup(lineup)
 
-    # === Strategy 4: Every triple of top-8 drivers as anchors ===
-    top_8 = candidates[:min(8, len(candidates))]
-    for i in range(len(top_8)):
-        for j in range(i + 1, len(top_8)):
-            for k in range(j + 1, len(top_8)):
-                triple = [top_8[i], top_8[j], top_8[k]]
+    # === Strategy 4: Every triple of top-15 drivers as anchors ===
+    for i in range(len(top_15)):
+        for j in range(i + 1, len(top_15)):
+            for k in range(j + 1, len(top_15)):
+                triple = [top_15[i], top_15[j], top_15[k]]
                 triple_sal = sum(d["DK Salary"] for d in triple)
                 if triple_sal <= remaining_cap:
                     lineup = _greedy_fill(triple, candidates, remaining_cap)
                     _try_lineup(lineup)
+
+    # === Strategy 4b: Every quad of top-12 drivers as anchors ===
+    top_12 = candidates[:min(12, len(candidates))]
+    for i in range(len(top_12)):
+        for j in range(i + 1, len(top_12)):
+            for k in range(j + 1, len(top_12)):
+                for m in range(k + 1, len(top_12)):
+                    quad = [top_12[i], top_12[j], top_12[k], top_12[m]]
+                    quad_sal = sum(d["DK Salary"] for d in quad)
+                    if quad_sal <= remaining_cap:
+                        lineup = _greedy_fill(quad, candidates, remaining_cap)
+                        _try_lineup(lineup)
 
     # === Strategy 5: Swap-based variations from top lineups ===
     # Take the best 10 lineups so far, swap each player with alternatives
