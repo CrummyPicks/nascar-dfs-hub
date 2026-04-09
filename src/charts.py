@@ -170,8 +170,10 @@ def track_history_bar(hist_df: pd.DataFrame, track_name: str,
     """Bar chart of top drivers by avg finish at a track."""
     if "Avg Finish" not in hist_df.columns:
         return None
+    # Use Avg Run Pos for color if available, else just Avg Finish
+    color_col = "Avg Run Pos" if "Avg Run Pos" in hist_df.columns and hist_df["Avg Run Pos"].notna().any() else "Avg Finish"
     fig = px.bar(hist_df.head(top_n), x="Driver", y="Avg Finish",
-                 color="Avg Rating", color_continuous_scale="RdYlGn",
+                 color=color_col, color_continuous_scale="RdYlGn_r",
                  title=f"Top {top_n} by Avg Finish at {track_name}")
     fig.update_layout(**DARK_LAYOUT, height=height)
     return fig
