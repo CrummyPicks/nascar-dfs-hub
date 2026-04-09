@@ -319,13 +319,15 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
 
     candidates = variable_pool.to_dict("records")
     lineups = []
+    # Generate 3x candidates to find the best lineups
+    target_count = num_lineups * 3
     exposure_count = {d["Driver"]: 0 for d in candidates}
-    max_exp_count = max(1, int(num_lineups * max_exposure / 100))
+    max_exp_count = max(1, int(target_count * max_exposure / 100))
 
     attempts = 0
-    max_attempts = num_lineups * 250
+    max_attempts = target_count * 250
 
-    while len(lineups) < num_lineups and attempts < max_attempts:
+    while len(lineups) < target_count and attempts < max_attempts:
         attempts += 1
 
         if mode == "gpp":
@@ -387,6 +389,8 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
         for d in lineup:
             exposure_count[d["Driver"]] += 1
 
+    # Sort by total projected points (best lineups first) and keep top N
+    lineups.sort(key=lambda lu: sum(d["Proj Score"] for d in lu), reverse=True)
     return lineups[:num_lineups]
 
 
