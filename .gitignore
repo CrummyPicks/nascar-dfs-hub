@@ -30,5 +30,4 @@ Thumbs.db
 # Local-only files
 exports/
 cache/
-*.bat
 *.log
