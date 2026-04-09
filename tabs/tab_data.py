@@ -202,8 +202,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
             practice.append(c)
 
     track_history = []
-    for c in ["TH_Races", "TH_Avg Finish", "TH_Avg Start", "TH_Rating",
-              "TH_Wins", "TH_T5", "TH_T10", "TH_T20", "TH_Laps Led", "TH_DNF"]:
+    for c in ["TH_Races", "TH_Avg Finish", "TH_Avg Start", "TH_Avg Run Pos",
+              "TH_Wins", "TH_T5", "TH_T10", "TH_Laps Led", "TH_DNF"]:
         if c in master.columns:
             track_history.append(c)
 
