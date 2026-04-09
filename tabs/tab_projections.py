@@ -823,11 +823,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     dom_raw_scores = {}     # d -> raw dominator score (for allocation)
     fl_raw_scores = {}      # d -> raw fastest lap score (for allocation)
 
-    # Pre-compute field-wide avg DK for percentile scaling
-    all_avg_dk = [h.get("avg_dk") for h in dk_history.values() if h.get("avg_dk") is not None]
-    field_avg_dk = sum(all_avg_dk) / len(all_avg_dk) if all_avg_dk else 30.0
-    field_max_dk = max(all_avg_dk) if all_avg_dk else 60.0
-
     for d in drivers:
         th = th_data.get(d)
         tt = tt_data.get(d)
@@ -846,36 +841,20 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
 
-            # Rich composite: ARP (best signal), avg finish, and DK-implied finish
-            # ARP filters wreck luck; avg_dk captures dominator upside
+            # Track finish signal: ARP 65% + Avg Finish 35%
+            # ARP filters wreck luck (driver who ran 5th but wrecked to 30th
+            # still projects as a ~5th-place driver next time).
+            # Avg finish captures actual outcomes.
+            # Dominator value (laps led, fastest laps) handled separately
+            # in Stage 2 allocation — NOT included here to avoid double-counting.
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
-            avg_dk = th.get("avg_dk")
 
-            # Convert avg DK to an implied finish position:
-            # Higher DK pts → better finish. Scale relative to field average.
-            if avg_dk is not None and field_max_dk > 0:
-                # Map DK points to finish position: top DK → ~3rd, field avg → mid-field
-                dk_pctile = min(1.0, max(0.0, avg_dk / field_max_dk))
-                dk_implied_finish = 1 + (field_size - 1) * (1 - dk_pctile)
-            else:
-                dk_implied_finish = None
-
-            # Build composite: weight ARP highest (real speed), then DK (overall value),
-            # then finish (actual outcomes including wreck luck)
-            components = []
-            comp_weights = []
             if arp is not None:
-                components.append(arp)
-                comp_weights.append(0.45)  # ARP: true speed, wreck-filtered
-            if dk_implied_finish is not None:
-                components.append(dk_implied_finish)
-                comp_weights.append(0.25)  # DK: captures dominator upside
-            components.append(af)
-            comp_weights.append(0.30 if arp is not None else 0.60)  # Finish: heavier when ARP missing
+                base_finish = arp * 0.65 + af * 0.35
+            else:
+                base_finish = af  # no ARP data — use finish only
 
-            total_cw = sum(comp_weights)
-            base_finish = sum(c * w for c, w in zip(components, comp_weights)) / total_cw
             regressed = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed)
             signal_weights.append(wn["track"])
@@ -892,7 +871,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
             if tt_arp is not None:
-                tt_avg = tt_arp * 0.6 + tt_af * 0.4
+                tt_avg = tt_arp * 0.65 + tt_af * 0.35
             else:
                 tt_avg = tt_af
             tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)

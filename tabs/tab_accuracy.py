@@ -646,11 +646,11 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         if th and wn.get("track", 0) > 0:
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            # Rich composite: ARP (wreck-filtered) + avg finish
+            # ARP 65% + Avg Finish 35% (matches live projection engine)
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
             if arp is not None:
-                base_finish = arp * 0.6 + af * 0.4
+                base_finish = arp * 0.65 + af * 0.35
             else:
                 base_finish = af
             regressed_finish = base_finish * trust + mid_field * (1 - trust)
