@@ -453,6 +453,60 @@ def query_db_track_history(track_name: str, series_id: int = 1,
         return pd.DataFrame()
 
 
+def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
+                                     min_season: int = 2022,
+                                     before_date: str = None) -> dict:
+    """Compute per-driver avg/best/worst DK points at a track from race_results.
+
+    Returns {driver_name: {"avg_dk": X, "best_dk": Y, "worst_dk": Z, "races": N}}.
+    DK points computed from finish, start, laps_led, fastest_laps.
+    """
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where_extra = ""
+        params = [f"%{track_name}%", series_id, min_season]
+        if before_date:
+            where_extra = " AND r.race_date < ?"
+            params.append(before_date)
+
+        rows = conn.execute(f'''
+            SELECT d.full_name, rr.finish_pos, rr.start_pos,
+                   rr.laps_led, rr.fastest_laps
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name LIKE ?
+              AND r.series_id = ?
+              AND r.season >= ?
+              {where_extra}
+        ''', params).fetchall()
+        conn.close()
+
+        from src.utils import calc_dk_points
+        driver_scores = {}
+        for name, finish, start, ll, fl in rows:
+            if finish is None or start is None:
+                continue
+            dk = calc_dk_points(finish, start, ll or 0, fl or 0)
+            driver_scores.setdefault(name, []).append(dk)
+
+        result = {}
+        for name, scores in driver_scores.items():
+            if scores:
+                result[name] = {
+                    "avg_dk": round(sum(scores) / len(scores), 1),
+                    "best_dk": round(max(scores), 1),
+                    "worst_dk": round(min(scores), 1),
+                    "races": len(scores),
+                }
+        return result
+    except Exception:
+        return {}
+
+
 # ============================================================
 # TRACK HISTORY SCRAPING
 # ============================================================

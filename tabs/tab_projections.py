@@ -21,7 +21,7 @@ from src.config import (
     TRACK_TYPE_PARENT, DK_FINISH_POINTS,
 )
 from src.data import (
-    query_projections, scrape_track_history,
+    query_projections, scrape_track_history, query_driver_dk_points_at_track,
 )
 # projection_bar no longer used — replaced with inline stacked bar
 from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge
@@ -802,6 +802,14 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             except (ValueError, TypeError):
                 continue
 
+    # ── Historical DK points at this track (for display columns) ─────────────
+    dk_history = query_driver_dk_points_at_track(
+        track_name, series_id, min_season=2022,
+        before_date=race_date if not is_prerace else None,
+    )
+    # Build fuzzy lookup for DK history
+    dk_hist_names = list(dk_history.keys())
+
     # ── PROJECT EACH DRIVER — Raw composite finish score ─────────────────────
     driver_raw_scores = {}  # d -> raw weighted score (higher = better driver)
     dom_raw_scores = {}     # d -> raw dominator score (for allocation)
@@ -1003,16 +1011,16 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         fl_pts = round(proj_fastest) * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
 
-        # Track/type scores for display (None when no data — not 0)
-        th = th_data.get(d)
-        tt = tt_data.get(d)
-        track_score = None
-        if th:
-            finish_comp = max(0, (40 - th["avg_finish"]) / 39 * 100)
-            rating_comp = min(100, th["avg_rating"] / 1.5) if th["avg_rating"] else 0
-            ll_per_race = th["laps_led"] / max(th["races"], 1)
-            ll_comp = min(100, ll_per_race * 2.5)  # ~40 ll/race = 100
-            track_score = round(finish_comp * 0.45 + rating_comp * 0.30 + ll_comp * 0.25, 1)
+        # Historical DK points at this track (actual avg/best/worst)
+        dk_hist = dk_history.get(d)
+        if not dk_hist:
+            matched_dk = fuzzy_match_name(d, dk_hist_names) if dk_hist_names else None
+            dk_hist = dk_history.get(matched_dk) if matched_dk else None
+
+        avg_dk_track = dk_hist["avg_dk"] if dk_hist else None
+        best_dk_track = dk_hist["best_dk"] if dk_hist else None
+        worst_dk_track = dk_hist["worst_dk"] if dk_hist else None
+
         odds_info = driver_odds_display.get(d, {})
         odds_val = odds_info.get("odds_str", None)
         # odds_str is now numeric from round_odds()
@@ -1030,7 +1038,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "FL Pts": round(fl_pts, 1),
             "Proj Laps Led": round(proj_laps_led),
             "Proj Fast Laps": round(proj_fastest),
-            "Track": track_score,
+            "Avg DK": avg_dk_track,
+            "Best DK": best_dk_track,
+            "Worst DK": worst_dk_track,
             "Start": start_pos,
         })
 
@@ -1076,7 +1086,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         display_cols.append("Qual Pos")
     display_cols.extend(["Proj DK", "Proj Finish", "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
-                         "Track"])
+                         "Avg DK", "Best DK", "Worst DK"])
     if "Value" in proj.columns:
         display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]
