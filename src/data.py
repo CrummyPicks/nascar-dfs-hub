@@ -1042,6 +1042,48 @@ def fetch_dk_salaries_live(series_id: int = 1) -> pd.DataFrame:
     return df
 
 
+def _ensure_race_in_db(conn, api_race_id, series_id, race_name):
+    """Create a race entry in the DB if it doesn't exist yet (for upcoming races).
+
+    Fetches race metadata from the NASCAR API to populate track, date, etc.
+    Returns the DB row dict or None.
+    """
+    try:
+        race_list = fetch_race_list(series_id)
+        race_info = next((r for r in race_list if r.get("race_id") == api_race_id), None)
+        if not race_info:
+            return None
+
+        track_name = race_info.get("track_name", "Unknown")
+        race_date = race_info.get("race_date", "")
+        scheduled_laps = race_info.get("scheduled_laps", 0)
+
+        # Find or create track
+        track_row = conn.execute("SELECT id FROM tracks WHERE name = ?", (track_name,)).fetchone()
+        if not track_row:
+            conn.execute("INSERT INTO tracks (name) VALUES (?)", (track_name,))
+            track_row = conn.execute("SELECT id FROM tracks WHERE name = ?", (track_name,)).fetchone()
+
+        from datetime import datetime as _dt
+        season = _dt.now().year
+        max_num = conn.execute(
+            "SELECT COALESCE(MAX(race_num), 0) FROM races WHERE series_id = ? AND season = ?",
+            (series_id, season)
+        ).fetchone()[0]
+
+        conn.execute(
+            """INSERT OR IGNORE INTO races
+               (series_id, track_id, season, race_num, race_name, race_date, laps, api_race_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (series_id, track_row[0], season, max_num + 1,
+             race_name, race_date, scheduled_laps, api_race_id)
+        )
+        conn.commit()
+        return conn.execute("SELECT id FROM races WHERE api_race_id = ?", (api_race_id,)).fetchone()
+    except Exception:
+        return None
+
+
 def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
                             race_name: str) -> int:
     """Save DK salary data into the database so the projection engine can use it.
@@ -1066,8 +1108,10 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
             ).fetchone()
 
-        # No date-proximity fallback — only match by exact name or API race ID
-        # to prevent syncing salaries to the wrong race
+        # If race not in DB yet (upcoming), auto-create from API data
+        if not db_race and race_id:
+            db_race = _ensure_race_in_db(conn, race_id, series_id, race_name)
+
         if not db_race:
             conn.close()
             return 0
@@ -1152,8 +1196,10 @@ def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
             ).fetchone()
 
-        # No date-proximity fallback — only match by exact name or API race ID
-        # to prevent syncing salaries to the wrong race
+        # If race not in DB yet (upcoming), auto-create from API data
+        if not db_race and race_id:
+            db_race = _ensure_race_in_db(conn, race_id, series_id, race_name)
+
         if not db_race:
             conn.close()
             return 0

@@ -30,7 +30,7 @@ SERIES_MAP = {
     "truck": 3, "craftsman": 3, "3": 3,
 }
 
-SERIES_NAMES = {1: "Cup", 2: "Xfinity", 3: "Truck"}
+SERIES_NAMES = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
 
 
 def fetch_season(series_id: int, year: int):

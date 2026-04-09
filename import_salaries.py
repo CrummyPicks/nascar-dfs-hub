@@ -25,7 +25,7 @@ from src.data import (
 )
 
 SERIES_MAP = {"1": 1, "2": 2, "3": 3, "cup": 1, "xfinity": 2, "truck": 3}
-SERIES_NAMES = {1: "Cup", 2: "Xfinity", 3: "Truck"}
+SERIES_NAMES = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
 MAX_UPCOMING = 2  # Only show next 2 upcoming races
 RECENT_HISTORY = 3  # Show last 3 completed races for backfill
 
@@ -133,7 +133,7 @@ def import_one(recent_files):
     # Pick series
     print("\n  Series:")
     print("    [1] Cup")
-    print("    [2] Xfinity")
+    print("    [2] O'Reilly (Xfinity)")
     print("    [3] Truck")
     series_choice = input("  Select series (1/2/3) [1]: ").strip()
     series_id = SERIES_MAP.get(series_choice, 1)

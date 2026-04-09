@@ -24,7 +24,7 @@ def create_database():
     );
     INSERT OR IGNORE INTO series(code,name) VALUES
         ('cup',     'NASCAR Cup Series'),
-        ('xfinity', 'NASCAR Xfinity Series'),
+        ('xfinity', 'NASCAR O''Reilly Auto Parts Series'),
         ('trucks',  'NASCAR Craftsman Truck Series');
 
     -- ── TRACKS ──────────────────────────────────────────────────
