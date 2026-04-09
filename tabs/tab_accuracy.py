@@ -14,7 +14,7 @@ from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps,
     filter_point_races, query_salaries, load_race_odds,
-    scrape_track_history,
+    scrape_track_history, query_driver_career_dnf,
 )
 from src.utils import (
     calc_dk_points, safe_fillna, format_display_df, short_name_series,
@@ -341,54 +341,6 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None,
     return result
 
 
-def _query_driver_career_dnf(series_id, before_date=None):
-    """Query career DNF and crash rates for all drivers.
-
-    Args:
-        before_date: Only include races before this date (YYYY-MM-DD)
-
-    Returns dict of {driver_name: {dnf_rate, crash_rate, speed_score, races}}
-    """
-    if not os.path.exists(PROJ_DB):
-        return {}
-
-    conn = sqlite3.connect(PROJ_DB)
-    where = "WHERE r.series_id = ?"
-    params = [series_id]
-    if before_date:
-        where += " AND r.race_date < ?"
-        params.append(before_date)
-
-    rows = conn.execute(f'''
-        SELECT d.full_name,
-               COUNT(*) as races,
-               SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as dnfs,
-               SUM(CASE WHEN LOWER(rr.status) IN ('accident','crash','damage') THEN 1 ELSE 0 END) as crashes,
-               1.0 * SUM(rr.laps_led) / COUNT(*) as ll_per_race,
-               1.0 * SUM(rr.fastest_laps) / COUNT(*) as fl_per_race
-        FROM race_results rr
-        JOIN drivers d ON d.id = rr.driver_id
-        JOIN races r ON r.id = rr.race_id
-        {where}
-        GROUP BY d.id
-        HAVING races >= 5
-    ''', params).fetchall()
-    conn.close()
-
-    result = {}
-    for r in rows:
-        name, races, dnfs, crashes, ll_per, fl_per = r
-        if races and races > 0:
-            speed = (ll_per or 0) + (fl_per or 0)
-            result[name] = {
-                "dnf_rate": (dnfs or 0) / races,
-                "crash_rate": (crashes or 0) / races,
-                "speed_score": speed,
-                "races": races,
-            }
-    return result
-
-
 def _hybrid_track_stats(track_name, series_id, race_date=None):
     """Hybrid track history: scrape driveraverages.com baseline, then subtract
     races on/after race_date using DB data to prevent data leakage.
@@ -584,7 +536,7 @@ def _generate_race_projections(race, series_id, weights=None):
     except (ValueError, TypeError):
         race_laps = 0
 
-    dnf_data = _query_driver_career_dnf(series_id, before_date=race_date)
+    dnf_data = query_driver_career_dnf(series_id, before_date=race_date)
 
     proj_dk = _project_race_backtest(
         drivers, field_size, weights, th_data, tt_data,
@@ -1409,7 +1361,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         tt_data = {}
 
         # DNF data — also time-bounded
-        dnf_data = _query_driver_career_dnf(series_id, before_date=race_date) if include_dnf else {}
+        dnf_data = query_driver_career_dnf(series_id, before_date=race_date) if include_dnf else {}
 
         # Start positions from actual results (qualifying proxy)
         start_positions = {}

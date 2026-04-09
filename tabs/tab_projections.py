@@ -22,6 +22,7 @@ from src.config import (
 )
 from src.data import (
     query_projections, scrape_track_history, query_driver_dk_points_at_track,
+    query_driver_career_dnf,
 )
 # projection_bar no longer used — replaced with inline stacked bar
 from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge
@@ -680,9 +681,16 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             if races_to_remove:
                 th_df = _subtract_races_from_scraped(th_df, races_to_remove)
 
+    # ── Historical DK points at this track (for display + th_data enrichment) ──
+    dk_history = query_driver_dk_points_at_track(
+        track_name, series_id, min_season=2022,
+        before_date=race_date if not is_prerace else None,
+    )
+    dk_hist_names = list(dk_history.keys())
+
     if not th_df.empty:
-        for col in ["Avg Finish", "Avg Start", "Laps Led", "Races", "Avg Rating",
-                     "Wins", "Top 5", "Top 10", "DNF"]:
+        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races",
+                     "Avg Rating", "Wins", "Top 5", "Top 10", "DNF"]:
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
@@ -810,13 +818,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             except (ValueError, TypeError):
                 continue
 
-    # ── Historical DK points at this track (for display columns) ─────────────
-    dk_history = query_driver_dk_points_at_track(
-        track_name, series_id, min_season=2022,
-        before_date=race_date if not is_prerace else None,
-    )
-    # Build fuzzy lookup for DK history
-    dk_hist_names = list(dk_history.keys())
+    # ── DNF risk data (career crash/mechanical rates) ──────────────────────
+    dnf_data = query_driver_career_dnf(series_id, before_date=race_date if not is_prerace else None)
 
     # ── PROJECT EACH DRIVER — Raw composite finish score ─────────────────────
     driver_raw_scores = {}  # d -> raw weighted score (higher = better driver)
@@ -904,6 +907,21 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
             raw_finish = field_size * 0.75  # default: well below mid-field
+
+        # DNF risk adjustment — penalize drivers with high crash/mechanical failure rates
+        dnf = dnf_data.get(d)
+        if not dnf:
+            dnf_matched = fuzzy_match_name(d, list(dnf_data.keys())) if dnf_data else None
+            dnf = dnf_data.get(dnf_matched) if dnf_matched else None
+        if dnf and dnf["races"] >= 10:
+            crash_rate = dnf["crash_rate"]
+            speed = dnf["speed_score"]
+            max_speed_all = max((v["speed_score"] for v in dnf_data.values()), default=1)
+            speed_factor = speed / max(max_speed_all, 1)
+            penalty_weight = max(0.05, 0.3 - speed_factor * 0.2)
+            mech_rate = dnf["dnf_rate"] - crash_rate
+            risk_penalty = crash_rate * penalty_weight + mech_rate * (penalty_weight * 0.3)
+            raw_finish = raw_finish + risk_penalty * 10
 
         driver_raw_scores[d] = raw_finish
 

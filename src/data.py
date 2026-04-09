@@ -507,6 +507,54 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         return {}
 
 
+def query_driver_career_dnf(series_id: int, before_date: str = None) -> dict:
+    """Query career DNF and crash rates for all drivers.
+
+    Returns {driver_name: {dnf_rate, crash_rate, speed_score, races}}.
+    Only includes drivers with 5+ career races.
+    """
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where = "WHERE r.series_id = ?"
+        params = [series_id]
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+
+        rows = conn.execute(f'''
+            SELECT d.full_name,
+                   COUNT(*) as races,
+                   SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as dnfs,
+                   SUM(CASE WHEN LOWER(rr.status) IN ('accident','crash','damage') THEN 1 ELSE 0 END) as crashes,
+                   1.0 * SUM(rr.laps_led) / COUNT(*) as ll_per_race,
+                   1.0 * SUM(rr.fastest_laps) / COUNT(*) as fl_per_race
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            {where}
+            GROUP BY d.id
+            HAVING races >= 5
+        ''', params).fetchall()
+        conn.close()
+
+        result = {}
+        for r in rows:
+            name, races, dnfs, crashes, ll_per, fl_per = r
+            if races and races > 0:
+                speed = (ll_per or 0) + (fl_per or 0)
+                result[name] = {
+                    "dnf_rate": (dnfs or 0) / races,
+                    "crash_rate": (crashes or 0) / races,
+                    "speed_score": speed,
+                    "races": races,
+                }
+        return result
+    except Exception:
+        return {}
+
+
 # ============================================================
 # TRACK HISTORY SCRAPING
 # ============================================================
