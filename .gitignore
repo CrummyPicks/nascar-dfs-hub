@@ -21,8 +21,8 @@ venv/
 Thumbs.db
 *.fuse_hidden*
 
-# Database (rebuilt by setup_db.py / refresh_data.py)
-nascar.db
+# Database — tracked in git for Streamlit Cloud deployment
+# nascar.db
 
 # Secrets (never commit API keys)
 .streamlit/secrets.toml
