@@ -964,18 +964,8 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
             ).fetchone()
 
-        if not db_race:
-            from datetime import datetime as _dt
-            today = _dt.now().strftime("%Y-%m-%d")
-            db_race = conn.execute(
-                """SELECT id FROM races
-                   WHERE series_id = ?
-                   AND ABS(julianday(race_date) - julianday(?)) <= 7
-                   ORDER BY ABS(julianday(race_date) - julianday(?))
-                   LIMIT 1""",
-                (series_id, today, today)
-            ).fetchone()
-
+        # No date-proximity fallback — only match by exact name or API race ID
+        # to prevent syncing salaries to the wrong race
         if not db_race:
             conn.close()
             return 0
@@ -1060,18 +1050,8 @@ def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
             ).fetchone()
 
-        if not db_race:
-            from datetime import datetime as _dt
-            today = _dt.now().strftime("%Y-%m-%d")
-            db_race = conn.execute(
-                """SELECT id FROM races
-                   WHERE series_id = ?
-                   AND ABS(julianday(race_date) - julianday(?)) <= 7
-                   ORDER BY ABS(julianday(race_date) - julianday(?))
-                   LIMIT 1""",
-                (series_id, today, today)
-            ).fetchone()
-
+        # No date-proximity fallback — only match by exact name or API race ID
+        # to prevent syncing salaries to the wrong race
         if not db_race:
             conn.close()
             return 0
