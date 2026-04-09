@@ -14,6 +14,7 @@ from src.utils import (
 )
 from src.charts import (
     dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
+    season_trend_line,
 )
 
 
@@ -311,6 +312,12 @@ def _render_charts_view(completed_races, series_id, selected_year,
 
         fig = start_vs_finish_scatter(res)
         st.plotly_chart(fig, width="stretch")
+
+    # Season trend line
+    trend_fig = season_trend_line(series_id, selected_year)
+    if trend_fig:
+        st.markdown("---")
+        st.plotly_chart(trend_fig, width="stretch")
 
     # Race lap-by-lap chart (from race lap-times data)
     if not is_prerace and lap_data:

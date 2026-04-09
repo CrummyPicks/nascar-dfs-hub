@@ -9,6 +9,7 @@ import os
 
 from src.config import SALARY_CAP, ROSTER_SIZE, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.utils import safe_fillna, format_display_df, fuzzy_match_name, fuzzy_get, build_norm_lookup
+from src.charts import salary_vs_projection_scatter
 
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
@@ -665,6 +666,11 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
         disp = format_display_df(pool_display[avail].copy())
         st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=400)
+
+        # Salary vs Projection scatter
+        sal_fig = salary_vs_projection_scatter(pool)
+        if sal_fig:
+            st.plotly_chart(sal_fig, width="stretch")
 
         # Quick lock/exclude controls
         lk_col, ex_col, clr_col = st.columns([2, 2, 1])

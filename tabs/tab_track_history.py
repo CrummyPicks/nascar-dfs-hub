@@ -7,7 +7,7 @@ from src.data import (
     scrape_track_history, scrape_track_history_alltime,
     query_track_type_stats, query_season_stats, query_db_track_history,
 )
-from src.charts import track_history_bar, rating_vs_finish_scatter, arp_vs_finish_scatter
+from src.charts import track_history_bar, rating_vs_finish_scatter, arp_vs_finish_scatter, finish_distribution_box
 from src.utils import format_display_df, safe_fillna
 
 
@@ -116,6 +116,11 @@ def render(*, track_name, track_type, series_id):
             arp_fig = arp_vs_finish_scatter(hist_df, track_name)
             if arp_fig:
                 st.plotly_chart(arp_fig, width="stretch")
+
+            # Finish distribution box plot — shows consistency vs boom/bust
+            box_fig = finish_distribution_box(track_name, series_id)
+            if box_fig:
+                st.plotly_chart(box_fig, width="stretch")
 
             fig2 = rating_vs_finish_scatter(hist_df, track_name)
             if fig2:

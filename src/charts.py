@@ -417,6 +417,151 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
     return fig
 
 
+def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go.Figure:
+    """Salary vs Projected Points scatter — highlights value plays."""
+    if "DK Salary" not in pool_df.columns or "Proj Score" not in pool_df.columns:
+        return None
+    clean = pool_df.dropna(subset=["DK Salary", "Proj Score"]).copy()
+    if clean.empty:
+        return None
+
+    # Value line: avg pts per $1k across the field
+    avg_value = clean["Proj Score"].sum() / (clean["DK Salary"].sum() / 1000)
+
+    fig = go.Figure()
+
+    # Value line
+    sal_range = [clean["DK Salary"].min(), clean["DK Salary"].max()]
+    fig.add_trace(go.Scatter(
+        x=sal_range, y=[s / 1000 * avg_value for s in sal_range],
+        mode="lines", line=dict(dash="dash", color="#475569", width=1),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    # Driver dots
+    fig.add_trace(go.Scatter(
+        x=clean["DK Salary"], y=clean["Proj Score"],
+        mode="markers+text",
+        text=clean["Driver"].apply(lambda d: d.split()[-1]),  # last name only
+        textposition="top center",
+        textfont=dict(size=8, color="#94a3b8"),
+        marker=dict(
+            size=12,
+            color=clean.get("Value", clean["Proj Score"]),
+            colorscale="RdYlGn",
+            showscale=True,
+            colorbar=dict(title="Value"),
+            line=dict(width=1, color="#334155"),
+        ),
+        hovertemplate="%{text}<br>Salary: $%{x:,}<br>Proj: %{y:.1f}<extra></extra>",
+    ))
+
+    fig.update_layout(
+        **DARK_LAYOUT, height=height,
+        title="Salary vs Projected Points (above line = good value)",
+        xaxis_title="DK Salary", yaxis_title="Projected Points",
+    )
+    fig.add_annotation(
+        x=0.02, y=0.98, xref="paper", yref="paper",
+        text="Above line = better value than average",
+        showarrow=False, font=dict(size=9, color="#64748b"),
+    )
+    return fig
+
+
+def finish_distribution_box(track_name: str, series_id: int = 1,
+                             top_n: int = 20, height: int = 400) -> go.Figure:
+    """Box plot of finish positions at a track — shows consistency vs boom/bust."""
+    import sqlite3
+    from src.config import DB_PATH
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        df = pd.read_sql_query('''
+            SELECT d.full_name as Driver, rr.finish_pos as Finish
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name LIKE ? AND r.series_id = ? AND r.season >= 2022
+        ''', conn, params=[f"%{track_name}%", series_id])
+        conn.close()
+    except Exception:
+        return None
+
+    if df.empty or len(df) < 5:
+        return None
+
+    # Only show drivers with 3+ races
+    counts = df.groupby("Driver").size()
+    regulars = counts[counts >= 3].index
+    df = df[df["Driver"].isin(regulars)]
+
+    # Sort by median finish (best first)
+    medians = df.groupby("Driver")["Finish"].median().sort_values()
+    top_drivers = medians.head(top_n).index.tolist()
+    df = df[df["Driver"].isin(top_drivers)]
+
+    # Order by median
+    df["Driver"] = pd.Categorical(df["Driver"], categories=top_drivers, ordered=True)
+
+    fig = px.box(df, x="Driver", y="Finish", color="Finish",
+                 color_continuous_scale="RdYlGn_r",
+                 title=f"Finish Distribution at {track_name} (2022+)")
+    fig.update_layout(**DARK_LAYOUT, height=height,
+                      yaxis=dict(autorange="reversed"),
+                      xaxis_tickangle=-45)
+    return fig
+
+
+def season_trend_line(series_id: int = 1, season: int = 2026,
+                       drivers: list = None, top_n: int = 10,
+                       height: int = 400) -> go.Figure:
+    """Line chart of DK points race-by-race this season — shows form trends."""
+    import sqlite3
+    from src.config import DB_PATH
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        df = pd.read_sql_query('''
+            SELECT d.full_name as Driver, r.race_name as Race,
+                   r.race_date as Date, dp.dfs_score as DK_Pts
+            FROM dfs_points dp
+            JOIN drivers d ON d.id = dp.driver_id
+            JOIN races r ON r.id = dp.race_id
+            WHERE r.series_id = ? AND r.season = ? AND dp.platform = 'DraftKings'
+            ORDER BY r.race_date
+        ''', conn, params=[series_id, season])
+        conn.close()
+    except Exception:
+        return None
+
+    if df.empty:
+        return None
+
+    # Pick top drivers by avg DK pts if none specified
+    if not drivers:
+        avg_pts = df.groupby("Driver")["DK_Pts"].mean().sort_values(ascending=False)
+        drivers = avg_pts.head(top_n).index.tolist()
+
+    df = df[df["Driver"].isin(drivers)]
+    if df.empty:
+        return None
+
+    # Shorten race names for x-axis
+    df["Race Short"] = df["Race"].apply(lambda r: r.split(" ")[0][:10] if r else "")
+
+    fig = px.line(df, x="Date", y="DK_Pts", color="Driver",
+                  markers=True, title=f"{season} Season DK Points Trend",
+                  hover_data=["Race"])
+    fig.update_layout(**DARK_LAYOUT, height=height,
+                      xaxis_title="", yaxis_title="DK Points",
+                      legend=dict(font=dict(size=9)))
+    return fig
+
+
 def race_lap_chart(lap_data: dict, selected_drivers: list = None,
                    height: int = 500) -> go.Figure:
     """Line chart showing each driver's race lap times (from lap-times.json).
