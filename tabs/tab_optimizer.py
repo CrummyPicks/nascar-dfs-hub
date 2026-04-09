@@ -303,7 +303,14 @@ def _get_swap_candidates(pool_df, current_lineup, swap_driver, salary_cap, roste
 
 def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
                               max_exposure, mode="gpp", locked=None, excluded=None):
-    """Generate multiple lineups with exposure limits."""
+    """Generate optimized lineups using systematic exploration.
+
+    Strategy:
+    1. Build the best possible lineup (greedy by value)
+    2. Generate variations by swapping 1-2 players with alternatives
+    3. Also try "stars + value" combos (expensive core + cheap fill)
+    4. Score all valid lineups and keep the best unique ones
+    """
     locked = locked or []
     excluded = excluded or set()
 
@@ -320,114 +327,139 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
             locked_data.append(match.iloc[0].to_dict())
             lock_salary += match.iloc[0]["DK Salary"]
 
-    variable_pool = available[~available["Driver"].isin(locked)]
+    variable_pool = available[~available["Driver"].isin(locked)].copy()
     remaining_cap = salary_cap - lock_salary
     remaining_slots = roster_size - len(locked_data)
 
     if remaining_slots <= 0:
         return [locked_data] * min(num_lineups, 1)
 
-    # Filter out low-projection drivers — only keep viable candidates
-    # Top 2/3 of field by Proj Score, or at least roster_size * 3 drivers
+    # Sort by projection and value
     variable_pool = variable_pool.sort_values("Proj Score", ascending=False)
-    min_pool = max(remaining_slots * 3, remaining_slots + 6)
-    viable_count = max(min_pool, int(len(variable_pool) * 0.67))
-    variable_pool = variable_pool.head(viable_count)
-
     candidates = variable_pool.to_dict("records")
-    lineups = []
-    # Generate 5x candidates to find the best lineups
-    target_count = num_lineups * 5
-    exposure_count = {d["Driver"]: 0 for d in candidates}
-    max_exp_count = max(1, int(target_count * max_exposure / 100))
+    all_lineups = []  # (total_score, lineup)
+    seen_keys = set()
 
-    # Identify "core" players — top projected drivers appear in most lineups
-    sorted_by_proj = sorted(candidates, key=lambda d: d["Proj Score"], reverse=True)
-    core_count = min(3, remaining_slots - 1)  # Top 3 are core (or less if roster is small)
-    core_drivers = {d["Driver"] for d in sorted_by_proj[:core_count]}
+    def _try_lineup(lineup):
+        """Score and add a lineup if valid and unique."""
+        if len(lineup) != remaining_slots:
+            return
+        total_sal = sum(d["DK Salary"] for d in lineup)
+        if total_sal > remaining_cap:
+            return
+        key = tuple(sorted(d["Driver"] for d in lineup))
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        total_pts = sum(d["Proj Score"] for d in lineup)
+        all_lineups.append((total_pts, locked_data + lineup))
 
-    attempts = 0
-    max_attempts = target_count * 300
+    def _greedy_fill(must_include, pool, cap):
+        """Greedy fill remaining slots from pool within cap."""
+        lineup = list(must_include)
+        used = {d["Driver"] for d in lineup}
+        rem = cap - sum(d["DK Salary"] for d in lineup)
+        need = remaining_slots - len(lineup)
+        # Sort remaining by value (pts per $1k)
+        remaining = [d for d in pool if d["Driver"] not in used and d["DK Salary"] <= rem]
+        remaining.sort(key=lambda d: d.get("Value", 0), reverse=True)
+        for d in remaining:
+            if len(lineup) >= remaining_slots:
+                break
+            if d["DK Salary"] <= rem:
+                lineup.append(d)
+                used.add(d["Driver"])
+                rem -= d["DK Salary"]
+        return lineup
 
-    while len(lineups) < target_count and attempts < max_attempts:
-        attempts += 1
+    # === Strategy 1: Pure greedy by value ===
+    lineup = _greedy_fill([], candidates, remaining_cap)
+    _try_lineup(lineup)
 
-        if mode == "gpp":
-            avail_cands = [d for d in candidates
-                           if exposure_count[d["Driver"]] < max_exp_count]
-            if len(avail_cands) < remaining_slots:
+    # === Strategy 2: Pure greedy by projection (top projected, fill with value) ===
+    for top_n in range(1, min(remaining_slots, 5)):
+        top_picks = candidates[:top_n]
+        if sum(d["DK Salary"] for d in top_picks) <= remaining_cap:
+            lineup = _greedy_fill(top_picks, candidates, remaining_cap)
+            _try_lineup(lineup)
+
+    # === Strategy 3: Every pair of top-12 drivers as anchors ===
+    top_12 = candidates[:min(12, len(candidates))]
+    for i in range(len(top_12)):
+        for j in range(i + 1, len(top_12)):
+            pair = [top_12[i], top_12[j]]
+            pair_sal = sum(d["DK Salary"] for d in pair)
+            if pair_sal <= remaining_cap:
+                lineup = _greedy_fill(pair, candidates, remaining_cap)
+                _try_lineup(lineup)
+
+    # === Strategy 4: Every triple of top-8 drivers as anchors ===
+    top_8 = candidates[:min(8, len(candidates))]
+    for i in range(len(top_8)):
+        for j in range(i + 1, len(top_8)):
+            for k in range(j + 1, len(top_8)):
+                triple = [top_8[i], top_8[j], top_8[k]]
+                triple_sal = sum(d["DK Salary"] for d in triple)
+                if triple_sal <= remaining_cap:
+                    lineup = _greedy_fill(triple, candidates, remaining_cap)
+                    _try_lineup(lineup)
+
+    # === Strategy 5: Swap-based variations from top lineups ===
+    # Take the best 10 lineups so far, swap each player with alternatives
+    all_lineups.sort(key=lambda x: x[0], reverse=True)
+    base_lineups = [lu for _, lu in all_lineups[:10]]
+    for base in base_lineups:
+        variable_part = [d for d in base if d["Driver"] not in [ld["Driver"] for ld in locked_data]]
+        for swap_idx in range(len(variable_part)):
+            swapped_out = variable_part[swap_idx]
+            remaining = [d for d in variable_part if d["Driver"] != swapped_out["Driver"]]
+            rem_sal = remaining_cap - sum(d["DK Salary"] for d in remaining)
+            # Try each candidate as replacement
+            used = {d["Driver"] for d in remaining}
+            for replacement in candidates:
+                if replacement["Driver"] in used:
+                    continue
+                if replacement["DK Salary"] <= rem_sal:
+                    new_lineup = remaining + [replacement]
+                    _try_lineup(new_lineup)
+
+    # === Strategy 6: Random exploration for diversity (GPP mode) ===
+    if mode == "gpp":
+        for _ in range(num_lineups * 20):
+            # Pick 2 random anchors from top half, fill with value
+            top_half = candidates[:max(6, len(candidates) // 2)]
+            if len(top_half) < 2:
+                break
+            anchors = random.sample(top_half, min(2, remaining_slots - 1))
+            anchor_sal = sum(d["DK Salary"] for d in anchors)
+            if anchor_sal <= remaining_cap:
+                lineup = _greedy_fill(anchors, candidates, remaining_cap)
+                _try_lineup(lineup)
+
+    # Sort by total projected points and apply exposure limits
+    all_lineups.sort(key=lambda x: x[0], reverse=True)
+
+    if max_exposure >= 100:
+        return [lu for _, lu in all_lineups[:num_lineups]]
+
+    # Apply exposure filter
+    final = []
+    exposure_count = {}
+    max_exp = max(1, int(num_lineups * max_exposure / 100))
+    for score, lu in all_lineups:
+        ok = True
+        for d in lu:
+            if exposure_count.get(d["Driver"], 0) >= max_exp:
+                ok = False
+                break
+        if ok:
+            final.append(lu)
+            for d in lu:
+                exposure_count[d["Driver"]] = exposure_count.get(d["Driver"], 0) + 1
+            if len(final) >= num_lineups:
                 break
 
-            lineup = []
-            rem_sal = remaining_cap
-            used = set()
-
-            # Step 1: Seed with core players (probabilistic — not every lineup)
-            # Each core player has ~80% chance of being included
-            avail_cores = [d for d in avail_cands if d["Driver"] in core_drivers
-                           and d["DK Salary"] <= rem_sal]
-            for d in avail_cores:
-                if len(lineup) >= remaining_slots - 1:  # leave at least 1 flex spot
-                    break
-                if random.random() < 0.80:  # 80% inclusion rate for core
-                    lineup.append(d)
-                    used.add(d["Driver"])
-                    rem_sal -= d["DK Salary"]
-
-            # Step 2: Fill remaining slots with weighted random selection
-            remaining_needed = remaining_slots - len(lineup)
-            if remaining_needed > 0:
-                fill_cands = [d for d in avail_cands
-                              if d["Driver"] not in used and d["DK Salary"] <= rem_sal]
-                weights = [max(0.1, d["Proj Score"]) ** 2.5 for d in fill_cands]
-
-                for _ in range(remaining_needed):
-                    affordable = [(d, w) for d, w in zip(fill_cands, weights)
-                                  if d["Driver"] not in used and d["DK Salary"] <= rem_sal]
-                    if not affordable:
-                        break
-                    drivers_list, wts = zip(*affordable)
-                    total_w = sum(wts)
-                    norm_probs = [w / total_w for w in wts]
-                    pick = random.choices(list(drivers_list), weights=norm_probs, k=1)[0]
-                    lineup.append(pick)
-                    used.add(pick["Driver"])
-                    rem_sal -= pick["DK Salary"]
-
-            if len(lineup) != remaining_slots:
-                continue
-        else:
-            blend = [(d, d["Proj Score"] * 0.6 + d.get("Value", 0) * 4.0)
-                     for d in candidates]
-            if attempts > 1:
-                blend = [(d, s + random.gauss(0, s * 0.15)) for d, s in blend]
-            blend.sort(key=lambda x: x[1], reverse=True)
-
-            lineup = []
-            rem_sal = remaining_cap
-            used = set()
-            for d, _ in blend:
-                if d["Driver"] in used:
-                    continue
-                if d["DK Salary"] <= rem_sal and len(lineup) < remaining_slots:
-                    lineup.append(d)
-                    used.add(d["Driver"])
-                    rem_sal -= d["DK Salary"]
-            if len(lineup) != remaining_slots:
-                continue
-
-        drivers_key = tuple(sorted(d["Driver"] for d in lineup))
-        if any(tuple(sorted(d["Driver"] for d in existing)) == drivers_key
-               for existing in lineups):
-            continue
-
-        lineups.append(locked_data + lineup)
-        for d in lineup:
-            exposure_count[d["Driver"]] += 1
-
-    # Sort by total projected points (best lineups first) and keep top N
-    lineups.sort(key=lambda lu: sum(d["Proj Score"] for d in lu), reverse=True)
-    return lineups[:num_lineups]
+    return final
 
 
 # ── Main Render ──────────────────────────────────────────────────────────────
