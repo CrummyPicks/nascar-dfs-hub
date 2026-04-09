@@ -186,49 +186,72 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
 
 def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
                         track_type: str) -> dict:
-    """Allocate projected laps led across the field using DB-calibrated data.
+    """Allocate projected laps led across the field.
 
-    Uses historical data to determine how concentrated laps led should be.
-    At short tracks, the top driver can lead 200+ laps (50%+).
-    At superspeedways, the top leader averages only ~35 laps.
-
-    Applies a realistic cutoff: historically only ~15-25% of the field leads
-    any laps (except superspeedways ~60%).  Drivers below the cutoff get 0.
+    Uses driver dominator scores to distribute laps led proportionally.
+    Caps the maximum any single driver can lead at 50% of race laps
+    (even the biggest dominator rarely leads more than half).
     """
     if not driver_scores or race_laps <= 0:
         return {}
 
-    calibration = _get_track_dominator_calibration(track_name, track_type)
-    concentration = calibration["concentration"]
-
     # What fraction of the field typically leads laps at this track type
     LEADER_FRAC = {
         "superspeedway": 0.60,
-        "road": 0.22,
-        "dirt": 0.20,
-        "intermediate": 0.22,
-        "intermediate_worn": 0.20,
-        "short": 0.18,
-        "short_concrete": 0.16,
+        "road": 0.25,
+        "dirt": 0.22,
+        "intermediate": 0.25,
+        "intermediate_worn": 0.22,
+        "short": 0.22,
+        "short_concrete": 0.20,
     }
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
-    frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.22))
-    n_leaders = max(3, int(len(driver_scores) * frac))
+    frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.25))
+    n_leaders = max(4, int(len(driver_scores) * frac))
 
     # Rank drivers by raw score, only top N get any laps led
     sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_leaders])
 
-    # Apply concentration exponent — higher exponent = more to the top scorer
-    scores = {}
-    for d, s in top_drivers.items():
-        scores[d] = max(0.01, s) ** concentration
-
+    # Linear proportional allocation (no exponent — the scores already
+    # incorporate historical laps led per race, so we just need proportional split)
+    scores = {d: max(0.01, s) for d, s in top_drivers.items()}
     total = sum(scores.values())
     if total <= 0:
         return {}
 
-    return {d: (s / total) * race_laps for d, s in scores.items()}
+    # Scale to historical average total laps led (not full race laps)
+    # Typically ~60-80% of race laps have a "leader" at short tracks,
+    # ~40-50% at superspeedways (many lead changes)
+    TOTAL_LED_FRAC = {
+        "superspeedway": 0.40, "road": 0.55, "dirt": 0.50,
+        "intermediate": 0.60, "intermediate_worn": 0.55,
+        "short": 0.65, "short_concrete": 0.70,
+    }
+    led_frac = TOTAL_LED_FRAC.get(track_type, TOTAL_LED_FRAC.get(parent, 0.60))
+    total_led_laps = race_laps * led_frac
+
+    result = {d: (s / total) * total_led_laps for d, s in scores.items()}
+
+    # Cap any single driver at 50% of race laps — realistic ceiling
+    max_laps = race_laps * 0.50
+    capped = False
+    for d in result:
+        if result[d] > max_laps:
+            result[d] = max_laps
+            capped = True
+    # If we capped, redistribute the excess to remaining drivers proportionally
+    if capped:
+        excess = sum(result.values()) - race_laps
+        if excess > 0:
+            uncapped = {d: s for d, s in result.items() if s < max_laps}
+            uncapped_total = sum(uncapped.values())
+            if uncapped_total > 0:
+                for d in uncapped:
+                    result[d] -= excess * (uncapped[d] / uncapped_total)
+                    result[d] = max(0, result[d])
+
+    return result
 
 
 def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
@@ -263,18 +286,28 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_with_fl])
 
-    # Fastest laps are less concentrated than laps led
-    concentration = max(0.5, TRACK_TYPE_CONCENTRATION.get(track_type, 1.5) * 0.7)
-
-    scores = {}
-    for d, s in top_drivers.items():
-        scores[d] = max(0.01, s) ** concentration
-
+    # Linear proportional (less concentrated than laps led)
+    scores = {d: max(0.01, s) for d, s in top_drivers.items()}
     total = sum(scores.values())
     if total <= 0:
         return {}
 
-    return {d: (s / total) * race_laps for d, s in scores.items()}
+    # Fastest laps total is typically ~40-50% of race laps (varies by track)
+    FL_TOTAL_FRAC = {
+        "superspeedway": 0.50, "road": 0.45, "dirt": 0.40,
+        "intermediate": 0.45, "intermediate_worn": 0.40,
+        "short": 0.40, "short_concrete": 0.45,
+    }
+    fl_frac = FL_TOTAL_FRAC.get(track_type, FL_TOTAL_FRAC.get(parent, 0.45))
+    total_fl_laps = race_laps * fl_frac
+    result = {d: (s / total) * total_fl_laps for d, s in scores.items()}
+
+    # Cap any single driver at 20% of race laps for fastest laps
+    max_fl = race_laps * 0.20
+    for d in result:
+        if result[d] > max_fl:
+            result[d] = max_fl
+    return result
 
 
 # ── Main Render ──────────────────────────────────────────────────────────────
