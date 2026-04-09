@@ -1097,15 +1097,17 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
 
-        # Find or match DB race — try name, then api_race_id, then date
-        db_race = conn.execute(
-            "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
-            (series_id, race_name)
-        ).fetchone()
-
-        if not db_race and race_id:
+        # Find DB race — api_race_id is most reliable (race names differ between sources)
+        db_race = None
+        if race_id:
             db_race = conn.execute(
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+            ).fetchone()
+
+        if not db_race:
+            db_race = conn.execute(
+                "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
+                (series_id, race_name)
             ).fetchone()
 
         # If race not in DB yet (upcoming), auto-create from API data
@@ -1185,15 +1187,17 @@ def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
 
-        # Find or match DB race
-        db_race = conn.execute(
-            "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
-            (series_id, race_name)
-        ).fetchone()
-
-        if not db_race and race_id:
+        # Find DB race — api_race_id first (most reliable), then name fallback
+        db_race = None
+        if race_id:
             db_race = conn.execute(
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+            ).fetchone()
+
+        if not db_race:
+            db_race = conn.execute(
+                "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
+                (series_id, race_name)
             ).fetchone()
 
         # If race not in DB yet (upcoming), auto-create from API data
