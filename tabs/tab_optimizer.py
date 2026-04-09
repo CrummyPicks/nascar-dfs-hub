@@ -682,8 +682,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             if st.button("Clear All", key="opt_clear"):
                 st.session_state.opt_locked = set()
                 st.session_state.opt_excluded = set()
-                st.session_state.opt_lineup = _build_optimal_lineup(
-                    pool, salary_cap, roster_size)
+                st.session_state.opt_lineup = []
+                st.session_state.opt_multi_lineups = []
                 st.rerun()
 
     # ─── MULTI-LINEUP GENERATION ────────────────────────────────────────────
