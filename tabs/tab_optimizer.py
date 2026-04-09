@@ -816,8 +816,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     st.markdown("**Salary Tiers**")
     tiers = pool.copy()
     tiers["Tier"] = pd.cut(tiers["DK Salary"],
-                           bins=[0, 6000, 7500, 9000, 11000, 20000],
-                           labels=["$5k-6k", "$6k-7.5k", "$7.5k-9k", "$9k-11k", "$11k+"])
+                           bins=[0, 5000, 6000, 7500, 9000, 11000, 20000],
+                           labels=["$4k-5k", "$5k-6k", "$6k-7.5k", "$7.5k-9k", "$9k-11k", "$11k+"])
     tier_summary = tiers.groupby("Tier", observed=True).agg(
         Count=("Driver", "count"),
         Avg_Proj=("Proj Score", "mean"),

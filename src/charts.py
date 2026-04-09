@@ -430,24 +430,26 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go
 
     fig = go.Figure()
 
-    # Value line
+    # Value line (no legend, no hover)
     sal_range = [clean["DK Salary"].min(), clean["DK Salary"].max()]
-    fig.add_trace(go.Scatter(
-        x=sal_range, y=[s / 1000 * avg_value for s in sal_range],
-        mode="lines", line=dict(dash="dash", color="#475569", width=1),
-        showlegend=False, hoverinfo="skip",
-    ))
+    fig.add_shape(type="line",
+        x0=sal_range[0], y0=sal_range[0] / 1000 * avg_value,
+        x1=sal_range[1], y1=sal_range[1] / 1000 * avg_value,
+        line=dict(dash="dash", color="#475569", width=1),
+    )
 
     # Driver dots
+    value_col = clean["Value"] if "Value" in clean.columns else clean["Proj Score"]
     fig.add_trace(go.Scatter(
         x=clean["DK Salary"], y=clean["Proj Score"],
         mode="markers+text",
-        text=clean["Driver"].apply(lambda d: d.split()[-1]),  # last name only
+        name="",
+        text=clean["Driver"].apply(lambda d: d.split()[-1]),
         textposition="top center",
         textfont=dict(size=8, color="#94a3b8"),
         marker=dict(
             size=12,
-            color=clean.get("Value", clean["Proj Score"]),
+            color=value_col,
             colorscale="RdYlGn",
             showscale=True,
             colorbar=dict(title="Value"),
