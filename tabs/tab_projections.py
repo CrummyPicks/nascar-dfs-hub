@@ -220,21 +220,23 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     if total <= 0:
         return {}
 
-    # Scale to historical average total laps led (not full race laps)
-    # Typically ~60-80% of race laps have a "leader" at short tracks,
-    # ~40-50% at superspeedways (many lead changes)
-    TOTAL_LED_FRAC = {
-        "superspeedway": 0.40, "road": 0.55, "dirt": 0.50,
-        "intermediate": 0.60, "intermediate_worn": 0.55,
-        "short": 0.65, "short_concrete": 0.70,
+    # Every lap has a leader — distribute ALL race laps across the field.
+    # The proportional split from scores handles concentration naturally.
+    # Cap any single driver at realistic maximums by track type.
+    result = {d: (s / total) * race_laps for d, s in scores.items()}
+
+    # Per-driver cap: even the biggest dominator has realistic limits
+    MAX_LEADER_FRAC = {
+        "superspeedway": 0.15,      # ~75 of 500 (pack racing, many lead changes)
+        "road": 0.35,               # ~70 of 200
+        "dirt": 0.30,
+        "intermediate": 0.40,       # ~120 of 300
+        "intermediate_worn": 0.35,
+        "short": 0.45,              # ~225 of 500
+        "short_concrete": 0.50,     # ~250 of 500 (Bristol dominators can lead half)
     }
-    led_frac = TOTAL_LED_FRAC.get(track_type, TOTAL_LED_FRAC.get(parent, 0.60))
-    total_led_laps = race_laps * led_frac
-
-    result = {d: (s / total) * total_led_laps for d, s in scores.items()}
-
-    # Cap any single driver at 50% of race laps — realistic ceiling
-    max_laps = race_laps * 0.50
+    max_frac = MAX_LEADER_FRAC.get(track_type, MAX_LEADER_FRAC.get(parent, 0.40))
+    max_laps = race_laps * max_frac
     capped = False
     for d in result:
         if result[d] > max_laps:
@@ -292,18 +294,20 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     if total <= 0:
         return {}
 
-    # Fastest laps total is typically ~40-50% of race laps (varies by track)
-    FL_TOTAL_FRAC = {
-        "superspeedway": 0.50, "road": 0.45, "dirt": 0.40,
-        "intermediate": 0.45, "intermediate_worn": 0.40,
-        "short": 0.40, "short_concrete": 0.45,
-    }
-    fl_frac = FL_TOTAL_FRAC.get(track_type, FL_TOTAL_FRAC.get(parent, 0.45))
-    total_fl_laps = race_laps * fl_frac
-    result = {d: (s / total) * total_fl_laps for d, s in scores.items()}
+    # Every lap has a fastest lap — distribute ALL race laps across the field.
+    result = {d: (s / total) * race_laps for d, s in scores.items()}
 
-    # Cap any single driver at 20% of race laps for fastest laps
-    max_fl = race_laps * 0.20
+    # Per-driver cap for fastest laps (more distributed than laps led)
+    MAX_FL_FRAC = {
+        "superspeedway": 0.10,      # very distributed in pack racing
+        "road": 0.20,
+        "dirt": 0.20,
+        "intermediate": 0.25,
+        "intermediate_worn": 0.20,
+        "short": 0.25,
+        "short_concrete": 0.25,     # ~125 of 500
+    }
+    max_fl = race_laps * MAX_FL_FRAC.get(track_type, MAX_FL_FRAC.get(parent, 0.20))
     for d in result:
         if result[d] > max_fl:
             result[d] = max_fl
