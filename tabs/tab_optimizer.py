@@ -358,34 +358,41 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
             if len(avail_cands) < remaining_slots:
                 break
 
-            # Steeper weighting — top projections heavily favored
-            # Core players get a 2x boost to ensure they appear in most lineups
-            weights = []
-            for d in avail_cands:
-                w = max(0.1, d["Proj Score"]) ** 2.5
-                if d["Driver"] in core_drivers:
-                    w *= 2.0
-                weights.append(w)
-            total_w = sum(weights)
-            probs = [w / total_w for w in weights]
-
             lineup = []
             rem_sal = remaining_cap
             used = set()
-            pool_copy = list(zip(avail_cands, probs))
 
-            for _ in range(remaining_slots):
-                affordable = [(d, p) for d, p in pool_copy
-                              if d["Driver"] not in used and d["DK Salary"] <= rem_sal]
-                if not affordable:
+            # Step 1: Seed with core players (probabilistic — not every lineup)
+            # Each core player has ~80% chance of being included
+            avail_cores = [d for d in avail_cands if d["Driver"] in core_drivers
+                           and d["DK Salary"] <= rem_sal]
+            for d in avail_cores:
+                if len(lineup) >= remaining_slots - 1:  # leave at least 1 flex spot
                     break
-                drivers_list, probs_f = zip(*affordable)
-                total_p = sum(probs_f)
-                norm_probs = [p / total_p for p in probs_f]
-                pick = random.choices(list(drivers_list), weights=norm_probs, k=1)[0]
-                lineup.append(pick)
-                used.add(pick["Driver"])
-                rem_sal -= pick["DK Salary"]
+                if random.random() < 0.80:  # 80% inclusion rate for core
+                    lineup.append(d)
+                    used.add(d["Driver"])
+                    rem_sal -= d["DK Salary"]
+
+            # Step 2: Fill remaining slots with weighted random selection
+            remaining_needed = remaining_slots - len(lineup)
+            if remaining_needed > 0:
+                fill_cands = [d for d in avail_cands
+                              if d["Driver"] not in used and d["DK Salary"] <= rem_sal]
+                weights = [max(0.1, d["Proj Score"]) ** 2.5 for d in fill_cands]
+
+                for _ in range(remaining_needed):
+                    affordable = [(d, w) for d, w in zip(fill_cands, weights)
+                                  if d["Driver"] not in used and d["DK Salary"] <= rem_sal]
+                    if not affordable:
+                        break
+                    drivers_list, wts = zip(*affordable)
+                    total_w = sum(wts)
+                    norm_probs = [w / total_w for w in wts]
+                    pick = random.choices(list(drivers_list), weights=norm_probs, k=1)[0]
+                    lineup.append(pick)
+                    used.add(pick["Driver"])
+                    rem_sal -= pick["DK Salary"]
 
             if len(lineup) != remaining_slots:
                 continue
@@ -445,7 +452,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 st.info("No salary data available. Upload a DK CSV or wait for DK API salaries to enable the optimizer.")
             return
 
-    # Initialize session state
+    # Initialize session state — clear when race/series changes
+    race_key = f"{series_id}_{race_id}"
+    if st.session_state.get("opt_race_key") != race_key:
+        st.session_state.opt_race_key = race_key
+        st.session_state.opt_lineup = []
+        st.session_state.opt_locked = set()
+        st.session_state.opt_excluded = set()
+        st.session_state.opt_multi_lineups = []
     if "opt_lineup" not in st.session_state:
         st.session_state.opt_lineup = []
     if "opt_locked" not in st.session_state:
@@ -660,7 +674,13 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     multi_lineups = st.session_state.opt_multi_lineups
 
     if multi_lineups:
-        st.success(f"{len(multi_lineups)} lineups generated")
+        ml_header = st.columns([3, 1])
+        with ml_header[0]:
+            st.success(f"{len(multi_lineups)} lineups generated")
+        with ml_header[1]:
+            if st.button("Clear Lineups", key="opt_clear_multi"):
+                st.session_state.opt_multi_lineups = []
+                st.rerun()
 
         # Exposure summary
         exposure = {}
