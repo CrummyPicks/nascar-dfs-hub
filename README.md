@@ -2,13 +2,15 @@
 
 A comprehensive NASCAR Daily Fantasy Sports (DFS) analysis tool built with Streamlit. Combines live NASCAR API data, practice speeds, track history, betting odds, and DraftKings salaries into one dashboard for building optimal DFS lineups.
 
+**Live app**: Hosted on [Streamlit Cloud](https://streamlit.io/cloud)
+
 ---
 
-## Quick Start
+## Quick Start (Local Development)
 
 ### 1. Install Dependencies
 ```bash
-pip install streamlit pandas numpy plotly requests beautifulsoup4
+pip install streamlit pandas numpy plotly requests beautifulsoup4 lxml
 ```
 
 ### 2. Initialize the Database
@@ -18,89 +20,113 @@ python setup_db.py
 
 ### 3. Populate Historical Data
 ```bash
-python refresh_data.py              # Fetch all new Cup 2026 races
 python refresh_data.py --all        # Fetch ALL series, ALL years (2022-2026)
 ```
-Or double-click **REFRESH_DATA.bat** on Windows.
 
-### 4. Launch the App
+### 4. Backfill Average Running Position
+```bash
+python scrapers/backfill_arp.py     # Fetches lap-times from NASCAR API, computes ARP
+```
+
+### 5. Launch the App
 ```bash
 streamlit run nascar_dfs_app.py
 ```
-Or double-click **START_HUB.bat** on Windows.
 
 ---
 
-## Data Refresh (Local Script)
+## Weekly Workflow
 
-The database is populated using `refresh_data.py`, which runs locally on your machine. This keeps API keys and write access off the public web app.
+### Importing DraftKings Salaries
+
+DK salaries must be imported manually (DK API is unreliable). Double-click **IMPORT_SALARIES.bat** or run:
 
 ```bash
-# Fetch all completed Cup 2026 races (default)
-python refresh_data.py
-
-# Fetch a specific series
-python refresh_data.py --series xfinity
-python refresh_data.py --series truck
-
-# Fetch a specific year
-python refresh_data.py --year 2025
-
-# Fetch all series and all years (2022-2026)
-python refresh_data.py --all
-
-# Fetch a single race by ID
-python refresh_data.py --race 5596
+python import_salaries.py
 ```
 
-Run this weekly (or after each race) to keep the database current. The script skips races already in the database, so re-running is safe and fast.
+**The workflow:**
+1. Download DKSalaries CSV from DraftKings for each series (Cup, Xfinity, Trucks)
+2. Run `IMPORT_SALARIES.bat` (or the Python script above)
+3. Select series (1=Cup, 2=Xfinity, 3=Truck)
+4. Pick the CSV file (auto-finds recent DKSalaries*.csv in Downloads)
+5. Select the race (shows last 3 completed + next 2 upcoming)
+6. Repeat for each series, then the script commits and pushes to git
+
+Salaries are stored in the database per race and persist across deploys via git.
+
+### After Each Race
+
+Race results are automatically fetched from the NASCAR API when you view a completed race. To bulk-refresh:
+
+```bash
+python refresh_data.py              # Fetch new Cup 2026 races
+python refresh_data.py --all        # All series, all years
+```
 
 ---
 
 ## Features by Tab
 
 ### Race Data
-- **Table view**: Consolidated driver data — salary, results, qualifying, practice rankings, and track history in one table
-- **Charts view**: DFS Points bar chart (hover for score breakdown), Start vs Finish scatter, race lap-by-lap analysis
-- **Search**: Filter any driver, team, or manufacturer
-- **Export**: Download data as CSV
+- Consolidated driver data: salary, results, qualifying, practice, track history
+- Track history from DB (Next Gen 2022+ era) with Avg DK Points, Avg Running Position
+- Fuzzy name matching handles DraftKings vs NASCAR API name differences
+- Charts: DFS points bar, Start vs Finish scatter, lap-by-lap analysis
 
 ### Practice
-- **Rankings Heatmap**: Color-coded practice speed rankings across all lap averages (toggle colors on/off)
-- **Lap Times view**: Raw practice lap time data with all intervals
-- **Lap Chart**: Interactive line chart of individual practice laps with outlier filtering and driver selection
-- **Gap-to-Fastest Bar Chart**: Horizontal bar chart showing delta from fastest driver, with lap interval selector (Overall Avg, 5 Lap, 10 Lap, etc.)
+- Rankings heatmap with color-coded practice speed rankings
+- Lap times view with all intervals
+- Gap-to-fastest bar chart with lap interval selector
 
 ### Track History
-- **Recent Races**: Driver performance at the selected track (from driveraverages.com)
-- **All-Time**: Complete historical stats at the track
-- **By Track Type**: Aggregate stats across similar track types (short, intermediate, superspeedway, road course)
-- **2026 Season**: Current season aggregate from database
+- Recent races at the track (DB-backed, 2022+ Next Gen era)
+- ARP vs Avg Finish scatter chart (shows wreck luck factor)
+- Track type filtering and aggregation
+- By Track Type and Season views
 
 ### Race Analyzer
-Four analysis modes with independent filters for Series, Year, and Track:
-- **Single Race**: Detailed results for any completed race with DK/FD points, salary, driver rating, and scatter chart
-- **Season Summary**: Aggregated stats across all completed races with driver rankings
-- **Driver Lookup**: Race-by-race log for any driver
-- **Driver Comparison**: Side-by-side stat comparison with race-by-race charts
+- Single race detailed results with DK/FD points
+- Season summary with driver rankings
+- Driver lookup and comparison modes
 
 ### Projections
-- **DFS-aware projection engine** that projects actual DraftKings point components:
-  - Finish Points (from projected finish position)
-  - Place Differential Points (start - finish)
-  - Laps Led Points (dominator projection)
-  - Fastest Laps Points
-- **Five weighted signals**: Track History, Track Type, Qualifying, Practice, Betting Odds
+- **3-stage projection engine:**
+  - **Stage 1 — Projected Finish**: Weighted blend of 4 signals (Track History, Track Type, Odds, Practice) + fixed 15% qualifying signal. All signals normalized to finish position scale (1-37).
+  - **Stage 2 — Dominator Allocation**: Historical laps led/fastest laps distributed across field using track-type concentration curves
+  - **Stage 3 — DK Points**: `finish_pts + diff_pts + laps_led × 0.25 + fastest_laps × 0.45`
+- **Track History signal**: ARP 65% + Avg Finish 35% (filters wreck luck)
+- **Smart weight handling**: Missing signals auto-redistribute; no track history → track type absorbs the weight
+- **Historical DK points**: Avg DK, Best DK, Worst DK at this track (display only, not in projection math to avoid double-counting dominator value)
 - Adjustable weights via sliders (auto-normalizes to 100%)
-- Smart handling: if odds aren't available, weight redistributes automatically
-- DK Salary and Value (pts per $1K) when salary data is available
 
 ### Optimizer
-- **FantasyPros-style lineup builder** with Lock, Exclude, and Swap per driver
-- Auto-generates optimal lineup on load
-- Budget-aware greedy algorithm respects the $50,000 salary cap
-- Multi-lineup generator with GPP (max exposure limits) and Cash modes
-- Player pool table with status indicators
+- FantasyPros-style lineup builder with Lock, Exclude, and Swap
+- Uses Proj DK values from Projections tab for consistency
+- Multi-lineup generator with GPP (exposure limits) and Cash modes
+- Budget-aware greedy algorithm ($50,000 salary cap)
+
+### Accuracy
+- Projections vs Actuals backtesting for any completed race
+- Uses same projection engine as live projections
+- Track type signal included for consistency
+
+---
+
+## Admin Features
+
+The Settings panel is password-protected (`ADMIN_PASSWORD` in Streamlit secrets):
+
+| Feature | Description |
+|---------|-------------|
+| DK Salary CSV | Upload DraftKings salary CSV — saves to DB for this race |
+| FD Salary CSV | Upload FanDuel salary CSV — saves to DB |
+| Clear Salaries | Remove saved salary data for a race |
+| Manual Practice | Paste driver practice rankings |
+| Betting Odds | Auto-fetched from Action Network; paste to override |
+| Refresh Odds | Re-fetch odds from Action Network |
+
+Non-admin users see read-only mode with all saved data visible.
 
 ---
 
@@ -109,24 +135,9 @@ Four analysis modes with independent filters for Series, Year, and Track:
 | Source | Data | How |
 |--------|------|-----|
 | NASCAR API | Race results, qualifying, entry lists, lap times, practice | Automatic on page load |
-| DraftKings API | Driver salaries (upcoming races only) | Automatic on page load |
-| Action Network | Win odds (American format) | Automatic on page load (cached 30 min) |
-| driveraverages.com | Track history stats | Automatic when Track History loads |
-| Local refresh script | Historical race results, fastest laps, DFS points | `python refresh_data.py` |
-| Manual upload | DK/FD salary CSVs | Settings panel file upload |
-
----
-
-## Settings Panel
-
-Click **Settings & Data Upload** to expand:
-
-| Setting | Description |
-|---------|-------------|
-| DK Salary | Upload DraftKings salary CSV (overrides auto-fetch) |
-| FD Salary CSV | Upload FanDuel salary CSV |
-| Manual Practice | Paste driver practice rankings (format: `Driver Name, Rank`) |
-| Betting Odds | Auto-fetched from Action Network; paste to override (format: `Driver Name, 1200`) |
+| Action Network | Win odds (Cup series only) | Automatic (cached 30 min) |
+| Database (nascar.db) | Historical results, ARP, DFS points, salaries, odds | `refresh_data.py` + `import_salaries.py` |
+| Manual upload | DK/FD salary CSVs | Admin settings panel |
 
 ---
 
@@ -134,36 +145,63 @@ Click **Settings & Data Upload** to expand:
 
 ```
 NASCAR DFS/
-├── nascar_dfs_app.py       # Main Streamlit app
-├── projections.py          # 6-component DFS projection engine
-├── setup_db.py             # Database schema initialization
-├── refresh_data.py         # Local data refresh CLI script
-├── nascar.db               # SQLite database (auto-created)
+├── nascar_dfs_app.py        # Main Streamlit app
+├── setup_db.py              # Database schema initialization
+├── refresh_data.py          # Local data refresh CLI
+├── import_salaries.py       # DK/FD salary CSV import + git push
+├── projections.py           # Backend projection engine (DB-backed)
+├── nascar.db                # SQLite database (committed to git)
 │
-├── src/                    # Core modules
-│   ├── config.py           # Constants, track maps, DFS scoring tables
-│   ├── data.py             # API fetching, parsing, DB queries
-│   ├── utils.py            # Point calculations, name matching, formatting
-│   ├── charts.py           # Plotly chart builders
-│   └── components.py       # Reusable Streamlit UI components
+├── src/                     # Core modules
+│   ├── config.py            # Constants, track maps, DFS scoring tables
+│   ├── data.py              # API fetching, parsing, DB queries, name matching
+│   ├── utils.py             # DFS calculations, fuzzy matching, formatting
+│   ├── charts.py            # Plotly chart builders (ARP scatter, bar charts)
+│   └── components.py        # Reusable Streamlit UI components
 │
-├── tabs/                   # Tab page modules
-│   ├── tab_data.py         # Race Data tab
-│   ├── tab_practice.py     # Practice tab
-│   ├── tab_track_history.py# Track History tab
-│   ├── tab_race_analyzer.py# Race Analyzer tab
-│   ├── tab_projections.py  # Projections tab
-│   └── tab_optimizer.py    # Optimizer tab
+├── tabs/                    # Tab page modules
+│   ├── tab_data.py          # Race Data tab
+│   ├── tab_practice.py      # Practice tab
+│   ├── tab_track_history.py # Track History tab
+│   ├── tab_race_analyzer.py # Race Analyzer tab
+│   ├── tab_projections.py   # Projections tab (3-stage engine)
+│   ├── tab_optimizer.py     # Optimizer tab
+│   └── tab_accuracy.py      # Accuracy backtesting tab
 │
-├── .streamlit/config.toml  # Theme configuration
-├── legacy/                 # Archived files from earlier iterations
-├── dev/                    # Development/seed scripts
-├── exports/                # Generated projection CSVs
-├── START_APP.bat           # Windows launcher (app)
-├── SETUP.bat               # First-time dependency installer
-├── REFRESH_DATA.bat        # Windows launcher (data refresh)
-└── README.md               # This file
+├── scrapers/                # Data collection scripts
+│   ├── racing_reference.py  # Historical results scraper
+│   ├── salaries.py          # DK/FD salary scraper
+│   ├── backfill_arp.py      # ARP backfill from NASCAR API lap-times
+│   └── frcspro.py           # Alternative data source
+│
+├── IMPORT_SALARIES.bat      # Double-click salary import (Windows)
+├── REFRESH_DATA.bat          # Double-click data refresh (Windows)
+├── START_APP.bat             # Double-click app launcher (Windows)
+├── .streamlit/config.toml   # Theme configuration
+└── README.md                # This file
 ```
+
+---
+
+## Database Schema
+
+`setup_db.py` creates the SQLite database with these tables:
+
+| Table | Purpose |
+|-------|---------|
+| `series` | Cup, Xfinity, Trucks identifiers |
+| `tracks` | Track names and IDs |
+| `drivers` | Driver names (canonical, used for matching) |
+| `races` | Race metadata (date, track, laps, API race ID) |
+| `race_results` | Per-driver results (finish, start, laps led, fastest laps, **avg_running_position**) |
+| `dfs_points` | Calculated DFS scores per race/driver |
+| `practice_results` | Practice session data |
+| `qualifying_results` | Qualifying positions and speeds |
+| `odds` | Saved betting odds per race (win, top 3/5/10) |
+| `salaries` | DK/FD salary data per race |
+| `projections` | Saved projection outputs |
+
+The database is committed to git so Streamlit Cloud always has data. Run `setup_db.py` only once to create the schema; `refresh_data.py` populates it.
 
 ---
 
@@ -173,9 +211,7 @@ NASCAR DFS/
 |----------|--------|
 | 1st Place | 45 pts |
 | 2nd Place | 42 pts |
-| 3rd Place | 40 pts |
-| 4th-5th | 38-39 pts |
-| ... down to 40th | 1 pt |
+| 3rd-40th | Descending (41 → 1) |
 | Place Differential | +1.0 per position gained |
 | Laps Led | +0.25 per lap |
 | Fastest Laps | +0.45 per lap |
@@ -184,33 +220,10 @@ NASCAR DFS/
 
 ---
 
-## Supported Series
+## Deployment (Streamlit Cloud)
 
-- **Cup Series** (Series ID: 1)
-- **O'Reilly Xfinity Series** (Series ID: 2)
-- **Craftsman Truck Series** (Series ID: 3)
-
----
-
-## Deployment
-
-The app can be deployed on Streamlit Community Cloud, a VPS, or any platform that supports Python.
-
-1. Push the repo to GitHub
+1. Push repo to GitHub (including `nascar.db`)
 2. Connect to [Streamlit Cloud](https://streamlit.io/cloud)
-3. Set the main file to `nascar_dfs_app.py`
-4. Run `refresh_data.py` locally to populate the database before deploying
-5. Upload the `nascar.db` file with the repo (or use a remote DB)
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| No DK salaries showing | DK only publishes salaries for upcoming races. Check closer to race day. |
-| No odds available | Odds appear once sportsbooks post lines for the next race (usually mid-week). |
-| Track history empty | The driveraverages.com source may be temporarily unavailable. |
-| Database empty | Run `python refresh_data.py --all` to populate all historical data. |
-| Projections show 0 for Led/FL pts | Need track history data in the DB; run `python refresh_data.py --all` for historical races. |
-| Port 8501 in use | Run `streamlit run nascar_dfs_app.py --server.port 8502` |
+3. Set main file to `nascar_dfs_app.py`
+4. Add `ADMIN_PASSWORD` to Streamlit secrets for upload access
+5. Salary imports done locally via `IMPORT_SALARIES.bat`, then pushed to git

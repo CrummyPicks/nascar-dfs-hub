@@ -1015,8 +1015,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
-        # Start position = qualifying pos if known, else projected finish
-        start_pos = qual_pos.get(d) or round(proj_finish)
+        # Start position = qualifying pos if known, else historical avg start, else projected finish
+        th_for_start = th_data.get(d)
+        historical_avg_start = th_for_start.get("avg_start") if th_for_start else None
+        start_pos = qual_pos.get(d) or (round(historical_avg_start) if historical_avg_start else round(proj_finish))
         proj_finish_int = round(proj_finish)  # DK uses integer positions
 
         # DK scoring components (all based on integer positions)

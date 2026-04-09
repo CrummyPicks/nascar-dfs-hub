@@ -664,8 +664,13 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         if tt and tt_weight > 0:
             tt_races = tt.get("races", 3)
             tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
+            tt_arp = tt.get("avg_running_pos")
             tt_af = tt.get("avg_finish", mid_field)
-            tt_regressed = tt_af * tt_trust + mid_field * (1 - tt_trust)
+            if tt_arp is not None:
+                tt_avg = tt_arp * 0.65 + tt_af * 0.35
+            else:
+                tt_avg = tt_af
+            tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
             finish_signals.append(tt_regressed)
             signal_weights.append(tt_weight)
 
