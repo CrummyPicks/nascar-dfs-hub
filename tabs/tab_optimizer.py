@@ -315,6 +315,10 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
     excluded = excluded or set()
 
     available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
+    # Ensure no NaN values in scoring columns
+    available["Proj Score"] = available["Proj Score"].fillna(0)
+    available["Value"] = available["Value"].fillna(0)
+    available["DK Salary"] = available["DK Salary"].fillna(0)
     if available.empty or len(available) < roster_size:
         return []
 
@@ -696,12 +700,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     with ml_cols[1]:
         if st.button("Generate Lineups", type="primary", key="opt_gen_multi"):
             with st.spinner(f"Generating {num_lineups} {mode} lineups..."):
-                multi = _generate_lineups_greedy(
-                    pool, salary_cap, roster_size, num_lineups,
-                    max_exposure, mode.lower(),
-                    locked=list(st.session_state.opt_locked),
-                    excluded=st.session_state.opt_excluded)
-                st.session_state.opt_multi_lineups = multi
+                try:
+                    multi = _generate_lineups_greedy(
+                        pool, salary_cap, roster_size, num_lineups,
+                        max_exposure, mode.lower(),
+                        locked=list(st.session_state.opt_locked),
+                        excluded=st.session_state.opt_excluded)
+                    st.session_state.opt_multi_lineups = multi
+                    if not multi:
+                        st.warning("No valid lineups found within salary cap.")
+                except Exception as e:
+                    st.error(f"Lineup generation failed: {e}")
+                    st.session_state.opt_multi_lineups = []
 
     multi_lineups = st.session_state.opt_multi_lineups
 
