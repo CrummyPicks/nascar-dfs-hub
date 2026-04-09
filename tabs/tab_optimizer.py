@@ -30,9 +30,10 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         return pd.DataFrame(), "no salary data"
 
     # Read weights from session state (set by Projections tab sliders)
-    w_track = st.session_state.get("pw_track", 35)
+    w_track = st.session_state.get("pw_track", 30)
+    w_ttype = st.session_state.get("pw_ttype", 20)
     w_odds  = st.session_state.get("pw_odds", 35)
-    w_prac  = st.session_state.get("pw_prac", 25)
+    w_prac  = st.session_state.get("pw_prac", 15)
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
@@ -40,18 +41,18 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     effective_odds = w_odds if has_odds else 0
     effective_prac = w_prac if has_practice else 0
 
-    raw_total = w_track + effective_prac + effective_odds
+    raw_total = w_track + w_ttype + effective_prac + effective_odds
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
-            "track_type": 0,
+            "track_type": w_ttype / raw_total,
             "qual": 0,
             "practice": effective_prac / raw_total,
             "odds": effective_odds / raw_total,
         }
     else:
-        # Fallback: 60% track, 40% odds (no practice)
-        wn = {"track": 0.60, "track_type": 0, "qual": 0, "practice": 0, "odds": 0.40}
+        # Fallback: 60% track, 40% track type
+        wn = {"track": 0.60, "track_type": 0.40, "qual": 0, "practice": 0, "odds": 0}
 
     pool = dk_df.drop_duplicates("Driver").copy()
     field_size = len(pool)
