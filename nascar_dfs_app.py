@@ -15,7 +15,7 @@ try:
         fetch_race_list, fetch_weekend_feed, fetch_lap_times, fetch_lap_averages,
         extract_entry_list, extract_qualifying, extract_race_results,
         compute_fastest_laps, detect_prerace, filter_point_races,
-        parse_dk_csv, parse_fd_csv, fetch_dk_salaries_live,
+        parse_dk_csv, parse_fd_csv,
         sync_dk_salaries_to_db, sync_fd_salaries_to_db,
         fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
@@ -199,7 +199,6 @@ with st.expander("Settings & Data Upload", expanded=False):
 
     # ── Auto-fetch status row ──────────────────────────────────────────────
     auto_odds = fetch_nascar_odds()
-    dk_auto = fetch_dk_salaries_live(series_id=series_id)
 
     # Persist last good odds — never lose data from a failed refresh
     if auto_odds:
@@ -209,10 +208,6 @@ with st.expander("Settings & Data Upload", expanded=False):
 
     # Status summary at top
     status_parts = []
-    if not dk_auto.empty:
-        status_parts.append(f"DK Salary: {len(dk_auto)} drivers")
-    else:
-        status_parts.append("DK Salary: unavailable")
     if auto_odds:
         status_parts.append(f"Odds: {len(auto_odds)} drivers")
     else:
@@ -237,24 +232,15 @@ with st.expander("Settings & Data Upload", expanded=False):
         # Refresh All button
         ref_cols = st.columns([1, 1, 4])
         with ref_cols[0]:
-            if st.button("Refresh All Data", key="refresh_all_btn", type="primary"):
+            if st.button("Refresh Odds", key="refresh_all_btn", type="primary"):
                 _fetch_all_nascar_odds.clear()
-                fetch_dk_salaries_live.clear()
                 fresh_odds = fetch_nascar_odds()
-                fresh_dk = fetch_dk_salaries_live(series_id=series_id)
-                msgs = []
                 if fresh_odds:
                     auto_odds = fresh_odds
                     st.session_state["last_good_odds"] = fresh_odds
-                    msgs.append(f"Odds: {len(fresh_odds)} drivers")
+                    st.success(f"Refreshed — Odds: {len(fresh_odds)} drivers")
                 else:
-                    msgs.append("Odds: failed")
-                if not fresh_dk.empty:
-                    dk_auto = fresh_dk
-                    msgs.append(f"DK Salary: {len(fresh_dk)} drivers")
-                else:
-                    msgs.append("DK Salary: failed")
-                st.success(f"Refreshed — {' | '.join(msgs)}")
+                    st.warning("Odds refresh failed")
 
         s_cols = st.columns([1, 1, 1, 1])
         with s_cols[0]:
@@ -265,8 +251,6 @@ with st.expander("Settings & Data Upload", expanded=False):
                                        key=f"dk_upload_{race_id}")
             if dk_file:
                 st.caption("CSV uploaded — will save to DB")
-            elif not dk_auto.empty and not has_saved_dk:
-                st.caption(f"Auto: {len(dk_auto)} drivers from DK API")
             # Clear button for saved salaries
             if has_saved_dk:
                 if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
@@ -357,7 +341,7 @@ with st.expander("Settings & Data Upload", expanded=False):
         odds_source = "action_network"
 
     # Fallback: estimate odds from DK salary when no real odds available
-    _salary_for_odds = dk_auto if not dk_auto.empty else (
+    _salary_for_odds = (
         db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]]
         if has_saved_dk else pd.DataFrame()
     )
@@ -428,11 +412,9 @@ if not lap_averages_df.empty and "Overall Rank" in lap_averages_df.columns and n
         if driver and rank and not pd.isna(rank):
             practice_data[driver] = int(rank)
 
-# Parse salary CSVs — priority: CSV upload > auto-fetch > saved DB
+# Parse salary CSVs — priority: CSV upload > saved DB
 if dk_file:
     dk_df = parse_dk_csv(dk_file)
-elif not dk_auto.empty:
-    dk_df = dk_auto[dk_auto["Status"] != "Out"][["Driver", "DK Salary"]].copy()
 elif has_saved_dk:
     dk_df = db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
 else:
@@ -451,8 +433,6 @@ else:
 if is_admin:
     if dk_file and not dk_df.empty:
         sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
-    elif is_prerace and not has_saved_dk and not dk_auto.empty:
-        sync_dk_salaries_to_db(dk_auto, race_id, series_id, race_name)
 
     if fd_file and not fd_df.empty:
         sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
