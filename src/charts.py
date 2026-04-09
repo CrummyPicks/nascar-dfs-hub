@@ -355,6 +355,66 @@ def rating_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
     return fig
 
 
+def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
+                           height: int = 450) -> go.Figure:
+    """Avg Running Position vs Avg Finish scatter — shows wreck luck."""
+    if "Avg Run Pos" not in hist_df.columns or "Avg Finish" not in hist_df.columns:
+        return None
+
+    clean = hist_df.dropna(subset=["Avg Run Pos", "Avg Finish"]).copy()
+    if clean.empty or len(clean) < 3:
+        return None
+
+    # Color by how much ARP differs from finish (luck factor)
+    clean["Luck"] = clean["Avg Run Pos"] - clean["Avg Finish"]
+
+    fig = go.Figure(go.Scatter(
+        x=clean["Avg Finish"],
+        y=clean["Avg Run Pos"],
+        mode="markers+text",
+        text=clean["Driver"],
+        textposition="top center",
+        textfont=dict(size=9, color="#94a3b8"),
+        marker=dict(
+            size=14,
+            color=clean["Luck"],
+            colorscale="RdYlGn",
+            cmid=0,
+            showscale=True,
+            colorbar=dict(title="Luck<br>(ARP-Finish)"),
+            line=dict(width=1, color="#334155"),
+        ),
+        hovertemplate="%{text}<br>Avg Finish: %{x:.1f}<br>Avg Run Pos: %{y:.1f}"
+                      "<br>Luck: %{marker.color:.1f}<extra></extra>",
+    ))
+
+    # Add diagonal reference line (ARP = Finish)
+    max_val = max(clean["Avg Finish"].max(), clean["Avg Run Pos"].max()) + 2
+    fig.add_trace(go.Scatter(
+        x=[1, max_val], y=[1, max_val],
+        mode="lines", line=dict(dash="dash", color="#475569", width=1),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    fig.update_layout(
+        **DARK_LAYOUT,
+        height=height,
+        title=f"Avg Running Position vs Avg Finish{' — ' + track_name if track_name else ''}",
+        xaxis_title="Avg Finish Position",
+        yaxis_title="Avg Running Position",
+        xaxis=dict(autorange="reversed"),
+        yaxis=dict(autorange="reversed"),
+    )
+    fig.add_annotation(
+        x=0.02, y=0.98, xref="paper", yref="paper",
+        text="Above line = unlucky (ran better than finished)<br>"
+             "Below line = lucky (finished better than ran)",
+        showarrow=False, font=dict(size=10, color="#64748b"),
+        align="left",
+    )
+    return fig
+
+
 def race_lap_chart(lap_data: dict, selected_drivers: list = None,
                    height: int = 500) -> go.Figure:
     """Line chart showing each driver's race lap times (from lap-times.json).

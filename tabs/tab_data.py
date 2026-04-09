@@ -5,7 +5,7 @@ import streamlit as st
 
 from src.config import SERIES_LABELS
 from src.data import (
-    scrape_track_history,
+    scrape_track_history, query_db_track_history,
     compute_fastest_laps, compute_avg_running_position, load_arp_from_db,
 )
 from src.utils import (
@@ -137,14 +137,14 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
                 prac_cols.append(col)
         master = master.merge(lap_averages_df[prac_cols].drop_duplicates("Driver"), on="Driver", how="left")
 
-    # Track History — use fuzzy matching since API names may differ from DA names
+    # Track History — DB-backed (Next Gen era 2022+), cleaner than scraper
     with st.spinner(f"Loading {track_name} history..."):
-        th_df = scrape_track_history(track_name, series_id)
+        th_df = query_db_track_history(track_name, series_id, min_season=2022)
     if not th_df.empty:
         th_rename = {
             "Races": "TH_Races", "Avg Finish": "TH_Avg Finish", "Avg Start": "TH_Avg Start",
-            "Avg Rating": "TH_Rating", "Wins": "TH_Wins", "Top 5": "TH_T5",
-            "Top 10": "TH_T10", "Top 20": "TH_T20", "Laps Led": "TH_Laps Led",
+            "Avg Run Pos": "TH_Avg Run Pos", "Wins": "TH_Wins", "Top 5": "TH_T5",
+            "Top 10": "TH_T10", "Laps Led": "TH_Laps Led",
             "DNF": "TH_DNF",
         }
         th_merge = th_df.rename(columns=th_rename)

@@ -238,7 +238,7 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                         "Track Score", "Qual Score", "Practice Score",
                         "Weighted Score", "Score", "TH Avg Finish",
                         "TH Avg Start", "TH Rating",
-                        "TH_Avg Finish", "TH_Avg Start", "TH_Rating",
+                        "TH_Avg Finish", "TH_Avg Start", "TH_Avg Run Pos", "TH_Rating",
                         "Avg DFS", "Best DFS",
                         "Worst DFS", "GFS Avg DK Pts", "GFS Avg FD Pts",
                         "Avg Laps Led", "Avg Fastest Laps", "Avg Fast Laps",

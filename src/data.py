@@ -413,6 +413,46 @@ def load_arp_from_db(race_id: int) -> dict:
         return {}
 
 
+def query_db_track_history(track_name: str, series_id: int = 1,
+                            min_season: int = 2022) -> pd.DataFrame:
+    """Query per-driver track history from DB (Next Gen era, 2022+).
+
+    Returns clean DataFrame with: Driver, Races, Avg Finish, Avg Start,
+    Avg Run Pos, Laps Led, Wins, Top 5, Top 10, DNF.
+    """
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        df = pd.read_sql_query('''
+            SELECT d.full_name as Driver,
+                   COUNT(*) as Races,
+                   ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
+                   ROUND(AVG(rr.start_pos), 1) as "Avg Start",
+                   ROUND(AVG(rr.avg_running_position), 1) as "Avg Run Pos",
+                   SUM(rr.laps_led) as "Laps Led",
+                   SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
+                   SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
+                   SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+                   SUM(CASE WHEN LOWER(COALESCE(rr.status,'running'))
+                        NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name LIKE ?
+              AND r.series_id = ?
+              AND r.season >= ?
+            GROUP BY d.id
+            HAVING COUNT(*) >= 1
+            ORDER BY "Avg Finish" ASC
+        ''', conn, params=[f"%{track_name}%", series_id, min_season])
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 # ============================================================
 # TRACK HISTORY SCRAPING
 # ============================================================

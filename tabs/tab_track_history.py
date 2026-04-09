@@ -5,9 +5,9 @@ import streamlit as st
 from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.data import (
     scrape_track_history, scrape_track_history_alltime,
-    query_track_type_stats, query_season_stats,
+    query_track_type_stats, query_season_stats, query_db_track_history,
 )
-from src.charts import track_history_bar, rating_vs_finish_scatter
+from src.charts import track_history_bar, rating_vs_finish_scatter, arp_vs_finish_scatter
 from src.utils import format_display_df, safe_fillna
 
 
@@ -97,16 +97,25 @@ def render(*, track_name, track_type, series_id):
         return
 
     if hist_view == "Recent Races":
+        # Use DB data (Next Gen 2022+) for clean track history with ARP
         with st.spinner(f"Loading recent history at {track_name}..."):
+            hist_df = query_db_track_history(track_name, series_id, min_season=2022)
+        if hist_df.empty:
+            # Fall back to scraper if DB has no data
             hist_df = scrape_track_history(track_name, series_id)
         if not hist_df.empty:
-            st.caption(f"Source: driveraverages.com — Recent races at {track_name}")
+            st.caption(f"Next Gen era (2022+) — {track_name}")
             display = format_display_df(hist_df)
             st.dataframe(safe_fillna(display), use_container_width=True, hide_index=True, height=550)
 
             fig = track_history_bar(hist_df, track_name)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
+
+            # ARP vs Avg Finish scatter — shows wreck luck
+            arp_fig = arp_vs_finish_scatter(hist_df, track_name)
+            if arp_fig:
+                st.plotly_chart(arp_fig, use_container_width=True)
 
             fig2 = rating_vs_finish_scatter(hist_df, track_name)
             if fig2:
