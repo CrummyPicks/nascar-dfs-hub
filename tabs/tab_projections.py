@@ -238,21 +238,24 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     }
     max_frac = MAX_LEADER_FRAC.get(track_type, MAX_LEADER_FRAC.get(parent, 0.40))
     max_laps = race_laps * max_frac
-    capped = False
-    for d in result:
-        if result[d] > max_laps:
-            result[d] = max_laps
-            capped = True
-    # If we capped, redistribute the excess to remaining drivers proportionally
-    if capped:
-        excess = sum(result.values()) - race_laps
-        if excess > 0:
+
+    # Iteratively cap and redistribute until all laps are allocated
+    for _ in range(10):  # max iterations to prevent infinite loop
+        deficit = race_laps - sum(result.values())
+        if abs(deficit) < 0.5:
+            break
+        # Cap any driver over the max
+        for d in result:
+            if result[d] > max_laps:
+                result[d] = max_laps
+        # Redistribute freed laps to uncapped drivers proportionally
+        deficit = race_laps - sum(result.values())
+        if deficit > 0.5:
             uncapped = {d: s for d, s in result.items() if s < max_laps}
             uncapped_total = sum(uncapped.values())
             if uncapped_total > 0:
                 for d in uncapped:
-                    result[d] -= excess * (uncapped[d] / uncapped_total)
-                    result[d] = max(0, result[d])
+                    result[d] += deficit * (uncapped[d] / uncapped_total)
 
     return result
 
@@ -310,9 +313,23 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
         "short_concrete": 0.25,     # ~125 of 500
     }
     max_fl = race_laps * MAX_FL_FRAC.get(track_type, MAX_FL_FRAC.get(parent, 0.20))
-    for d in result:
-        if result[d] > max_fl:
-            result[d] = max_fl
+
+    # Iteratively cap and redistribute until all laps are allocated
+    for _ in range(10):
+        deficit = race_laps - sum(result.values())
+        if abs(deficit) < 0.5:
+            break
+        for d in result:
+            if result[d] > max_fl:
+                result[d] = max_fl
+        deficit = race_laps - sum(result.values())
+        if deficit > 0.5:
+            uncapped = {d: s for d, s in result.items() if s < max_fl}
+            uncapped_total = sum(uncapped.values())
+            if uncapped_total > 0:
+                for d in uncapped:
+                    result[d] += deficit * (uncapped[d] / uncapped_total)
+
     return result
 
 

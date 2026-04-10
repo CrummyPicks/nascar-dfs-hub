@@ -215,13 +215,85 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
 # ── Lineup Generation ───────────────────────────────────────────────────────
 
+def _solve_optimal(drivers, salary_cap, roster_size):
+    """Find the mathematically optimal lineup using branch-and-bound.
+
+    Maximizes total Proj Score subject to salary cap and roster size.
+    drivers: list of dicts with Driver, DK Salary, Proj Score.
+    Returns list of driver dicts for the best lineup.
+    """
+    # Sort by projection descending for better pruning
+    drivers = sorted(drivers, key=lambda d: d["Proj Score"], reverse=True)
+    n = len(drivers)
+    projs = [d["Proj Score"] for d in drivers]
+    sals = [d["DK Salary"] for d in drivers]
+
+    # Precompute: for each index, the sum of top-k remaining projections
+    # Used as upper bound for pruning
+    best_score = [0.0]
+    best_lineup = [[]]
+
+    def branch_and_bound(idx, chosen, total_proj, total_sal, slots_left):
+        if slots_left == 0:
+            if total_proj > best_score[0]:
+                best_score[0] = total_proj
+                best_lineup[0] = list(chosen)
+            return
+        if idx >= n:
+            return
+        remaining = n - idx
+        if remaining < slots_left:
+            return
+
+        # Upper bound: current total + best possible from remaining slots
+        # (take top slots_left projections from remaining drivers)
+        upper = total_proj + sum(projs[idx:idx + slots_left])
+        if upper <= best_score[0]:
+            return
+
+        # Branch: include driver[idx]
+        new_sal = total_sal + sals[idx]
+        if new_sal <= salary_cap:
+            chosen.append(idx)
+            branch_and_bound(idx + 1, chosen, total_proj + projs[idx],
+                             new_sal, slots_left - 1)
+            chosen.pop()
+
+        # Branch: exclude driver[idx]
+        branch_and_bound(idx + 1, chosen, total_proj, total_sal, slots_left)
+
+    branch_and_bound(0, [], 0.0, 0, roster_size)
+    return [drivers[i] for i in best_lineup[0]]
+
+
 def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None, excluded=None):
-    """Build the single best lineup using the full optimizer logic."""
-    results = _generate_lineups_greedy(
-        pool_df, salary_cap, roster_size, 1, 100, "cash",
-        locked=locked, excluded=excluded
-    )
-    return results[0] if results else []
+    """Build the single best lineup using branch-and-bound solver."""
+    locked = locked or []
+    excluded = excluded or set()
+
+    available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
+    available["Proj Score"] = available["Proj Score"].fillna(0)
+    available["DK Salary"] = available["DK Salary"].fillna(0)
+
+    # Handle locked drivers
+    locked_data = []
+    lock_salary = 0
+    for driver in locked:
+        match = available[available["Driver"] == driver]
+        if not match.empty:
+            locked_data.append(match.iloc[0].to_dict())
+            lock_salary += match.iloc[0]["DK Salary"]
+
+    variable_pool = available[~available["Driver"].isin(locked)].copy()
+    remaining_cap = salary_cap - lock_salary
+    remaining_slots = roster_size - len(locked_data)
+
+    if remaining_slots <= 0:
+        return locked_data
+
+    candidates = variable_pool.to_dict("records")
+    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots)
+    return locked_data + optimal
 
 
 def _get_swap_candidates(pool_df, current_lineup, swap_driver, salary_cap, roster_size):
@@ -246,21 +318,17 @@ def _get_swap_candidates(pool_df, current_lineup, swap_driver, salary_cap, roste
     return candidates
 
 
-def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
-                              max_exposure, mode="gpp", locked=None, excluded=None):
-    """Generate optimized lineups using systematic exploration.
+def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
+                       max_exposure, mode="gpp", locked=None, excluded=None):
+    """Generate multiple optimized lineups.
 
-    Strategy:
-    1. Build the best possible lineup (greedy by value)
-    2. Generate variations by swapping 1-2 players with alternatives
-    3. Also try "stars + value" combos (expensive core + cheap fill)
-    4. Score all valid lineups and keep the best unique ones
+    Uses branch-and-bound for the first (optimal) lineup, then generates
+    diverse alternatives by excluding drivers from previous lineups.
     """
     locked = locked or []
     excluded = excluded or set()
 
     available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
-    # Ensure no NaN values in scoring columns
     available["Proj Score"] = available["Proj Score"].fillna(0)
     available["Value"] = available["Value"].fillna(0)
     available["DK Salary"] = available["DK Salary"].fillna(0)
@@ -283,157 +351,69 @@ def _generate_lineups_greedy(pool_df, salary_cap, roster_size, num_lineups,
     if remaining_slots <= 0:
         return [locked_data] * min(num_lineups, 1)
 
-    # Sort by projection and value
-    variable_pool = variable_pool.sort_values("Proj Score", ascending=False)
     candidates = variable_pool.to_dict("records")
-    all_lineups = []  # (total_score, lineup)
+    all_lineups = []
     seen_keys = set()
+    exposure_count = {}
+    max_exp = max(1, int(num_lineups * max_exposure / 100)) if max_exposure < 100 else num_lineups
 
-    def _try_lineup(lineup):
-        """Score and add a lineup if valid and unique."""
-        if len(lineup) != remaining_slots:
-            return
-        total_sal = sum(d["DK Salary"] for d in lineup)
-        if total_sal > remaining_cap:
-            return
+    def _add_lineup(lineup):
         key = tuple(sorted(d["Driver"] for d in lineup))
         if key in seen_keys:
-            return
+            return False
+        # Check exposure limits
+        for d in lineup:
+            if d["Driver"] not in [ld["Driver"] for ld in locked_data]:
+                if exposure_count.get(d["Driver"], 0) >= max_exp:
+                    return False
         seen_keys.add(key)
         total_pts = sum(d["Proj Score"] for d in lineup)
-        all_lineups.append((total_pts, locked_data + lineup))
+        all_lineups.append((total_pts, lineup))
+        for d in lineup:
+            exposure_count[d["Driver"]] = exposure_count.get(d["Driver"], 0) + 1
+        return True
 
-    def _greedy_fill(must_include, pool, cap):
-        """Greedy fill remaining slots from pool within cap.
+    # Lineup 1: true optimal via branch-and-bound
+    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots)
+    if optimal:
+        _add_lineup(locked_data + optimal)
 
-        Uses a balanced approach: sort by projection but ensure salary fits.
-        Tries projection-first, then falls back to value-first if salary tight.
-        """
-        lineup = list(must_include)
-        used = {d["Driver"] for d in lineup}
-        rem = cap - sum(d["DK Salary"] for d in lineup)
-        need = remaining_slots - len(lineup)
+    # Generate diverse lineups by excluding 1-2 drivers from previous lineups
+    # This forces the solver to find different combinations
+    attempts = 0
+    max_attempts = num_lineups * 15
 
-        remaining = [d for d in pool if d["Driver"] not in used]
+    while len(all_lineups) < num_lineups and attempts < max_attempts:
+        attempts += 1
 
-        # Sort by projection (best players first, salary permitting)
-        remaining.sort(key=lambda d: d.get("Proj Score", 0), reverse=True)
-        for d in remaining:
-            if len(lineup) >= remaining_slots:
-                break
-            if d["DK Salary"] <= rem:
-                # Check if adding this driver leaves enough budget for remaining slots
-                slots_after = remaining_slots - len(lineup) - 1
-                min_salary_needed = slots_after * min(
-                    (r["DK Salary"] for r in pool if r["Driver"] not in used
-                     and r["Driver"] != d["Driver"]),
-                    default=0
-                )
-                if rem - d["DK Salary"] >= min_salary_needed:
-                    lineup.append(d)
-                    used.add(d["Driver"])
-                    rem -= d["DK Salary"]
-        return lineup
+        if not all_lineups:
+            break
 
-    # === Strategy 1: Pure greedy by value ===
-    lineup = _greedy_fill([], candidates, remaining_cap)
-    _try_lineup(lineup)
+        # Pick a random previous lineup and exclude 1-2 of its variable drivers
+        base_idx = random.randint(0, len(all_lineups) - 1)
+        base = all_lineups[base_idx][1]
+        variable_drivers = [d for d in base
+                            if d["Driver"] not in [ld["Driver"] for ld in locked_data]]
 
-    # === Strategy 2: Pure greedy by projection (top projected, fill with value) ===
-    for top_n in range(1, min(remaining_slots, 5)):
-        top_picks = candidates[:top_n]
-        if sum(d["DK Salary"] for d in top_picks) <= remaining_cap:
-            lineup = _greedy_fill(top_picks, candidates, remaining_cap)
-            _try_lineup(lineup)
+        if not variable_drivers:
+            continue
 
-    # === Strategy 3: Every pair of top-15 drivers as anchors ===
-    top_15 = candidates[:min(15, len(candidates))]
-    for i in range(len(top_15)):
-        for j in range(i + 1, len(top_15)):
-            pair = [top_15[i], top_15[j]]
-            pair_sal = sum(d["DK Salary"] for d in pair)
-            if pair_sal <= remaining_cap:
-                lineup = _greedy_fill(pair, candidates, remaining_cap)
-                _try_lineup(lineup)
+        # Exclude 1 or 2 drivers to force diversity
+        n_exclude = random.randint(1, min(2, len(variable_drivers)))
+        to_exclude = random.sample(variable_drivers, n_exclude)
+        exclude_names = {d["Driver"] for d in to_exclude}
 
-    # === Strategy 4: Every triple of top-15 drivers as anchors ===
-    for i in range(len(top_15)):
-        for j in range(i + 1, len(top_15)):
-            for k in range(j + 1, len(top_15)):
-                triple = [top_15[i], top_15[j], top_15[k]]
-                triple_sal = sum(d["DK Salary"] for d in triple)
-                if triple_sal <= remaining_cap:
-                    lineup = _greedy_fill(triple, candidates, remaining_cap)
-                    _try_lineup(lineup)
+        reduced = [d for d in candidates if d["Driver"] not in exclude_names]
+        if len(reduced) < remaining_slots:
+            continue
 
-    # === Strategy 4b: Every quad of top-12 drivers as anchors ===
-    top_12 = candidates[:min(12, len(candidates))]
-    for i in range(len(top_12)):
-        for j in range(i + 1, len(top_12)):
-            for k in range(j + 1, len(top_12)):
-                for m in range(k + 1, len(top_12)):
-                    quad = [top_12[i], top_12[j], top_12[k], top_12[m]]
-                    quad_sal = sum(d["DK Salary"] for d in quad)
-                    if quad_sal <= remaining_cap:
-                        lineup = _greedy_fill(quad, candidates, remaining_cap)
-                        _try_lineup(lineup)
+        alt = _solve_optimal(reduced, remaining_cap, remaining_slots)
+        if alt:
+            _add_lineup(locked_data + alt)
 
-    # === Strategy 5: Swap-based variations from top lineups ===
-    # Take the best 10 lineups so far, swap each player with alternatives
+    # Sort by total projected points
     all_lineups.sort(key=lambda x: x[0], reverse=True)
-    base_lineups = [lu for _, lu in all_lineups[:10]]
-    for base in base_lineups:
-        variable_part = [d for d in base if d["Driver"] not in [ld["Driver"] for ld in locked_data]]
-        for swap_idx in range(len(variable_part)):
-            swapped_out = variable_part[swap_idx]
-            remaining = [d for d in variable_part if d["Driver"] != swapped_out["Driver"]]
-            rem_sal = remaining_cap - sum(d["DK Salary"] for d in remaining)
-            # Try each candidate as replacement
-            used = {d["Driver"] for d in remaining}
-            for replacement in candidates:
-                if replacement["Driver"] in used:
-                    continue
-                if replacement["DK Salary"] <= rem_sal:
-                    new_lineup = remaining + [replacement]
-                    _try_lineup(new_lineup)
-
-    # === Strategy 6: Random exploration for diversity (GPP mode) ===
-    if mode == "gpp":
-        for _ in range(num_lineups * 20):
-            # Pick 2 random anchors from top half, fill with value
-            top_half = candidates[:max(6, len(candidates) // 2)]
-            if len(top_half) < 2:
-                break
-            anchors = random.sample(top_half, min(2, remaining_slots - 1))
-            anchor_sal = sum(d["DK Salary"] for d in anchors)
-            if anchor_sal <= remaining_cap:
-                lineup = _greedy_fill(anchors, candidates, remaining_cap)
-                _try_lineup(lineup)
-
-    # Sort by total projected points and apply exposure limits
-    all_lineups.sort(key=lambda x: x[0], reverse=True)
-
-    if max_exposure >= 100:
-        return [lu for _, lu in all_lineups[:num_lineups]]
-
-    # Apply exposure filter
-    final = []
-    exposure_count = {}
-    max_exp = max(1, int(num_lineups * max_exposure / 100))
-    for score, lu in all_lineups:
-        ok = True
-        for d in lu:
-            if exposure_count.get(d["Driver"], 0) >= max_exp:
-                ok = False
-                break
-        if ok:
-            final.append(lu)
-            for d in lu:
-                exposure_count[d["Driver"]] = exposure_count.get(d["Driver"], 0) + 1
-            if len(final) >= num_lineups:
-                break
-
-    return final
+    return [lu for _, lu in all_lineups[:num_lineups]]
 
 
 # ── Main Render ──────────────────────────────────────────────────────────────
@@ -716,7 +696,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         if st.button("Generate Lineups", type="primary", key="opt_gen_multi"):
             with st.spinner(f"Generating {num_lineups} {mode} lineups..."):
                 try:
-                    multi = _generate_lineups_greedy(
+                    multi = _generate_lineups(
                         pool, salary_cap, roster_size, num_lineups,
                         max_exposure, mode.lower(),
                         locked=list(st.session_state.opt_locked),
