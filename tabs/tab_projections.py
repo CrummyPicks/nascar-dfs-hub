@@ -1043,9 +1043,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     dnf_data = query_driver_career_dnf(series_id, before_date=race_date if not is_prerace else None)
 
     # ── PROJECT EACH DRIVER — Raw composite finish score ─────────────────────
-    driver_raw_scores = {}  # d -> raw weighted score (higher = better driver)
+    driver_raw_scores = {}  # d -> raw weighted score (lower = better)
     dom_raw_scores = {}     # d -> raw dominator score (for allocation)
     fl_raw_scores = {}      # d -> raw fastest lap score (for allocation)
+    driver_signal_details = {}  # d -> {signal_name: value} for table display
 
     for d in drivers:
         th = th_data.get(d)
@@ -1057,16 +1058,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         # --- Compute raw weighted finish estimate (avg-of-averages approach) ---
         finish_signals = []
         signal_weights = []
+        sig_detail = {}  # track individual signal values for display
 
         mid_field = field_size * 0.5
         MIN_RACES_FULL_TRUST = 5
 
         if th:
             races = th.get("races", 1)
-            trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            # Cross-series-only data gets a 0.7x trust discount
+            # For cross-series blended data, use higher trust since Cup
+            # history already validates the driver's ability at this track
+            cross = cross_th_lookup.get(d)
+            cross_races = cross["races"] if cross and cross.get("races") else 0
+            # Trust: count cross-series races toward trust (at 50% value)
+            effective_races = races + cross_races * 0.5
+            trust = min(1.0, effective_races / MIN_RACES_FULL_TRUST)
+            # Cross-series-only data still gets a modest discount
             if th.get("_cross_series_only"):
-                trust *= 0.7
+                trust *= 0.8
 
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
@@ -1079,6 +1087,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             regressed = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed)
             signal_weights.append(wn["track"])
+            sig_detail["Track"] = round(regressed, 1)
 
         # Track type signal — if no track history, absorb the track weight too
         tt_weight = wn.get("track_type", 0)
@@ -1089,7 +1098,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             tt_races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 3
             tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
             if isinstance(tt, dict) and tt.get("_cross_series_only"):
-                tt_trust *= 0.7
+                tt_trust *= 0.8
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
             if tt_arp is not None:
@@ -1099,6 +1108,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
             finish_signals.append(tt_regressed)
             signal_weights.append(tt_weight)
+            sig_detail["TType"] = round(tt_regressed, 1)
 
         # Qualifying — place differential potential (start vs projected finish gap)
         if qp and qp <= field_size and wn.get("qual", 0) > 0:
@@ -1109,22 +1119,34 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 qual_finish = qp * 0.40 + mid_field * 0.60
             finish_signals.append(qual_finish)
             signal_weights.append(wn["qual"])
+            sig_detail["Qual"] = round(qual_finish, 1)
 
         # Team quality signal
         tm = team_signal.get(d)
         if tm is not None and wn.get("team", 0) > 0:
             finish_signals.append(tm)
             signal_weights.append(wn["team"])
+            sig_detail["Team"] = round(tm, 1)
 
         if pr:
             regress = 0.30
             prac_finish = pr * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(prac_finish)
             signal_weights.append(wn["practice"])
+            sig_detail["Prac"] = round(prac_finish, 1)
 
         if od and wn.get("odds", 0) > 0:
-            finish_signals.append(od)
+            # Regress odds toward mid-field for drivers with no track/type history
+            has_history = bool(th or tt)
+            if has_history:
+                odds_val = od
+            else:
+                # No history: regress odds toward mid-pack (prevents unknown
+                # drivers with decent odds from projecting above proven drivers)
+                odds_val = od * 0.60 + mid_field * 0.40
+            finish_signals.append(odds_val)
             signal_weights.append(wn["odds"])
+            sig_detail["Odds"] = round(odds_val, 1)
 
         if finish_signals:
             total_w = sum(signal_weights)
@@ -1135,6 +1157,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         # Manufacturer adjustment (track-type specific, +/- 1.5 pos cap)
         mfr_adj = mfr_adjustment.get(d, 0)
         raw_finish = raw_finish + mfr_adj
+        if mfr_adj != 0:
+            sig_detail["Mfr"] = round(mfr_adj, 1)
 
         # DNF risk adjustment
         dnf = dnf_data.get(d)
@@ -1152,6 +1176,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             raw_finish = raw_finish + risk_penalty * 10
 
         driver_raw_scores[d] = raw_finish
+        driver_signal_details[d] = sig_detail
 
         # --- Build raw dominator score (laps led potential) — weight-aware ---
         # Dom signal weights reflect user's projection weights so changing
@@ -1298,6 +1323,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         # odds_str is now numeric from round_odds()
         odds_numeric = odds_val if isinstance(odds_val, (int, float)) else None
 
+        sig = driver_signal_details.get(d, {})
         rows.append({
             "Driver": d,
             "Proj DK": proj_dk,
@@ -1314,6 +1340,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "Best DK": best_dk_track,
             "Worst DK": worst_dk_track,
             "Start": start_pos,
+            "Sig Odds": sig.get("Odds"),
+            "Sig Track": sig.get("Track"),
+            "Sig TType": sig.get("TType"),
+            "Sig Qual": sig.get("Qual"),
+            "Sig Team": sig.get("Team"),
+            "Sig Prac": sig.get("Prac"),
+            "Mfr Adj": sig.get("Mfr"),
         })
 
     proj = pd.DataFrame(rows)
@@ -1364,7 +1397,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)
-    display_cols.extend(["Proj DK", "Proj Finish", "Finish Pts", "Diff Pts",
+    display_cols.extend(["Proj DK", "Proj Finish",
+                         "Sig Odds", "Sig Track", "Sig TType", "Sig Qual",
+                         "Sig Team", "Sig Prac", "Mfr Adj",
+                         "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
                          "Avg DK", "Best DK", "Worst DK"])
     if "Value" in proj.columns:
