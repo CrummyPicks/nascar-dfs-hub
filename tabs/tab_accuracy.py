@@ -558,6 +558,7 @@ def _generate_race_projections(race, series_id, weights=None):
         drivers, field_size, weights, th_data, tt_data,
         start_positions, odds_finish, dnf_data,
         race_laps=race_laps, track_type=track_type,
+        track_name=track_name, series_id=series_id,
     )
 
     return proj_dk, actuals, {
@@ -571,7 +572,8 @@ def _generate_race_projections(race, series_id, weights=None):
 
 def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                            start_positions, odds_finish, dnf_data,
-                           race_laps=0, track_type="intermediate"):
+                           race_laps=0, track_type="intermediate",
+                           track_name="", series_id=None):
     """Run the full projection model for a single race.
 
     Matches the live projection engine: finish pts + diff pts + laps led + fastest laps.
@@ -761,44 +763,14 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             proj_finish = field_size * 0.5
         driver_proj_finish[d] = max(1, min(field_size, proj_finish))
 
-    # ── Allocate laps led (zero-sum with cutoff) ──
-    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
-    LEADER_FRAC = {
-        "superspeedway": 0.60, "road": 0.22, "short": 0.18,
-        "short_concrete": 0.16, "intermediate": 0.22, "intermediate_worn": 0.20,
-    }
-    ll_frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.22))
-    n_leaders = max(3, int(field_size * ll_frac))
-    CONC = {
-        "superspeedway": 0.6, "road": 1.0, "short": 2.0,
-        "short_concrete": 2.2, "intermediate": 1.5, "intermediate_worn": 1.6,
-    }
-    ll_conc = CONC.get(track_type, CONC.get(parent, 1.5))
-
-    allocated_ll = {}
-    if race_laps > 0 and dom_raw_scores:
-        top_dom = sorted(dom_raw_scores.items(), key=lambda x: x[1], reverse=True)[:n_leaders]
-        ll_scores = {d: max(0.01, s) ** ll_conc for d, s in top_dom}
-        ll_total = sum(ll_scores.values())
-        if ll_total > 0:
-            allocated_ll = {d: (s / ll_total) * race_laps for d, s in ll_scores.items()}
-
-    # ── Allocate fastest laps (zero-sum with cutoff) ──
-    FL_FRAC = {
-        "superspeedway": 0.85, "road": 0.55, "short": 0.55,
-        "short_concrete": 0.50, "intermediate": 0.65, "intermediate_worn": 0.60,
-    }
-    fl_frac = FL_FRAC.get(track_type, FL_FRAC.get(parent, 0.55))
-    n_with_fl = max(5, int(field_size * fl_frac))
-    fl_conc = max(0.5, ll_conc * 0.7)
-
-    allocated_fl = {}
-    if race_laps > 0 and fl_raw_scores:
-        top_fl = sorted(fl_raw_scores.items(), key=lambda x: x[1], reverse=True)[:n_with_fl]
-        fl_scores = {d: max(0.01, s) ** fl_conc for d, s in top_fl}
-        fl_total = sum(fl_scores.values())
-        if fl_total > 0:
-            allocated_fl = {d: (s / fl_total) * race_laps for d, s in fl_scores.items()}
+    # ── Allocate laps led and fastest laps (shared logic with projections tab) ──
+    from tabs.tab_projections import (_allocate_laps_led, _allocate_fastest_laps,
+                                      _get_track_dominator_calibration)
+    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
+    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
+                                       calibration=calibration) if race_laps > 0 else {}
+    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type,
+                                           calibration=calibration) if race_laps > 0 else {}
 
     # ── Compute full DK points: finish + diff + laps led + fastest laps ──
     proj_dk = {}
@@ -1456,6 +1428,8 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             "has_signals": has_signals,
             "race_laps": race_laps,
             "track_type": track_type,
+            "track_name": race.get("track_name", ""),
+            "series_id": series_id,
             "actual_dk": actual_dk,
             "dnf_data": dnf_data,
         })
@@ -1524,6 +1498,8 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 rd.get("dnf_data", {}),
                 race_laps=rd.get("race_laps", 0),
                 track_type=rd.get("track_type", "intermediate"),
+                track_name=rd.get("track_name", ""),
+                series_id=rd.get("series_id"),
             )
 
             # Compute errors using pre-indexed actual_dk dict
@@ -1726,15 +1702,14 @@ def _display_backtest_results(results_df, series_name):
 
                 # Per-race weight redistribution
                 effective = {}
-                for sig in ["track", "track_type", "qual", "practice", "odds"]:
-                    effective[sig] = nominal_wn[sig] if has[sig] else 0
+                for sig in ["track", "track_type", "qual", "practice", "odds", "team"]:
+                    effective[sig] = nominal_wn.get(sig, 0) if has.get(sig, False) else 0
                 eff_total = sum(effective.values())
                 if eff_total <= 0:
                     continue
                 wn = {k: v / eff_total for k, v in effective.items()}
 
                 # Run the full projection with laps led + fastest laps
-                # We need detailed output, so we'll inline the key parts
                 proj_dk_totals = _project_race_backtest(
                     drivers, field_size, wn,
                     rd["th_data"], rd["tt_data"],
@@ -1742,6 +1717,8 @@ def _display_backtest_results(results_df, series_name):
                     rd.get("dnf_data", {}),
                     race_laps=rd.get("race_laps", 0),
                     track_type=rd.get("track_type", "intermediate"),
+                    track_name=rd.get("track_name", ""),
+                    series_id=rd.get("series_id"),
                 )
 
                 # Re-derive per-driver details for display
