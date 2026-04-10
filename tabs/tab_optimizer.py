@@ -432,8 +432,28 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             dk_df = db_sal.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
         if dk_df.empty:
             if not is_prerace:
-                st.info("No salary data for this completed race. "
-                        "Salaries expire after the race — upload a CSV or use an upcoming race.")
+                # Show which races DO have salaries for this series
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(PROJ_DB)
+                    saved = conn.execute('''
+                        SELECT DISTINCT r.race_name
+                        FROM salaries s
+                        JOIN races r ON r.id = s.race_id
+                        WHERE r.series_id = ? AND s.platform = 'DraftKings'
+                        ORDER BY r.race_date
+                    ''', (series_id,)).fetchall()
+                    conn.close()
+                    if saved:
+                        race_list = ", ".join(r[0] for r in saved)
+                        st.info(f"No saved salary data for this race. "
+                                f"Races with saved salaries: {race_list}. "
+                                f"Use the Import Salaries script to add more.")
+                    else:
+                        st.info("No salary data for this series. "
+                                "Use the Import Salaries script to import historical salaries.")
+                except Exception:
+                    st.info("No salary data for this completed race.")
             else:
                 st.info("No salary data available. Upload a DK CSV or wait for DK API salaries to enable the optimizer.")
             return
