@@ -254,9 +254,10 @@ def import_odds():
     print(f"    Kyle Larson, -115        (comma-separated)")
     print(f"    Chase Elliott +1200      (space-separated)")
     print(f"  Header lines (race name, date, 'Outright') are auto-skipped.")
-    print(f"  When done, type 'done' on a new line and press Enter.\n")
+    print(f"  When done, press Enter twice (blank line) or type 'done'.\n")
 
     lines = []
+    blank_count = 0
     while True:
         try:
             line = input()
@@ -264,6 +265,13 @@ def import_odds():
             break
         if line.strip().lower() == "done":
             break
+        if not line.strip():
+            blank_count += 1
+            # Two consecutive blanks or one blank after we have data = done
+            if lines and blank_count >= 1:
+                break
+            continue
+        blank_count = 0
         lines.append(line)
 
     if not lines:
