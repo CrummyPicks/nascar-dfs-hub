@@ -1,7 +1,7 @@
 """
-Import DraftKings/FanDuel salary CSVs into the database.
+Import DraftKings/FanDuel salary CSVs and Bovada odds into the database.
 
-Interactive loop: import multiple series back-to-back, then commit + push once.
+Interactive loop: import salaries and/or odds for multiple series, then commit + push once.
 
 Usage:
     python import_salaries.py              # Interactive loop (recommended)
@@ -11,6 +11,7 @@ Usage:
 import argparse
 import glob
 import os
+import re
 import sys
 import sqlite3
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from src.config import DB_PATH
 from src.data import (
     parse_dk_csv, parse_fd_csv, sync_dk_salaries_to_db, sync_fd_salaries_to_db,
-    fetch_race_list, filter_point_races,
+    fetch_race_list, filter_point_races, save_odds_to_db,
 )
 
 SERIES_MAP = {"1": 1, "2": 2, "3": 3, "cup": 1, "xfinity": 2, "truck": 3}
@@ -128,16 +129,197 @@ def check_existing_salaries(race_id, series_id, platform="DraftKings"):
     return len(df) if not df.empty else 0
 
 
-def import_one(recent_files):
-    """Import salaries for one series+race. Returns (race_name, count) or None."""
-    # Pick series
+def check_existing_odds(race_id):
+    """Check if odds already exist in DB for this race."""
+    from src.data import load_race_odds
+    odds = load_race_odds(race_id)
+    return len(odds)
+
+
+def pick_series():
+    """Prompt user to pick a series. Returns (series_id, series_name)."""
     print("\n  Series:")
     print("    [1] Cup")
     print("    [2] O'Reilly (Xfinity)")
     print("    [3] Truck")
     series_choice = input("  Select series (1/2/3) [1]: ").strip()
     series_id = SERIES_MAP.get(series_choice, 1)
-    series_name = SERIES_NAMES[series_id]
+    return series_id, SERIES_NAMES[series_id]
+
+
+def pick_race(series_id, series_name, check_type="salary", platform="DraftKings"):
+    """Prompt user to pick a race. Returns selected race dict or None."""
+    completed, upcoming = get_race_options(series_id)
+    if not completed and not upcoming:
+        print(f"  No {series_name} races found.")
+        return None
+
+    print(f"\n  {series_name} races:")
+    all_races = []
+
+    if completed:
+        print("  -- Recent (backfill) --")
+        for race in completed:
+            date = race.get("race_date", "")[:10]
+            name = race.get("race_name", "Unknown")
+            track = race.get("track_name", "")
+            if check_type == "salary":
+                existing = check_existing_salaries(race.get("race_id"), series_id, platform)
+                status = f" [{existing} salaries saved]" if existing else ""
+            else:
+                existing = check_existing_odds(race.get("race_id"))
+                status = f" [{existing} odds saved]" if existing else ""
+            idx = len(all_races) + 1
+            all_races.append(race)
+            print(f"    [{idx}] {date} — {name} @ {track}{status}")
+
+    if upcoming:
+        print("  -- Upcoming --")
+        for race in upcoming:
+            date = race.get("race_date", "")[:10]
+            name = race.get("race_name", "Unknown")
+            track = race.get("track_name", "")
+            if check_type == "salary":
+                existing = check_existing_salaries(race.get("race_id"), series_id, platform)
+                status = f" [{existing} salaries saved]" if existing else ""
+            else:
+                existing = check_existing_odds(race.get("race_id"))
+                status = f" [{existing} odds saved]" if existing else ""
+            idx = len(all_races) + 1
+            all_races.append(race)
+            marker = " <-- next" if idx == len(completed) + 1 else ""
+            print(f"    [{idx}] {date} — {name} @ {track}{status}{marker}")
+
+    default_idx = len(completed)  # 0-indexed position of first upcoming
+    choice = input(f"\n  Select race [{default_idx + 1}]: ").strip()
+    idx = int(choice) - 1 if choice.isdigit() else default_idx
+    if idx < 0 or idx >= len(all_races):
+        idx = default_idx
+    return all_races[idx]
+
+
+def parse_bovada_odds(text):
+    """Parse odds from Bovada copy-paste text.
+
+    Supports formats:
+        Corey Heim+300          (Bovada direct copy)
+        Kyle Larson, -115       (comma-separated)
+        Chase Elliott +1200     (space-separated)
+
+    Auto-skips header lines (race name, date, time, "Outright", etc.)
+    """
+    odds = {}
+    skip_patterns = re.compile(
+        r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
+        r'|\d{1,2}/\d{1,2}/\d{2,4}'
+        r'|\d{1,2}:\d{2}\s*(am|pm)?'
+        r')$', re.IGNORECASE
+    )
+
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if skip_patterns.match(line):
+            continue
+        # Skip lines without odds
+        if not re.search(r'[+-]\d+', line):
+            continue
+        # Comma-separated: "Driver Name, +350"
+        if "," in line:
+            parts = [p.strip() for p in line.split(",", 1)]
+            if len(parts) == 2 and parts[0] and re.match(r'^[+-]?\d+$', parts[1]):
+                odds[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
+                continue
+        # Bovada no-space: "DriverName+300"
+        m = re.match(r'^(.+?)([+-]\d+)$', line)
+        if m and m.group(1).strip():
+            odds[m.group(1).strip()] = m.group(2)
+            continue
+        # Space-separated: "Driver Name +350"
+        m = re.match(r'^(.+?)\s+([+-]\d+)$', line)
+        if m:
+            odds[m.group(1).strip()] = m.group(2)
+
+    return odds
+
+
+def import_odds():
+    """Import odds from pasted Bovada text. Returns (race_name, count) or None."""
+    series_id, series_name = pick_series()
+
+    print(f"\n  Paste odds from Bovada (or type them in).")
+    print(f"  Supported formats:")
+    print(f"    Corey Heim+300           (Bovada direct copy)")
+    print(f"    Kyle Larson, -115        (comma-separated)")
+    print(f"    Chase Elliott +1200      (space-separated)")
+    print(f"  Header lines (race name, date, 'Outright') are auto-skipped.")
+    print(f"  When done, type 'done' on a new line and press Enter.\n")
+
+    lines = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip().lower() == "done":
+            break
+        lines.append(line)
+
+    if not lines:
+        print("  No odds entered. Skipping.")
+        return None
+
+    text = "\n".join(lines)
+    odds_data = parse_bovada_odds(text)
+
+    if not odds_data:
+        print("  Could not parse any odds from input. Check format.")
+        return None
+
+    # Show parsed results
+    print(f"\n  Parsed {len(odds_data)} drivers:")
+    # Sort by odds value for display
+    sorted_odds = sorted(odds_data.items(), key=lambda x: float(x[1].replace("+", "")))
+    for name, odds_val in sorted_odds[:10]:
+        print(f"    {name:30s} {odds_val}")
+    if len(sorted_odds) > 10:
+        print(f"    ... and {len(sorted_odds) - 10} more")
+
+    confirm = input(f"\n  Does this look correct? (Y/n): ").strip().lower()
+    if confirm == "n":
+        print("  Cancelled.")
+        return None
+
+    # Pick race
+    selected = pick_race(series_id, series_name, check_type="odds")
+    if not selected:
+        return None
+
+    race_id = selected.get("race_id")
+    race_name = selected.get("race_name", "Unknown")
+
+    # Check for existing
+    existing = check_existing_odds(race_id)
+    if existing:
+        confirm = input(f"\n  {existing} odds already saved for this race. Overwrite? (y/N): ").strip().lower()
+        if confirm != "y":
+            print("  Skipped.")
+            return None
+
+    # Save to DB
+    count = save_odds_to_db(odds_data, race_id, sportsbook="bovada")
+    if count and count > 0:
+        print(f"\n  Saved {count} odds for {race_name}!")
+        return race_name, count, "odds"
+    else:
+        print(f"\n  Saved odds for {race_name}")
+        return race_name, len(odds_data), "odds"
+
+
+def import_salary(recent_files):
+    """Import salaries for one series+race. Returns (race_name, count, type) or None."""
+    series_id, series_name = pick_series()
 
     # Pick CSV
     csv_path = pick_csv(recent_files)
@@ -166,50 +348,12 @@ def import_one(recent_files):
           f"Range: ${df[sal_col].min():,} — ${df[sal_col].max():,}")
 
     # Pick race
-    completed, upcoming = get_race_options(series_id)
-    if not completed and not upcoming:
-        print(f"  No {series_name} races found.")
+    selected = pick_race(series_id, series_name, check_type="salary", platform=plat_name)
+    if not selected:
         return None
-
-    print(f"\n  {series_name} races:")
-    all_races = []
-
-    if completed:
-        print("  -- Recent (backfill) --")
-        for race in completed:
-            date = race.get("race_date", "")[:10]
-            name = race.get("race_name", "Unknown")
-            track = race.get("track_name", "")
-            existing = check_existing_salaries(race.get("race_id"), series_id, plat_name)
-            status = f" [{existing} already saved]" if existing else ""
-            idx = len(all_races) + 1
-            all_races.append(race)
-            print(f"    [{idx}] {date} — {name} @ {track}{status}")
-
-    if upcoming:
-        print("  -- Upcoming --")
-        for race in upcoming:
-            date = race.get("race_date", "")[:10]
-            name = race.get("race_name", "Unknown")
-            track = race.get("track_name", "")
-            existing = check_existing_salaries(race.get("race_id"), series_id, plat_name)
-            status = f" [{existing} already saved]" if existing else ""
-            idx = len(all_races) + 1
-            all_races.append(race)
-            marker = " <-- next" if idx == len(completed) + 1 else ""
-            print(f"    [{idx}] {date} — {name} @ {track}{status}{marker}")
-
-    # Default to first upcoming race
-    default_idx = len(completed)  # 0-indexed position of first upcoming
-    choice = input(f"\n  Select race [{default_idx + 1}]: ").strip()
-    idx = int(choice) - 1 if choice.isdigit() else default_idx
-    if idx < 0 or idx >= len(all_races):
-        idx = default_idx
-    selected = all_races[idx]
 
     race_id = selected.get("race_id")
     race_name = selected.get("race_name", "Unknown")
-    race_date = selected.get("race_date", "")[:10]
 
     # Check for existing and confirm overwrite
     existing = check_existing_salaries(race_id, series_id, plat_name)
@@ -230,7 +374,7 @@ def import_one(recent_files):
         top = df.sort_values(sal_col, ascending=False).head(5)
         for _, row in top.iterrows():
             print(f"    {row['Driver']:30s} ${row[sal_col]:>6,}")
-        return race_name, count
+        return race_name, count, "salaries"
     else:
         print(f"\n  WARNING: No salaries saved — race may not be in DB yet.")
         print(f"  Try running: python refresh_data.py")
@@ -238,53 +382,88 @@ def import_one(recent_files):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import DK/FD salary CSVs")
+    parser = argparse.ArgumentParser(description="Import DK/FD salaries and Bovada odds")
     parser.add_argument("--no-push", action="store_true", help="Skip git commit + push")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
-    print(f"  NASCAR DFS — Salary Import")
+    print(f"  NASCAR DFS — Data Import")
     print(f"{'='*60}")
 
     recent_files = find_csv_files()
     imported = []
 
     while True:
-        result = import_one(recent_files)
-        if result:
-            imported.append(result)
+        print(f"\n  What would you like to import?")
+        print(f"    [1] DK/FD Salaries (from CSV)")
+        print(f"    [2] Bovada Odds (paste from website)")
+        print(f"    [3] Both (salaries + odds for same race)")
+        print(f"    [q] Done — commit & push")
+
+        choice = input(f"\n  Select (1/2/3/q) [1]: ").strip().lower()
+
+        if choice in ("q", "quit", "exit", "done"):
+            break
+
+        if choice == "2":
+            result = import_odds()
+            if result:
+                imported.append(result)
+        elif choice == "3":
+            # Import both for same flow
+            print(f"\n  --- Import Salaries ---")
+            sal_result = import_salary(recent_files)
+            if sal_result:
+                imported.append(sal_result)
+            print(f"\n  --- Import Odds ---")
+            odds_result = import_odds()
+            if odds_result:
+                imported.append(odds_result)
+        else:
+            result = import_salary(recent_files)
+            if result:
+                imported.append(result)
 
         print(f"\n{'─'*40}")
         if imported:
-            print(f"  Imported so far: {len(imported)} file(s)")
-            for name, count in imported:
-                print(f"    - {name}: {count} salaries")
+            print(f"  Imported so far: {len(imported)} item(s)")
+            for name, count, dtype in imported:
+                print(f"    - {name}: {count} {dtype}")
 
-        more = input("\n  Import another series/race? (y/N): ").strip().lower()
+        more = input("\n  Import more data? (y/N): ").strip().lower()
         if more != "y":
             break
 
     if not imported:
-        print("\n  No salaries imported. Exiting.")
+        print("\n  Nothing imported. Exiting.")
         return
 
     # Git commit + push all at once
     if not args.no_push:
-        race_list = ", ".join(name for name, _ in imported)
-        # Sanitize commit message (remove quotes and special chars)
-        safe_msg = race_list.replace('"', '').replace("'", "").replace('`', '')
+        # Build commit message from what was imported
+        parts = []
+        sal_races = [name for name, _, dtype in imported if dtype == "salaries"]
+        odds_races = [name for name, _, dtype in imported if dtype == "odds"]
+        if sal_races:
+            safe = ", ".join(r.replace('"', '').replace("'", "") for r in sal_races)
+            parts.append(f"salaries: {safe}")
+        if odds_races:
+            safe = ", ".join(r.replace('"', '').replace("'", "") for r in odds_races)
+            parts.append(f"odds: {safe}")
+        commit_msg = "Add " + "; ".join(parts)
+
         print(f"\n  Committing and pushing to git...")
         ret1 = os.system('git add nascar.db')
-        ret2 = os.system(f'git commit -m "Add DK salaries: {safe_msg}"')
+        ret2 = os.system(f'git commit -m "{commit_msg}"')
         ret3 = os.system('git push')
         if ret3 == 0:
-            print(f"\n  Done! Salaries are now live on Streamlit Cloud.")
+            print(f"\n  Done! Data is now live on Streamlit Cloud.")
         else:
             print(f"\n  WARNING: Git push may have failed (exit code {ret3}).")
-            print(f"  Try manually: git add nascar.db && git commit -m \"Add salaries\" && git push")
+            print(f"  Try manually: git add nascar.db && git commit -m \"Add data\" && git push")
     else:
         print(f"\n  Saved to local DB. To deploy:")
-        print(f'    git add nascar.db && git commit -m "Add salaries" && git push')
+        print(f'    git add nascar.db && git commit -m "Add data" && git push')
 
     print()
 

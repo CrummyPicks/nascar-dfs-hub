@@ -1,11 +1,11 @@
 @echo off
 echo.
 echo ==========================================
-echo   NASCAR DFS - Import DraftKings Salaries
+echo   NASCAR DFS - Import Salaries and Odds
 echo ==========================================
 echo.
-echo Download DKSalaries CSVs from DraftKings,
-echo then run this to import all series at once.
+echo Import DraftKings/FanDuel salary CSVs
+echo and/or paste Bovada odds from the website.
 echo.
 
 cd /d "%~dp0"
