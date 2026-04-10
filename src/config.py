@@ -160,6 +160,19 @@ DEFAULT_PROJECTION_WEIGHTS = {
     "recent_form": 0.0,
 }
 
+# Track-type-specific default weights (single source of truth for all tabs).
+# Values are raw integers that get normalized to 100%.
+# Superspeedways: chaotic → odds matter most.
+# Short tracks: specialists → track history matters most.
+# Road courses: setup-dependent → practice matters most.
+# Intermediate: balanced.
+TRACK_TYPE_WEIGHT_DEFAULTS = {
+    "superspeedway": {"odds": 45, "track": 20, "ttype": 25, "prac": 10},
+    "short":         {"odds": 30, "track": 35, "ttype": 15, "prac": 20},
+    "road":          {"odds": 25, "track": 25, "ttype": 20, "prac": 30},
+    "intermediate":  {"odds": 35, "track": 30, "ttype": 20, "prac": 15},
+}
+
 # ----------------------------
 # API
 # ----------------------------

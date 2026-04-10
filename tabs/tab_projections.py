@@ -18,7 +18,7 @@ import os
 
 from src.config import (
     DEFAULT_PROJECTION_WEIGHTS, DB_PATH, TRACK_TYPE_MAP,
-    TRACK_TYPE_PARENT, DK_FINISH_POINTS,
+    TRACK_TYPE_PARENT, DK_FINISH_POINTS, TRACK_TYPE_WEIGHT_DEFAULTS,
 )
 from src.data import (
     query_projections, scrape_track_history, query_driver_dk_points_at_track,
@@ -333,18 +333,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     race_laps = scheduled_laps or 0
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
 
-    # Track-type-specific default weights — different tracks have different
-    # predictive signals. Superspeedways are chaotic (odds matter most),
-    # short tracks reward specialists (track history matters most),
-    # road courses depend on setup (practice matters most).
+    # Track-type-specific default weights (from shared config)
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    TRACK_TYPE_DEFAULTS = {
-        "superspeedway": {"odds": 45, "track": 20, "ttype": 25, "prac": 10},
-        "short":         {"odds": 30, "track": 35, "ttype": 15, "prac": 20},
-        "road":          {"odds": 25, "track": 25, "ttype": 20, "prac": 30},
-        "intermediate":  {"odds": 35, "track": 30, "ttype": 20, "prac": 15},
-    }
-    defaults = TRACK_TYPE_DEFAULTS.get(parent_type, TRACK_TYPE_DEFAULTS["intermediate"])
+    defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_type, TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"])
 
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):

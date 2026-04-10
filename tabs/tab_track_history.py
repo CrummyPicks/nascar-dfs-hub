@@ -4,7 +4,6 @@ import streamlit as st
 
 from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.data import (
-    scrape_track_history, scrape_track_history_alltime,
     query_track_type_stats, query_season_stats, query_db_track_history,
 )
 from src.charts import track_history_bar, rating_vs_finish_scatter, arp_vs_finish_scatter, finish_distribution_box
@@ -88,7 +87,7 @@ def render(*, track_name, track_type, series_id):
             if desc_tracks:
                 st.caption(f"**{_format_type_label(type_filter)}**: {', '.join(desc_tracks)}")
 
-    hist_view = st.radio("View", ["Recent Races", "All-Time", "By Track Type", "2026 Season"],
+    hist_view = st.radio("View", ["Next Gen (2022+)", "By Track Type", "2026 Season"],
                          horizontal=True, label_visibility="collapsed")
 
     if type_filter != "This Track":
@@ -96,15 +95,12 @@ def render(*, track_name, track_type, series_id):
         _render_track_type_filtered(type_filter, hist_view, series_id)
         return
 
-    if hist_view == "Recent Races":
+    if hist_view == "Next Gen (2022+)":
         # Use DB data (Next Gen 2022+) for clean track history with ARP
-        with st.spinner(f"Loading recent history at {track_name}..."):
+        with st.spinner(f"Loading history at {track_name}..."):
             hist_df = query_db_track_history(track_name, series_id, min_season=2022)
-        if hist_df.empty:
-            # Fall back to scraper if DB has no data
-            hist_df = scrape_track_history(track_name, series_id)
         if not hist_df.empty:
-            st.caption(f"Next Gen era (2022+) — {track_name}")
+            st.caption(f"Next Gen era (2022+) — {track_name} — Source: database")
             display = format_display_df(hist_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
 
@@ -126,17 +122,7 @@ def render(*, track_name, track_type, series_id):
             if fig2:
                 st.plotly_chart(fig2, width="stretch")
         else:
-            st.info(f"No data found for {track_name}")
-
-    elif hist_view == "All-Time":
-        with st.spinner(f"Loading all-time history at {track_name}..."):
-            alltime_df = scrape_track_history_alltime(track_name, series_id)
-        if not alltime_df.empty:
-            st.caption(f"Source: driveraverages.com — All-time at {track_name}")
-            display = format_display_df(alltime_df)
-            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
-        else:
-            st.info(f"No all-time data found for {track_name}")
+            st.info(f"No data found for {track_name}. Run `python refresh_data.py --all` to populate.")
 
     elif hist_view == "By Track Type":
         # Show stats for this track's type from database
@@ -185,24 +171,23 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
     else:
         type_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type_filter]
 
-    if hist_view in ("Recent Races", "All-Time"):
+    if hist_view == "Next Gen (2022+)":
         import pandas as pd
         all_data = []
         with st.spinner(f"Loading {track_type_filter} track data..."):
-            for t in type_tracks[:8]:  # Limit to avoid too many requests
-                fetch_fn = scrape_track_history if hist_view == "Recent Races" else scrape_track_history_alltime
-                df = fetch_fn(t, series_id)
+            for t in type_tracks:
+                df = query_db_track_history(t, series_id, min_season=2022)
                 if not df.empty:
                     df["Track"] = t
                     all_data.append(df)
 
         if all_data:
             combined = pd.concat(all_data, ignore_index=True)
-            st.caption(f"Source: driveraverages.com — {track_type_filter.title()} tracks ({len(all_data)} tracks)")
+            st.caption(f"Next Gen era (2022+) — {track_type_filter.title()} tracks ({len(all_data)} tracks) — Source: database")
 
             # Aggregate by driver across tracks
             numeric_cols = []
-            for col in ["Avg Finish", "Avg Start", "Avg Rating", "Races", "Wins",
+            for col in ["Avg Finish", "Avg Start", "Avg Run Pos", "Races", "Wins",
                          "Top 5", "Top 10", "Laps Led", "DNF"]:
                 if col in combined.columns:
                     combined[col] = pd.to_numeric(combined[col], errors="coerce")
@@ -211,7 +196,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
             if "Driver" in combined.columns and numeric_cols:
                 agg_dict = {}
                 for col in numeric_cols:
-                    if col in ("Avg Finish", "Avg Start", "Avg Rating"):
+                    if col in ("Avg Finish", "Avg Start", "Avg Run Pos"):
                         agg_dict[col] = "mean"
                     else:
                         agg_dict[col] = "sum"
@@ -223,7 +208,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
                 st.dataframe(safe_fillna(format_display_df(combined)),
                              width="stretch", hide_index=True, height=550)
         else:
-            st.info(f"No data found for {track_type_filter} tracks.")
+            st.info(f"No data found for {track_type_filter} tracks. Run `python refresh_data.py --all` to populate.")
 
     elif hist_view == "By Track Type":
         desc_tracks = _tracks_for_type(track_type_filter)

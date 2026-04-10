@@ -2009,7 +2009,18 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
             laps_completed = r.get("laps_completed") or 0
             laps_led = r.get("laps_led", 0) or 0
             status = r.get("finishing_status") or "Running"
-            fastest = fastest_laps_map.get(driver_name, 0)
+            fastest = fastest_laps_map.get(driver_name)
+            if fastest is None:
+                # Fuzzy fallback: last name + first initial match
+                _last = driver_name.split()[-1].lower() if driver_name.split() else ""
+                _first = driver_name.split()[0][0].lower() if driver_name.split() and driver_name.split()[0] else ""
+                for fl_name, fl_val in fastest_laps_map.items():
+                    fl_parts = fl_name.split()
+                    if (fl_parts and fl_parts[-1].lower() == _last
+                            and fl_parts[0][0].lower() == _first):
+                        fastest = fl_val
+                        break
+            fastest = fastest or 0
 
             # Find or create driver
             d = conn.execute(

@@ -290,7 +290,7 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
                 "Driver": driver,
                 "Car": str(row.get("Car", "")),
                 "Race": rc.get("race_name", ""),
-                "Track": rc.get("track_name", ""),
+                "Track": rc.get("track_name") if rc.get("track_name") else "",
                 "Date": rc.get("race_date", "")[:10],
                 "Year": yr,
                 "Finish": fp,

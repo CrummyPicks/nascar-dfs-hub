@@ -9,6 +9,7 @@ from datetime import datetime
 
 from src.config import (
     SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, DK_FINISH_POINTS,
+    TRACK_TYPE_WEIGHT_DEFAULTS,
 )
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
@@ -464,14 +465,24 @@ def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
     return result
 
 
-# Track-type-specific default weights (matching projections tab)
-TRACK_TYPE_WEIGHT_DEFAULTS = {
-    "superspeedway": {"track": 0.20, "track_type": 0.25, "odds": 0.45, "practice": 0.10, "qual": 0},
-    "short":         {"track": 0.35, "track_type": 0.15, "odds": 0.30, "practice": 0.20, "qual": 0},
-    "road":          {"track": 0.25, "track_type": 0.20, "odds": 0.25, "practice": 0.30, "qual": 0},
-    "intermediate":  {"track": 0.30, "track_type": 0.20, "odds": 0.35, "practice": 0.15, "qual": 0},
-}
-DEFAULT_WEIGHTS = TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"]  # fallback
+def _get_default_weights(track_type="intermediate"):
+    """Get normalized default weights for a track type from shared config.
+
+    Returns dict with keys: track, track_type, qual, practice, odds (all 0-1 floats).
+    """
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    raw = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent, TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"])
+    total = raw["odds"] + raw["track"] + raw["ttype"] + raw["prac"]
+    return {
+        "track": raw["track"] / total,
+        "track_type": raw["ttype"] / total,
+        "odds": raw["odds"] / total,
+        "practice": raw["prac"] / total,
+        "qual": 0,
+    }
+
+
+DEFAULT_WEIGHTS = _get_default_weights("intermediate")
 
 
 def _generate_race_projections(race, series_id, weights=None):
@@ -486,8 +497,7 @@ def _generate_race_projections(race, series_id, weights=None):
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
 
     if weights is None:
-        parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-        weights = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_type, DEFAULT_WEIGHTS).copy()
+        weights = _get_default_weights(track_type)
     yr = _get_race_year(race)
 
     actuals = _load_actual_results(race, series_id)
@@ -900,16 +910,17 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             })
 
             w_row = proj_df.iloc[0]
-            weights_str = (
-                f"Odds {w_row.get('w_odds', 0):.0%} | "
-                f"Track {w_row.get('w_track', 0):.0%} | "
-                f"Practice {w_row.get('w_practice', 0):.0%} | "
-                f"Qual 15% (fixed)"
-            )
+            w_parts = []
+            for lbl, key in [("Track", "w_track"), ("Track Type", "w_track_type"),
+                              ("Practice", "w_practice"), ("Odds", "w_odds")]:
+                v = w_row.get(key, 0)
+                if v and v > 0:
+                    w_parts.append(f"{lbl} {v:.0%}")
+            weights_str = " | ".join(w_parts) if w_parts else "Default"
         else:
-            # Auto-generate projections using default weights
+            # Auto-generate projections using track-type-specific defaults
             proj_dk, actuals, meta = _generate_race_projections(
-                actual_race, series_id, DEFAULT_WEIGHTS
+                actual_race, series_id
             )
             if proj_dk is None or actuals is None:
                 st.warning("Could not generate projections — race results may not be available.")
@@ -938,11 +949,16 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 })
             comp = pd.DataFrame(rows)
 
-            w = DEFAULT_WEIGHTS
-            weights_str = (
-                f"Odds {w['odds']:.0%} | Track {w['track']:.0%} | "
-                f"Practice {w['practice']:.0%} | Qual 15% (fixed)"
-            )
+            track_name_acc = actual_race.get("track_name", "")
+            track_type_acc = TRACK_TYPE_MAP.get(track_name_acc, "intermediate")
+            w = _get_default_weights(track_type_acc)
+            w_parts = []
+            for lbl, key in [("Track", "track"), ("Track Type", "track_type"),
+                              ("Practice", "practice"), ("Odds", "odds")]:
+                v = w.get(key, 0)
+                if v > 0:
+                    w_parts.append(f"{lbl} {v:.0%}")
+            weights_str = " | ".join(w_parts) if w_parts else "Default"
 
             if meta and not meta.get("has_odds"):
                 st.caption("⚠️ No odds data available for this race — odds signal excluded")
@@ -1290,31 +1306,33 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
     from src.utils import fuzzy_match_name
 
     # ── Per-signal weight constraints ──────────────────────────────────────
-    # These define the realistic min/max for each signal.
+    # These define the realistic min/max for each signal (must sum to 100%).
     # Rationale:
-    #   track_history (20-50%): strongest predictor, actual results at this track
-    #   odds (20-50%): Vegas pricing is very efficient, reflects overall form
-    #   practice (10-40%): noisy — teams sandbag, run diff programs
-    #   qualifying: 15% fixed — predicts finish position and place differential
-    #   track_type: removed from model (too noisy, diluted track-specific signal)
+    #   track (15-45%): strongest predictor, actual results at this track
+    #   track_type (5-30%): related tracks provide extra signal, especially low-sample
+    #   odds (15-50%): Vegas pricing is very efficient, reflects overall form
+    #   practice (5-35%): noisy — teams sandbag, run diff programs
     SIGNAL_RANGES = {
-        "odds":       (20, 50),
-        "track":      (20, 50),
-        "practice":   (10, 40),
+        "odds":       (15, 50),
+        "track":      (15, 45),
+        "ttype":      (5, 30),
+        "practice":   (5, 35),
     }
 
     weight_combos = []
     for odds in range(SIGNAL_RANGES["odds"][0], SIGNAL_RANGES["odds"][1] + 1, grid_step):
         for track in range(SIGNAL_RANGES["track"][0], SIGNAL_RANGES["track"][1] + 1, grid_step):
-            prac = 100 - odds - track
-            if SIGNAL_RANGES["practice"][0] <= prac <= SIGNAL_RANGES["practice"][1]:
-                weight_combos.append({
-                    "odds": odds, "track": track,
-                    "qual": 0, "practice": prac,
-                    "track_type": 0,
-                })
+            for ttype in range(SIGNAL_RANGES["ttype"][0], SIGNAL_RANGES["ttype"][1] + 1, grid_step):
+                prac = 100 - odds - track - ttype
+                if SIGNAL_RANGES["practice"][0] <= prac <= SIGNAL_RANGES["practice"][1]:
+                    weight_combos.append({
+                        "odds": odds, "track": track,
+                        "qual": 0, "practice": prac,
+                        "track_type": ttype,
+                    })
 
-    ranges_str = " | ".join(f"{k}: {v[0]}-{v[1]}%" for k, v in SIGNAL_RANGES.items())
+    range_labels = {"odds": "Odds", "track": "Track", "ttype": "Track Type", "practice": "Practice"}
+    ranges_str = " | ".join(f"{range_labels.get(k,k)}: {v[0]}-{v[1]}%" for k, v in SIGNAL_RANGES.items())
     st.caption(f"Testing **{len(weight_combos)}** weight combinations across "
                f"{len(test_races)} races ({series_name})")
     st.caption(f"Signal constraints: {ranges_str}")
@@ -1528,6 +1546,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             combo_results.append({
                 "Odds": combo["odds"],
                 "Track": combo["track"],
+                "Track Type": combo["track_type"],
                 "Practice": combo["practice"],
                 "MAE": np.mean(all_errors),
                 "Rank Corr": np.mean(all_rank_corrs) if all_rank_corrs else 0,
@@ -1584,24 +1603,28 @@ def _display_backtest_results(results_df, series_name):
     st.dataframe(top, width="stretch", hide_index=False)
 
     best = results_df.iloc[0]
+    tt_val = int(best.get('Track Type', 0))
     st.success(
         f"**Best weights ({series_name}):** Odds **{int(best['Odds'])}%** | "
         f"Track **{int(best['Track'])}%** | "
+        f"Track Type **{tt_val}%** | "
         f"Practice **{int(best['Practice'])}%** | "
-        f"Qual **15%** (fixed) | "
         f"MAE: {best['MAE']:.1f} | Rank Corr: {best['Rank Corr']:.3f}"
     )
 
-    # Show current vs optimal comparison
+    # Show current vs optimal comparison — read from projections tab session state
+    int_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {})
     current_weights = {
-        "Odds": st.session_state.get("pw_odds", 35),
-        "Track": st.session_state.get("pw_track", 35),
-        "Practice": st.session_state.get("pw_prac", 25),
+        "Odds": st.session_state.get("pw_odds", int_defaults.get("odds", 35)),
+        "Track": st.session_state.get("pw_track", int_defaults.get("track", 30)),
+        "Track Type": st.session_state.get("pw_ttype", int_defaults.get("ttype", 20)),
+        "Practice": st.session_state.get("pw_prac", int_defaults.get("prac", 15)),
     }
 
     current_match = results_df[
         (results_df["Odds"] == current_weights["Odds"]) &
         (results_df["Track"] == current_weights["Track"]) &
+        (results_df["Track Type"] == current_weights["Track Type"]) &
         (results_df["Practice"] == current_weights["Practice"])
     ]
 
@@ -1636,9 +1659,10 @@ def _display_backtest_results(results_df, series_name):
         top15 = results_df.head(15)
         combo_labels = []
         for idx, row in top15.iterrows():
+            tt_pct = int(row.get('Track Type', 0))
             lbl = (f"#{len(combo_labels) + 1}: "
                    f"Odds {int(row['Odds'])}% | Track {int(row['Track'])}% | "
-                   f"Prac {int(row['Practice'])}% — "
+                   f"TType {tt_pct}% | Prac {int(row['Practice'])}% — "
                    f"MAE {row['MAE']:.1f}, Rank Corr {row['Rank Corr']:.3f}")
             combo_labels.append((lbl, row))
 
@@ -1665,9 +1689,9 @@ def _display_backtest_results(results_df, series_name):
             combo = {
                 "odds": int(selected_row["Odds"]),
                 "track": int(selected_row["Track"]),
+                "track_type": int(selected_row.get("Track Type", 0)),
                 "practice": int(selected_row["Practice"]),
                 "qual": 0,
-                "track_type": 0,
             }
             total_w = sum(combo.values())
             nominal_wn = {k: v / total_w for k, v in combo.items()}
