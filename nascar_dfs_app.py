@@ -212,11 +212,12 @@ with st.expander("Settings & Data Upload", expanded=False):
     # ── Auto-fetch status row ──────────────────────────────────────────────
     auto_odds = fetch_nascar_odds(series_id)
 
-    # Persist last good odds — never lose data from a failed refresh
+    # Persist last good odds — keyed by series+race to prevent cross-series leaks
+    _odds_cache_key = f"last_good_odds_{series_id}_{race_id}"
     if auto_odds:
-        st.session_state["last_good_odds"] = auto_odds
-    elif "last_good_odds" in st.session_state:
-        auto_odds = st.session_state["last_good_odds"]
+        st.session_state[_odds_cache_key] = auto_odds
+    elif _odds_cache_key in st.session_state:
+        auto_odds = st.session_state[_odds_cache_key]
 
     # Status summary at top
     status_parts = []
@@ -379,7 +380,14 @@ with st.expander("Settings & Data Upload", expanded=False):
         if has_saved_fd:
             st.caption(f"FD Salary: {len(db_fd_df)} drivers saved for this race")
 
-    # Auto odds (available to everyone, read-only)
+    # Odds priority: manual paste > saved DB > auto-fetched API > salary estimate
+    if not odds_data and race_id:
+        # Try saved odds from DB first (previously imported via script or manual paste)
+        saved_odds = load_race_odds(race_id, series_id)
+        if saved_odds:
+            odds_data = saved_odds
+            odds_source = "saved"
+
     if not odds_data and auto_odds:
         odds_data = auto_odds
         odds_source = "bovada" if not is_cup else "action_network"
@@ -414,23 +422,15 @@ with st.spinner("Loading data..."):
 
 is_prerace = detect_prerace(feed)
 
-# Load saved odds from DB when no live/manual odds available
-if race_id and odds_source != "manual":
-    if not is_prerace:
-        # Completed race: ONLY use saved odds, never upcoming race odds
-        saved_odds = load_race_odds(race_id, series_id)
-        if saved_odds:
-            odds_data = saved_odds
-            odds_source = "saved"
-        else:
-            odds_data = {}
-            odds_source = ""
-    elif not odds_data:
-        # Pre-race with no live/auto odds: try DB (previously saved manual odds)
-        saved_odds = load_race_odds(race_id, series_id)
-        if saved_odds:
-            odds_data = saved_odds
-            odds_source = "saved"
+# For completed races: ONLY use saved odds, never auto-fetched upcoming odds
+if not is_prerace and race_id and odds_source != "manual":
+    saved_odds = load_race_odds(race_id, series_id)
+    if saved_odds:
+        odds_data = saved_odds
+        odds_source = "saved"
+    else:
+        odds_data = {}
+        odds_source = ""
 
 # Persist odds to DB for the currently selected race
 if is_admin and odds_data and race_id:
