@@ -157,6 +157,24 @@ def pick_race(series_id, series_name, check_type="salary", platform="DraftKings"
     print(f"\n  {series_name} races:")
     all_races = []
 
+    # Show upcoming first (most common use case), then recent for backfill
+    if upcoming:
+        print("  -- Upcoming --")
+        for race in upcoming:
+            date = race.get("race_date", "")[:10]
+            name = race.get("race_name", "Unknown")
+            track = race.get("track_name", "")
+            if check_type == "salary":
+                existing = check_existing_salaries(race.get("race_id"), series_id, platform)
+                status = f" [{existing} salaries saved]" if existing else ""
+            else:
+                existing = check_existing_odds(race.get("race_id"))
+                status = f" [{existing} odds saved]" if existing else ""
+            idx = len(all_races) + 1
+            all_races.append(race)
+            marker = " <-- next" if idx == 1 else ""
+            print(f"    [{idx}] {date} — {name} @ {track}{status}{marker}")
+
     if completed:
         print("  -- Recent (backfill) --")
         for race in completed:
@@ -173,28 +191,10 @@ def pick_race(series_id, series_name, check_type="salary", platform="DraftKings"
             all_races.append(race)
             print(f"    [{idx}] {date} — {name} @ {track}{status}")
 
-    if upcoming:
-        print("  -- Upcoming --")
-        for race in upcoming:
-            date = race.get("race_date", "")[:10]
-            name = race.get("race_name", "Unknown")
-            track = race.get("track_name", "")
-            if check_type == "salary":
-                existing = check_existing_salaries(race.get("race_id"), series_id, platform)
-                status = f" [{existing} salaries saved]" if existing else ""
-            else:
-                existing = check_existing_odds(race.get("race_id"))
-                status = f" [{existing} odds saved]" if existing else ""
-            idx = len(all_races) + 1
-            all_races.append(race)
-            marker = " <-- next" if idx == len(completed) + 1 else ""
-            print(f"    [{idx}] {date} — {name} @ {track}{status}{marker}")
-
-    default_idx = len(completed)  # 0-indexed position of first upcoming
-    choice = input(f"\n  Select race [{default_idx + 1}]: ").strip()
-    idx = int(choice) - 1 if choice.isdigit() else default_idx
+    choice = input(f"\n  Select race [1]: ").strip()
+    idx = int(choice) - 1 if choice.isdigit() else 0
     if idx < 0 or idx >= len(all_races):
-        idx = default_idx
+        idx = 0
     return all_races[idx]
 
 
