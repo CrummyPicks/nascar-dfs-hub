@@ -688,24 +688,25 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         driver_raw_scores[d] = raw_finish
 
         # ── Dominator score (laps led potential) — weight-aware ──
-        # Dom signal weights reflect the user's projection weights so that
-        # changing odds weight also changes who is projected to lead laps
+        # All signals normalized to 0-100 scale so qual/practice/odds
+        # properly impact laps led projections
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
             dom_w = []
 
             if th and th.get("laps_led_per_race", 0) > 0:
-                dom_signals.append(th["laps_led_per_race"])
+                ll_norm = min(100, (th["laps_led_per_race"] / max(race_laps * 0.5, 1)) * 100)
+                dom_signals.append(ll_norm)
                 dom_w.append(wn.get("track", 0.20))
 
             if sp and sp <= field_size and wn.get("qual", 0) > 0:
-                qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30
+                qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 100
                 dom_signals.append(qual_dom)
                 dom_w.append(wn.get("qual", 0.15))
 
             if od and wn.get("odds", 0) > 0:
-                odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
+                odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
                 dom_signals.append(odds_dom)
                 dom_w.append(wn.get("odds", 0.15))
 
@@ -720,7 +721,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
         dom_raw_scores[d] = dom_score
 
-        # ── Fastest laps score — weight-aware ──
+        # ── Fastest laps score — weight-aware (0-100 scale) ──
         fl_score = 0.0
         if race_laps > 0:
             fl_signals = []
@@ -731,16 +732,16 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                 fl_w.append(0.25)
 
             if sp and sp <= field_size and wn.get("qual", 0) > 0:
-                qual_fl = max(0, (field_size + 1 - sp) / field_size) * 15
+                qual_fl = max(0, (field_size + 1 - sp) / field_size) * 100
                 fl_signals.append(qual_fl)
                 fl_w.append(wn.get("qual", 0.15))
 
             if od and wn.get("odds", 0) > 0:
-                odds_fl = max(0, (field_size + 1 - od) / field_size) * 12
+                odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
                 fl_signals.append(odds_fl)
                 fl_w.append(wn.get("odds", 0.15))
 
-            finish_fl = max(0, (field_size - raw_finish) / field_size) * 10
+            finish_fl = max(0, (field_size - raw_finish) / field_size) * 100
             fl_signals.append(finish_fl)
             fl_w.append(0.10)
 
