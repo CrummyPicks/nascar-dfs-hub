@@ -1058,10 +1058,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
-        # Start position = qualifying pos if known, else historical avg start, else projected finish
+        # Start position fallback: qualifying → track avg start → track type avg start → mid-field
         th_for_start = th_data.get(d)
+        tt_for_start = tt_data.get(d)
         historical_avg_start = th_for_start.get("avg_start") if th_for_start else None
-        start_pos = qual_pos.get(d) or (round(historical_avg_start) if historical_avg_start else round(proj_finish))
+        tt_avg_start = tt_for_start.get("avg_start") if isinstance(tt_for_start, dict) else None
+        if qual_pos.get(d):
+            start_pos = qual_pos[d]
+        elif historical_avg_start:
+            start_pos = round(historical_avg_start)
+        elif tt_avg_start:
+            start_pos = round(tt_avg_start)
+        else:
+            start_pos = round(field_size * 0.5)
         proj_finish_int = round(proj_finish)  # DK uses integer positions
 
         # DK scoring components (all based on integer positions)
@@ -1128,22 +1137,30 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Share Proj DK with optimizer tab via session state
     st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
 
-    # Rename Start to Qual Pos for clarity in projections context
+    # Rename Start column — "Qual Pos" if qualifying happened, "Proj Qual Pos" if not
     if "Start" in proj.columns:
-        proj = proj.rename(columns={"Start": "Qual Pos"})
+        has_qual = bool(qual_pos)
+        proj = proj.rename(columns={"Start": "Qual Pos" if has_qual else "Proj Qual Pos"})
 
     # Display columns
     display_cols = ["Driver"]
     if "Car" in proj.columns:
         display_cols.append("Car")
-    if "Win Odds" in proj.columns and proj["Win Odds"].notna().any():
-        display_cols.append("Win Odds")
-    if "Impl %" in proj.columns and proj["Impl %"].notna().any():
-        display_cols.append("Impl %")
+    # Label odds column — "Win Odds" for real odds, "Est. Odds" for salary-estimated
+    odds_col_name = "Win Odds"
+    if st.session_state.get("odds_source") == "salary_estimate":
+        proj = proj.rename(columns={"Win Odds": "Est. Odds", "Impl %": "Est. Impl %"})
+        odds_col_name = "Est. Odds"
+    if odds_col_name in proj.columns and proj[odds_col_name].notna().any():
+        display_cols.append(odds_col_name)
+    impl_col = "Est. Impl %" if odds_col_name == "Est. Odds" else "Impl %"
+    if impl_col in proj.columns and proj[impl_col].notna().any():
+        display_cols.append(impl_col)
     if "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
-    if "Qual Pos" in proj.columns:
-        display_cols.append("Qual Pos")
+    qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
+    if qual_col in proj.columns:
+        display_cols.append(qual_col)
     display_cols.extend(["Proj DK", "Proj Finish", "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
                          "Avg DK", "Best DK", "Worst DK"])

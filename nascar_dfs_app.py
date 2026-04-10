@@ -198,7 +198,7 @@ with st.expander("Settings & Data Upload", expanded=False):
         is_admin = True
 
     # ── Auto-fetch status row ──────────────────────────────────────────────
-    auto_odds = fetch_nascar_odds()
+    auto_odds = fetch_nascar_odds(series_id)
 
     # Persist last good odds — never lose data from a failed refresh
     if auto_odds:
@@ -234,7 +234,7 @@ with st.expander("Settings & Data Upload", expanded=False):
         with ref_cols[0]:
             if st.button("Refresh Odds", key="refresh_all_btn", type="primary"):
                 _fetch_all_nascar_odds.clear()
-                fresh_odds = fetch_nascar_odds()
+                fresh_odds = fetch_nascar_odds(series_id)
                 if fresh_odds:
                     auto_odds = fresh_odds
                     st.session_state["last_good_odds"] = fresh_odds
@@ -308,25 +308,34 @@ with st.expander("Settings & Data Upload", expanded=False):
                             pass
         with s_cols[3]:
             st.markdown("**Betting Odds**")
-            if is_cup and auto_odds:
-                st.caption(f"Auto: {len(auto_odds)} drivers from Action Network")
-            elif not is_cup:
-                st.caption(f"Auto odds not available for {series_name} series (Cup only)")
+            if auto_odds:
+                source_label = "Bovada/Action Network" if is_cup else "Bovada"
+                st.caption(f"Auto: {len(auto_odds)} drivers from {source_label}")
             else:
-                st.caption("No odds — Action Network may be down, or no upcoming race listed")
-            odds_text = st.text_area("Odds", placeholder="Chase Elliott, +1200\nDenny Hamlin, +800",
+                st.caption(f"No auto odds available — paste from Bovada below")
+            odds_text = st.text_area("Odds", placeholder="Kyle Larson, -115\nChase Elliott +1200\nDenny Hamlin +800",
                                      height=80, label_visibility="collapsed",
-                                     help="Paste to override auto-fetched odds (American format)")
+                                     help="Paste odds from Bovada (American format). "
+                                          "Accepts 'Driver, +odds' or 'Driver +odds'")
             # Manual text overrides auto if provided
             if odds_text.strip():
+                import re as _re
                 for line in odds_text.strip().split("\n"):
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 2:
-                        try:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Try comma-separated first: "Driver Name, +350"
+                    if "," in line:
+                        parts = [p.strip() for p in line.split(",", 1)]
+                        if len(parts) == 2 and parts[0] and parts[1]:
                             odds_data[parts[0]] = parts[1]
-                        except (ValueError, IndexError):
-                            pass
-                odds_source = "manual"
+                            continue
+                    # Try space-separated with odds at end: "Driver Name +350" or "Driver Name -115"
+                    m = _re.match(r'^(.+?)\s+([+-]\d+)$', line)
+                    if m:
+                        odds_data[m.group(1).strip()] = m.group(2)
+                if odds_data:
+                    odds_source = "manual"
     else:
         # Read-only view for non-admin users
         st.caption("Read-only mode — enter admin password to upload data")
@@ -336,9 +345,9 @@ with st.expander("Settings & Data Upload", expanded=False):
             st.caption(f"FD Salary: {len(db_fd_df)} drivers saved for this race")
 
     # Auto odds (available to everyone, read-only)
-    if not odds_data and is_cup and auto_odds:
+    if not odds_data and auto_odds:
         odds_data = auto_odds
-        odds_source = "action_network"
+        odds_source = "bovada" if not is_cup else "action_network"
 
     # Fallback: estimate odds from DK salary when no real odds available
     _salary_for_odds = (
@@ -349,12 +358,14 @@ with st.expander("Settings & Data Upload", expanded=False):
         odds_data = estimate_odds_from_salaries(_salary_for_odds)
         if odds_data:
             odds_source = "salary_estimate"
-            reason = "Action Network unavailable" if is_cup else f"no odds source for {series_name} series"
-            st.caption(f"Using salary-estimated odds ({reason})")
+            st.caption(f"Using salary-estimated odds — paste real odds from Bovada to improve projections")
 
     # Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
     if odds_data:
         odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
+
+    # Store odds source for downstream tabs to label correctly
+    st.session_state["odds_source"] = odds_source
 
 
 
@@ -382,10 +393,10 @@ if not is_prerace and race_id:
 
 # Persist odds to DB — only for prerace (auto odds match this race) or manual entry
 if is_admin and odds_data and race_id:
-    should_save_odds = (is_prerace and odds_source in ("action_network", "salary_estimate")) or \
+    should_save_odds = (is_prerace and odds_source in ("action_network", "bovada", "salary_estimate")) or \
                        odds_source == "manual"
     if should_save_odds:
-        prop_odds = fetch_nascar_prop_odds()
+        prop_odds = fetch_nascar_prop_odds(series_id)
         save_odds_to_db(odds_data, race_id,
                         top3_data=prop_odds.get("top3"),
                         top5_data=prop_odds.get("top5"),

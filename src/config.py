@@ -122,6 +122,9 @@ DRIVER_ALIASES = {
     # CJ vs C.J. (periods stripped → "cj")
     "c j mclaughlin": "cj mclaughlin",
     "j j yeley": "jj yeley",
+    # Stage name / legal name variants
+    "cleetus mcfarland": "garrett mitchell",
+    "cleetus mitchell": "garrett mitchell",
 }
 
 # ----------------------------

@@ -1259,25 +1259,23 @@ def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
 # ============================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _fetch_all_nascar_odds() -> dict:
-    """Fetch upcoming NASCAR race odds from Action Network direct JSON API.
-
-    Uses the public scoreboard API endpoint which returns structured JSON
-    with win/top3/top5/top10 markets from multiple sportsbooks.
+def _fetch_all_nascar_odds(series_id: int = 1) -> dict:
+    """Fetch upcoming NASCAR race odds from Bovada (primary) or Action Network (Cup backup).
 
     Returns {"win": {}, "top3": {}, "top5": {}, "top10": {}}.
     """
     empty = {"win": {}, "top3": {}, "top5": {}, "top10": {}}
 
-    # --- Primary: Action Network JSON API ---
-    result = _fetch_action_network_odds()
+    # --- Primary: Bovada (supports Cup, O'Reilly, Trucks) ---
+    result = _fetch_bovada_odds(series_id)
     if result.get("win"):
         return result
 
-    # --- Backup: Bovada API ---
-    result = _fetch_bovada_odds()
-    if result.get("win"):
-        return result
+    # --- Backup: Action Network (Cup only) ---
+    if series_id == 1:
+        result = _fetch_action_network_odds()
+        if result.get("win"):
+            return result
 
     return empty
 
@@ -1370,94 +1368,147 @@ def _fetch_action_network_odds() -> dict:
         return empty
 
 
-def _fetch_bovada_odds() -> dict:
-    """Fetch NASCAR odds from Bovada's public API as a backup source."""
+def _fetch_bovada_odds(series_id: int = 1) -> dict:
+    """Fetch NASCAR odds from Bovada's public API.
+
+    Supports all three series via series-specific URL paths.
+    Note: Bovada currently loads odds via client-side JS, so the REST API
+    may return events with 0 markets. When markets are available, this works.
+    """
     empty = {"win": {}, "top3": {}, "top5": {}, "top10": {}}
 
-    url = "https://www.bovada.lv/services/sports/event/v2/events/A/description/motor-sports/nascar"
+    # Series-specific Bovada paths
+    series_paths = {
+        1: "/motor-sports/nascar/cup-series/races",
+        2: "/motor-sports/nascar/o-reilly-auto-parts-series/races",
+        3: "/motor-sports/nascar/craftsman-trucks-series/races",
+    }
+    path = series_paths.get(series_id, series_paths[1])
+
+    # Try series-specific path first, then generic NASCAR path
+    urls = [
+        f"https://www.bovada.lv/services/sports/event/coupon/events/A/description{path}",
+        f"https://www.bovada.lv/services/sports/event/v2/events/A/description{path}",
+        "https://www.bovada.lv/services/sports/event/v2/events/A/description/motor-sports/nascar",
+    ]
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "application/json",
     }
 
-    try:
-        r = requests.get(url, headers=headers, timeout=20)
-        if r.status_code != 200:
-            return empty
+    # Series name fragments to match in event paths
+    series_path_match = {
+        1: "cup",
+        2: "o'reilly",
+        3: "truck",
+    }
+    match_str = series_path_match.get(series_id, "cup")
 
-        events = r.json()
-        if not isinstance(events, list) or not events:
-            return empty
-
-        # Find the first event that looks like a race (not futures/championship)
-        race_event = None
-        for ev in events:
-            path = (ev.get("path") or [{}])
-            desc = ev.get("description", "").lower()
-            # Skip championship/futures markets
-            if "champion" in desc or "future" in desc or "season" in desc:
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            if r.status_code != 200:
                 continue
-            race_event = ev
-            break
 
-        if not race_event:
-            return empty
+            events = r.json()
+            if not isinstance(events, list) or not events:
+                continue
 
-        win_result = {}
-        top3_result = {}
-        top5_result = {}
-        top10_result = {}
+            # Find the race event for the correct series
+            race_event = None
+            for ev in events:
+                path_list = ev.get("path") or []
+                path_descs = " ".join(
+                    (p.get("description", "") if isinstance(p, dict) else str(p))
+                    for p in path_list
+                ).lower()
+                desc = ev.get("description", "").lower()
 
-        display_groups = race_event.get("displayGroups", [])
-        for group in display_groups:
-            group_desc = (group.get("description") or "").lower()
-            markets_list = group.get("markets", [])
-
-            for market in markets_list:
-                market_desc = (market.get("description") or "").lower()
-                outcomes = market.get("outcomes", [])
-
-                # Determine which target dict based on market description
-                if "top 3" in market_desc or "top3" in market_desc:
-                    target = top3_result
-                elif "top 5" in market_desc or "top5" in market_desc:
-                    target = top5_result
-                elif "top 10" in market_desc or "top10" in market_desc:
-                    target = top10_result
-                elif "outright" in market_desc or "winner" in market_desc or group_desc == "outright":
-                    target = win_result
-                else:
+                # Skip championship/futures markets
+                if any(kw in desc or kw in path_descs
+                       for kw in ("champion", "future", "season", "challenge")):
                     continue
 
-                if target:  # already populated
-                    continue
+                # Match series by path description
+                if match_str in path_descs or "races" in path_descs:
+                    race_event = ev
+                    break
 
-                for outcome in outcomes:
-                    name = outcome.get("description", "")
-                    price = outcome.get("price", {})
-                    american = price.get("american")
-                    if name and american is not None:
-                        target[name] = str(american)
+            if not race_event:
+                # If only one non-futures event, use it
+                race_events = [
+                    ev for ev in events
+                    if not any(kw in ev.get("description", "").lower()
+                               for kw in ("champion", "future", "season"))
+                ]
+                if len(race_events) == 1:
+                    race_event = race_events[0]
 
-        return {"win": win_result, "top3": top3_result, "top5": top5_result, "top10": top10_result}
+            if not race_event:
+                continue
 
-    except Exception:
-        return empty
+            win_result = {}
+            top3_result = {}
+            top5_result = {}
+            top10_result = {}
+
+            display_groups = race_event.get("displayGroups", [])
+            for group in display_groups:
+                group_desc = (group.get("description") or "").lower()
+                markets_list = group.get("markets", [])
+
+                for market in markets_list:
+                    market_desc = (market.get("description") or "").lower()
+                    outcomes = market.get("outcomes", [])
+
+                    if "top 3" in market_desc or "top3" in market_desc:
+                        target = top3_result
+                    elif "top 5" in market_desc or "top5" in market_desc:
+                        target = top5_result
+                    elif "top 10" in market_desc or "top10" in market_desc:
+                        target = top10_result
+                    elif "outright" in market_desc or "winner" in market_desc or group_desc == "outright":
+                        target = win_result
+                    else:
+                        continue
+
+                    if target:  # already populated
+                        continue
+
+                    for outcome in outcomes:
+                        name = outcome.get("description", "")
+                        price = outcome.get("price", {})
+                        american = price.get("american")
+                        if name and american is not None:
+                            target[name] = str(american)
+
+            if win_result:
+                return {"win": win_result, "top3": top3_result,
+                        "top5": top5_result, "top10": top10_result}
+
+        except Exception:
+            continue
+
+    return empty
 
 
-def fetch_nascar_odds() -> dict:
-    """Fetch win odds from Action Network. Returns {driver_name: odds_string}."""
-    all_odds = _fetch_all_nascar_odds()
+def fetch_nascar_odds(series_id: int = 1) -> dict:
+    """Fetch win odds. Tries Bovada (all series), then Action Network (Cup only).
+
+    Returns {driver_name: odds_string}.
+    """
+    all_odds = _fetch_all_nascar_odds(series_id)
     return all_odds.get("win", {})
 
 
-def fetch_nascar_prop_odds() -> dict:
-    """Fetch top3/top5/top10 prop odds from Action Network or Bovada.
+def fetch_nascar_prop_odds(series_id: int = 1) -> dict:
+    """Fetch top3/top5/top10 prop odds from Bovada or Action Network.
 
     Returns {"top3": {name: odds_str}, "top5": {name: odds_str}, "top10": {name: odds_str}}.
     """
-    all_odds = _fetch_all_nascar_odds()
+    all_odds = _fetch_all_nascar_odds(series_id)
     top3 = all_odds.get("top3", {})
     top5 = all_odds.get("top5", {})
     top10 = all_odds.get("top10", {})
