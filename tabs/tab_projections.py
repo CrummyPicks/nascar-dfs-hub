@@ -19,10 +19,11 @@ import os
 from src.config import (
     DEFAULT_PROJECTION_WEIGHTS, DB_PATH, TRACK_TYPE_MAP,
     TRACK_TYPE_PARENT, DK_FINISH_POINTS, TRACK_TYPE_WEIGHT_DEFAULTS,
+    CROSS_SERIES_HIERARCHY,
 )
 from src.data import (
     query_projections, scrape_track_history, query_driver_dk_points_at_track,
-    query_driver_career_dnf,
+    query_driver_career_dnf, query_team_stats, query_manufacturer_stats,
 )
 # projection_bar no longer used — replaced with inline stacked bar
 from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge
@@ -340,13 +341,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
         st.caption(f"Defaults tuned for **{parent_type}** tracks. "
-                   "Adjust weights — auto-normalizes to 100%. "
-                   "Qualifying contributes a fixed 15% as a finish signal.")
-        w_cols = st.columns(4)
+                   "Adjust weights — auto-normalizes to 100%.")
+        w_cols = st.columns(6)
         w_odds = w_cols[0].number_input("Odds", 0, 100, defaults["odds"], 5, key="pw_odds")
         w_track = w_cols[1].number_input("Track History", 0, 100, defaults["track"], 5, key="pw_track")
         w_ttype = w_cols[2].number_input("Track Type", 0, 100, defaults["ttype"], 5, key="pw_ttype")
         w_prac = w_cols[3].number_input("Practice", 0, 100, defaults["prac"], 5, key="pw_prac")
+        w_team = w_cols[4].number_input("Team", 0, 100, defaults["team"], 5, key="pw_team")
+        w_qual = w_cols[5].number_input("Qualifying", 0, 100, defaults["qual"], 5, key="pw_qual")
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
@@ -354,18 +356,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     effective_odds = w_odds if has_odds else 0
     effective_prac = w_prac if has_practice else 0
 
-    raw_total = w_track + w_ttype + effective_prac + effective_odds
+    raw_total = w_track + w_ttype + effective_prac + effective_odds + w_team + w_qual
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
             "track_type": w_ttype / raw_total,
-            "qual": 0,
+            "qual": w_qual / raw_total,
             "practice": effective_prac / raw_total,
             "odds": effective_odds / raw_total,
+            "team": w_team / raw_total,
         }
     else:
-        # Fallback: 60% track, 40% track type
-        wn = {"track": 0.60, "track_type": 0.40, "qual": 0, "practice": 0, "odds": 0}
+        wn = {"track": 0.60, "track_type": 0.40, "qual": 0, "practice": 0, "odds": 0, "team": 0}
 
     redist_msgs = []
     if not has_odds:
@@ -412,62 +414,79 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
 
 def _query_db_track_history(track_name, series_id, exclude_race_id=None,
-                             before_date=None):
+                             before_date=None, cross_series_ids=None):
     """Query per-driver track history from DB with date filtering.
 
-    Used for completed races to prevent data leakage — the scraped
-    driveraverages.com data always includes the current race's results.
+    Args:
+        cross_series_ids: list of higher-series IDs for cross-series blending.
+            When provided, returns a tuple (current_df, cross_df).
+            When None, returns just current_df.
     """
     if not os.path.exists(PROJ_DB):
-        return pd.DataFrame()
+        return (pd.DataFrame(), pd.DataFrame()) if cross_series_ids else pd.DataFrame()
+
+    def _run_query(conn, sid_list):
+        if len(sid_list) == 1:
+            where = "WHERE t.name LIKE ? AND r.series_id = ?"
+            params = [f"%{track_name}%", sid_list[0]]
+        else:
+            placeholders = ",".join("?" for _ in sid_list)
+            where = f"WHERE t.name LIKE ? AND r.series_id IN ({placeholders})"
+            params = [f"%{track_name}%"] + sid_list
+        if exclude_race_id:
+            where += " AND r.id != ?"
+            params.append(exclude_race_id)
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+
+        query = f'''
+            SELECT d.full_name as Driver,
+                   COUNT(*) as Races,
+                   ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
+                   ROUND(AVG(rr.start_pos), 1) as "Avg Start",
+                   SUM(rr.laps_led) as "Laps Led",
+                   SUM(rr.fastest_laps) as "Fastest Laps",
+                   ROUND(AVG(rr.avg_running_position), 1) as "Avg Run Pos",
+                   SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
+                   SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
+                   SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+                   SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            {where}
+            GROUP BY d.id
+            HAVING COUNT(*) >= 1
+        '''
+        try:
+            return pd.read_sql_query(query, conn, params=params)
+        except Exception:
+            return pd.DataFrame()
 
     conn = sqlite3.connect(PROJ_DB)
-    where = "WHERE t.name LIKE ? AND r.series_id = ?"
-    params = [f"%{track_name}%", series_id]
-    if exclude_race_id:
-        where += " AND r.id != ?"
-        params.append(exclude_race_id)
-    if before_date:
-        where += " AND r.race_date < ?"
-        params.append(before_date)
+    current_df = _run_query(conn, [series_id])
 
-    query = f'''
-        SELECT d.full_name as Driver,
-               COUNT(*) as Races,
-               ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
-               ROUND(AVG(rr.start_pos), 1) as "Avg Start",
-               SUM(rr.laps_led) as "Laps Led",
-               SUM(rr.fastest_laps) as "Fastest Laps",
-               ROUND(AVG(rr.avg_running_position), 1) as "Avg Run Pos",
-               SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
-               SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
-               SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
-               SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
-        FROM race_results rr
-        JOIN drivers d ON d.id = rr.driver_id
-        JOIN races r ON r.id = rr.race_id
-        JOIN tracks t ON t.id = r.track_id
-        {where}
-        GROUP BY d.id
-        HAVING COUNT(*) >= 1
-    '''
-    try:
-        df = pd.read_sql_query(query, conn, params=params)
-    except Exception as e:
-        st.warning(f"Track history query error: {e}")
-        df = pd.DataFrame()
+    if cross_series_ids:
+        cross_df = _run_query(conn, cross_series_ids)
+        conn.close()
+        return current_df, cross_df
+
     conn.close()
-    return df
+    return current_df
 
 
 def _query_db_track_type_history(track_type, series_id, exclude_track=None,
-                                  exclude_race_id=None, before_date=None):
+                                  exclude_race_id=None, before_date=None,
+                                  cross_series_ids=None):
     """Query per-driver stats across all tracks of a given type from DB.
 
     Used for completed races to prevent data leakage.
+    When cross_series_ids provided, returns (current_dict, cross_dict).
     """
     if not os.path.exists(PROJ_DB):
-        return {}
+        return ({}, {}) if cross_series_ids else {}
 
     from src.config import TRACK_TYPE_MAP as _TTM
     matching_tracks = [t for t, tt in _TTM.items()
@@ -476,48 +495,63 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
     if exclude_track:
         matching_tracks = [t for t in matching_tracks if exclude_track not in t]
     if not matching_tracks:
-        return {}
+        return ({}, {}) if cross_series_ids else {}
+
+    def _run_tt_query(conn, sid_list):
+        placeholders_t = ",".join("?" for _ in matching_tracks)
+        if len(sid_list) == 1:
+            series_clause = "AND r.series_id = ?"
+            params = matching_tracks + [sid_list[0]]
+        else:
+            series_ph = ",".join("?" for _ in sid_list)
+            series_clause = f"AND r.series_id IN ({series_ph})"
+            params = matching_tracks + sid_list
+        where_extra = ""
+        if exclude_race_id:
+            where_extra += " AND r.id != ?"
+            params.append(exclude_race_id)
+        if before_date:
+            where_extra += " AND r.race_date < ?"
+            params.append(before_date)
+
+        query = f'''
+            SELECT d.full_name,
+                   COUNT(*) as races,
+                   AVG(rr.finish_pos) as avg_finish,
+                   AVG(rr.avg_running_position) as avg_running_pos,
+                   SUM(rr.laps_led) as total_laps_led
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name IN ({placeholders_t})
+              {series_clause}
+              {where_extra}
+            GROUP BY d.id
+        '''
+        rows = conn.execute(query, params).fetchall()
+        result = {}
+        for row in rows:
+            name, races, avg_f, avg_arp, ll = row
+            if races and races > 0:
+                result[name] = {
+                    "avg_finish": avg_f or 20,
+                    "avg_running_pos": avg_arp,
+                    "laps_led_per_race": (ll or 0) / races,
+                    "races": races,
+                }
+        return result
 
     conn = sqlite3.connect(PROJ_DB)
-    placeholders = ",".join("?" for _ in matching_tracks)
-    where_extra = ""
-    params = matching_tracks + [series_id]
-    if exclude_race_id:
-        where_extra += " AND r.id != ?"
-        params.append(exclude_race_id)
-    if before_date:
-        where_extra += " AND r.race_date < ?"
-        params.append(before_date)
+    current = _run_tt_query(conn, [series_id])
 
-    query = f'''
-        SELECT d.full_name,
-               COUNT(*) as races,
-               AVG(rr.finish_pos) as avg_finish,
-               AVG(rr.avg_running_position) as avg_running_pos,
-               SUM(rr.laps_led) as total_laps_led
-        FROM race_results rr
-        JOIN drivers d ON d.id = rr.driver_id
-        JOIN races r ON r.id = rr.race_id
-        JOIN tracks t ON t.id = r.track_id
-        WHERE t.name IN ({placeholders})
-          AND r.series_id = ?
-          {where_extra}
-        GROUP BY d.id
-    '''
-    rows = conn.execute(query, params).fetchall()
+    if cross_series_ids:
+        cross = _run_tt_query(conn, cross_series_ids)
+        conn.close()
+        return current, cross
+
     conn.close()
-
-    result = {}
-    for row in rows:
-        name, races, avg_f, avg_arp, ll = row
-        if races and races > 0:
-            result[name] = {
-                "avg_finish": avg_f or 20,
-                "avg_running_pos": avg_arp,  # None if no ARP data yet
-                "laps_led_per_race": (ll or 0) / races,
-                "races": races,
-            }
-    return result
+    return current
 
 
 def _query_races_to_subtract(track_name, series_id, race_date, db_race_id=None):
@@ -694,12 +728,21 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Resolve DB race ID for exclusion
     db_race_id = _resolve_db_race_id(race_id, series_id) if race_id else None
 
+    # Cross-series hierarchy: Cup stats flow DOWN to O'Reilly/Truck
+    cross_ids = CROSS_SERIES_HIERARCHY.get(series_id, [])
+
     with st.spinner("Loading track history..."):
-        th_df = _query_db_track_history(
+        th_result = _query_db_track_history(
             track_name, series_id,
             exclude_race_id=db_race_id,
             before_date=race_date if not is_prerace else None,
+            cross_series_ids=cross_ids if cross_ids else None,
         )
+        if cross_ids:
+            th_df, cross_th_df = th_result
+        else:
+            th_df = th_result
+            cross_th_df = pd.DataFrame()
 
     # ── Historical DK points at this track (for display + th_data enrichment) ──
     dk_history = query_driver_dk_points_at_track(
@@ -707,6 +750,26 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         before_date=race_date if not is_prerace else None,
     )
     dk_hist_names = list(dk_history.keys())
+
+    # Build cross-series track history lookup
+    cross_th_lookup = {}
+    if not cross_th_df.empty:
+        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races",
+                     "Avg Rating", "Wins", "Top 5", "Top 10", "DNF"]:
+            if col in cross_th_df.columns:
+                cross_th_df[col] = pd.to_numeric(cross_th_df[col], errors="coerce")
+        cross_idx = cross_th_df.drop_duplicates("Driver").set_index("Driver")
+        for d in drivers:
+            matched = d if d in cross_idx.index else fuzzy_match_name(d, cross_idx.index.tolist())
+            if matched and matched in cross_idx.index:
+                row = cross_idx.loc[matched]
+                races = row.get("Races", 1) if pd.notna(row.get("Races")) and row.get("Races") > 0 else 1
+                arp = row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None
+                cross_th_lookup[d] = {
+                    "avg_finish": row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20,
+                    "avg_running_pos": arp,
+                    "races": races,
+                }
 
     if not th_df.empty:
         for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races",
@@ -723,12 +786,27 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 races = row.get("Races", 1) if pd.notna(row.get("Races")) and row.get("Races") > 0 else 1
                 laps_led = row.get("Laps Led", 0) if pd.notna(row.get("Laps Led")) else 0
                 fastest_laps = row.get("Fastest Laps", 0) if pd.notna(row.get("Fastest Laps")) else 0
-                # Look up avg DK points for this driver at this track
                 dk_hist_entry = dk_history.get(matched) or dk_history.get(d) or {}
+
+                arp = row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None
+                af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
+
+                # Cross-series blending: if driver has higher-series data, blend at 30%
+                cross = cross_th_lookup.get(d)
+                if cross and cross["races"] >= 2:
+                    c_arp = cross["avg_running_pos"]
+                    c_af = cross["avg_finish"]
+                    # Blend: 70% current series + 30% higher series
+                    af = af * 0.70 + c_af * 0.30
+                    if arp is not None and c_arp is not None:
+                        arp = arp * 0.70 + c_arp * 0.30
+                    elif c_arp is not None:
+                        arp = c_arp
+
                 th_data[d] = {
-                    "avg_finish": row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20,
+                    "avg_finish": af,
                     "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
-                    "avg_running_pos": row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None,
+                    "avg_running_pos": arp,
                     "laps_led": laps_led,
                     "fastest_laps": fastest_laps,
                     "laps_led_per_race": laps_led / races,
@@ -740,25 +818,148 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     "dnf": row.get("DNF", 0) if pd.notna(row.get("DNF")) else 0,
                 }
 
+    # Drivers with NO current-series track history but WITH cross-series data
+    for d in drivers:
+        if d not in th_data and d in cross_th_lookup:
+            cross = cross_th_lookup[d]
+            if cross["races"] >= 2:
+                # Use cross-series as primary, but discount trust by 0.7
+                th_data[d] = {
+                    "avg_finish": cross["avg_finish"],
+                    "avg_start": 20,
+                    "avg_running_pos": cross["avg_running_pos"],
+                    "laps_led": 0, "fastest_laps": 0,
+                    "laps_led_per_race": 0, "fastest_laps_per_race": 0,
+                    "races": cross["races"],
+                    "avg_dk": None, "wins": 0, "top5": 0, "dnf": 0,
+                    "_cross_series_only": True,  # flag for trust discount
+                }
+
     # ── 2. Track Type Signal — DB-backed aggregation across similar tracks ──
-    # Uses database race_results for clean, date-filtered data at tracks
-    # of the same type (e.g., all intermediates for a Charlotte projection).
-    # Excludes the specific track (covered by track history signal above)
-    # and any races on/after the current race date for completed races.
     tt_data = {}
     if wn.get("track_type", 0) > 0:
-        tt_raw = _query_db_track_type_history(
+        tt_result = _query_db_track_type_history(
             track_type, series_id,
             exclude_track=track_name,
             exclude_race_id=db_race_id,
             before_date=race_date if not is_prerace else None,
+            cross_series_ids=cross_ids if cross_ids else None,
         )
+        if cross_ids:
+            tt_raw, tt_cross_raw = tt_result
+        else:
+            tt_raw = tt_result
+            tt_cross_raw = {}
+
+        # Blend cross-series track type data
+        if tt_cross_raw:
+            for name, cdata in tt_cross_raw.items():
+                if name in tt_raw and cdata.get("races", 0) >= 2:
+                    cur = tt_raw[name]
+                    cur["avg_finish"] = cur["avg_finish"] * 0.70 + cdata["avg_finish"] * 0.30
+                    if cur.get("avg_running_pos") and cdata.get("avg_running_pos"):
+                        cur["avg_running_pos"] = cur["avg_running_pos"] * 0.70 + cdata["avg_running_pos"] * 0.30
+                    elif cdata.get("avg_running_pos"):
+                        cur["avg_running_pos"] = cdata["avg_running_pos"]
+                elif name not in tt_raw and cdata.get("races", 0) >= 3:
+                    # Cross-series only for track type — use with discount
+                    tt_raw[name] = cdata
+                    tt_raw[name]["_cross_series_only"] = True
+
         if tt_raw:
             tt_names = list(tt_raw.keys())
             for d in drivers:
                 matched = d if d in tt_raw else fuzzy_match_name(d, tt_names)
                 if matched and matched in tt_raw:
                     tt_data[d] = tt_raw[matched]
+
+    # ── 2b. Team Quality Signal ─────────────────────────────────────────────
+    team_signal = {}  # {driver: projected_finish from team quality}
+    if wn.get("team", 0) > 0:
+        team_stats = query_team_stats(
+            series_id, track_type=track_type, min_season=2022,
+            before_date=race_date if not is_prerace else None,
+        )
+        if team_stats:
+            # Build driver→team mapping from entry list
+            driver_team_map = {}
+            if not entry_df.empty and "Team" in entry_df.columns:
+                for _, row in entry_df.iterrows():
+                    if pd.notna(row.get("Driver")) and pd.notna(row.get("Team")):
+                        driver_team_map[row["Driver"]] = row["Team"]
+            ts_names = list(team_stats.keys())
+            for d in drivers:
+                team_name = driver_team_map.get(d)
+                if not team_name:
+                    continue
+                matched_team = team_name if team_name in team_stats else fuzzy_match_name(team_name, ts_names)
+                if matched_team and matched_team in team_stats:
+                    ts = team_stats[matched_team]
+                    ts_arp = ts.get("avg_arp")
+                    ts_af = ts["avg_finish"]
+                    if ts_arp is not None:
+                        team_finish = ts_arp * 0.65 + ts_af * 0.35
+                    else:
+                        team_finish = ts_af
+                    # Regress toward mid-field (team is a broad signal)
+                    trust = min(1.0, ts["races"] / 10)
+                    team_signal[d] = team_finish * trust + (field_size * 0.5) * (1 - trust)
+
+    # ── 2c. Manufacturer Adjustment (track-type specific) ────────────────────
+    mfr_adjustment = {}  # {driver: position adjustment (+/- 1.5 max)}
+    mfr_stats = query_manufacturer_stats(
+        series_id, track_type=track_type, min_season=2022,
+        before_date=race_date if not is_prerace else None,
+    )
+    if mfr_stats:
+        # Compute field-average finish across all manufacturers
+        total_races = sum(m["races"] for m in mfr_stats.values())
+        if total_races > 0:
+            field_avg_finish = sum(m["avg_finish"] * m["races"] for m in mfr_stats.values()) / total_races
+        else:
+            field_avg_finish = field_size * 0.5
+
+        # Build driver→manufacturer mapping
+        driver_mfr_map = {}
+        if not entry_df.empty and "Manufacturer" in entry_df.columns:
+            for _, row in entry_df.iterrows():
+                if pd.notna(row.get("Driver")) and pd.notna(row.get("Manufacturer")):
+                    driver_mfr_map[row["Driver"]] = row["Manufacturer"]
+
+        # Also try race_results for manufacturer info if entry list lacks it
+        if not driver_mfr_map:
+            try:
+                conn = sqlite3.connect(PROJ_DB)
+                mfr_rows = conn.execute('''
+                    SELECT d.full_name, rr.manufacturer
+                    FROM race_results rr
+                    JOIN drivers d ON d.id = rr.driver_id
+                    JOIN races r ON r.id = rr.race_id
+                    WHERE r.series_id = ? AND rr.manufacturer IS NOT NULL AND rr.manufacturer != ''
+                    GROUP BY d.id
+                    ORDER BY r.season DESC, r.race_num DESC
+                ''', (series_id,)).fetchall()
+                conn.close()
+                for name, mfr in mfr_rows:
+                    if name not in driver_mfr_map:
+                        driver_mfr_map[name] = mfr
+            except Exception:
+                pass
+
+        mfr_names = list(mfr_stats.keys())
+        for d in drivers:
+            mfr = driver_mfr_map.get(d)
+            if not mfr:
+                matched_d = fuzzy_match_name(d, list(driver_mfr_map.keys()))
+                mfr = driver_mfr_map.get(matched_d) if matched_d else None
+            if not mfr:
+                continue
+            matched_mfr = mfr if mfr in mfr_stats else fuzzy_match_name(mfr, mfr_names)
+            if matched_mfr and matched_mfr in mfr_stats:
+                delta = mfr_stats[matched_mfr]["avg_finish"] - field_avg_finish
+                # Scale by 0.5, cap at +/- 1.5 positions
+                adj = max(-1.5, min(1.5, delta * 0.5))
+                mfr_adjustment[d] = adj
 
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
     qual_pos = {}
@@ -863,20 +1064,17 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         if th:
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
+            # Cross-series-only data gets a 0.7x trust discount
+            if th.get("_cross_series_only"):
+                trust *= 0.7
 
-            # Track finish signal: ARP 65% + Avg Finish 35%
-            # ARP filters wreck luck (driver who ran 5th but wrecked to 30th
-            # still projects as a ~5th-place driver next time).
-            # Avg finish captures actual outcomes.
-            # Dominator value (laps led, fastest laps) handled separately
-            # in Stage 2 allocation — NOT included here to avoid double-counting.
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
 
             if arp is not None:
                 base_finish = arp * 0.65 + af * 0.35
             else:
-                base_finish = af  # no ARP data — use finish only
+                base_finish = af
 
             regressed = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed)
@@ -885,12 +1083,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         # Track type signal — if no track history, absorb the track weight too
         tt_weight = wn.get("track_type", 0)
         if not th and tt and wn.get("track", 0) > 0:
-            # No track-specific data: give track type the combined weight
             tt_weight = wn.get("track_type", 0) + wn.get("track", 0)
 
         if tt and tt_weight > 0:
             tt_races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 3
             tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
+            if isinstance(tt, dict) and tt.get("_cross_series_only"):
+                tt_trust *= 0.7
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
             if tt_arp is not None:
@@ -901,23 +1100,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             finish_signals.append(tt_regressed)
             signal_weights.append(tt_weight)
 
-        # Qualifying position — a meaningful finish signal. Drivers who
-        # qualify well tend to finish well (especially at short tracks).
-        # For drivers with NO track history, regress qualifying much more
-        # toward mid-pack — a good qualifying run without track data
-        # shouldn't project them as a top finisher.
-        if qp and qp <= field_size:
+        # Qualifying — place differential potential (start vs projected finish gap)
+        if qp and qp <= field_size and wn.get("qual", 0) > 0:
             has_history = bool(th or tt)
             if has_history:
                 qual_finish = qp * 0.80 + mid_field * 0.20
             else:
-                # No history: heavily regress qualifying toward mid-pack
                 qual_finish = qp * 0.40 + mid_field * 0.60
             finish_signals.append(qual_finish)
-            signal_weights.append(0.15)  # fixed 15% weight
+            signal_weights.append(wn["qual"])
+
+        # Team quality signal
+        tm = team_signal.get(d)
+        if tm is not None and wn.get("team", 0) > 0:
+            finish_signals.append(tm)
+            signal_weights.append(wn["team"])
 
         if pr:
-            # Practice rank: regress toward mid-field (noisiest signal)
             regress = 0.30
             prac_finish = pr * (1 - regress) + (field_size * 0.5) * regress
             finish_signals.append(prac_finish)
@@ -931,9 +1130,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             total_w = sum(signal_weights)
             raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
-            raw_finish = field_size * 0.75  # default: well below mid-field
+            raw_finish = field_size * 0.75
 
-        # DNF risk adjustment — penalize drivers with high crash/mechanical failure rates
+        # Manufacturer adjustment (track-type specific, +/- 1.5 pos cap)
+        mfr_adj = mfr_adjustment.get(d, 0)
+        raw_finish = raw_finish + mfr_adj
+
+        # DNF risk adjustment
         dnf = dnf_data.get(d)
         if not dnf:
             dnf_matched = fuzzy_match_name(d, list(dnf_data.keys())) if dnf_data else None
@@ -967,10 +1170,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 dom_signals.append(tt["laps_led_per_race"])
                 dom_weights_list.append(wn.get("track_type", 0.15))
 
-            if qp and qp <= field_size:
+            if qp and qp <= field_size and wn.get("qual", 0) > 0:
                 qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 30
                 dom_signals.append(qual_dom)
-                dom_weights_list.append(0.15)  # fixed weight — qual speed predicts domination
+                dom_weights_list.append(wn.get("qual", 0.15))
 
             if od and wn.get("odds", 0) > 0:
                 odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35
@@ -999,10 +1202,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 fl_signals.append(dom_score * 0.5)
                 fl_signal_weights.append(0.25)
 
-            if qp and qp <= field_size:
+            if qp and qp <= field_size and wn.get("qual", 0) > 0:
                 qual_fl = max(0, (field_size + 1 - qp) / field_size) * 15
                 fl_signals.append(qual_fl)
-                fl_signal_weights.append(0.15)  # fixed weight — qual speed predicts fast laps
+                fl_signal_weights.append(wn.get("qual", 0.15))
 
             if pr:
                 max_p_val = max(practice_data.values()) if practice_data else field_size

@@ -7,7 +7,7 @@ import streamlit as st
 import sqlite3
 import os
 
-from src.config import SALARY_CAP, ROSTER_SIZE, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+from src.config import SALARY_CAP, ROSTER_SIZE, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, TRACK_TYPE_WEIGHT_DEFAULTS
 from src.utils import safe_fillna, format_display_df, fuzzy_match_name, fuzzy_get, build_norm_lookup
 from src.charts import salary_vs_projection_scatter
 
@@ -31,20 +31,16 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         return pd.DataFrame(), "no salary data"
 
     # Read weights from session state (set by Projections tab sliders)
-    # Defaults match track-type-specific values from projections tab
+    # Defaults from shared config — 6 signals: odds, track, ttype, prac, team, qual
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    _tt_defaults = {
-        "superspeedway": (20, 25, 45, 10),
-        "short": (35, 15, 30, 20),
-        "road": (25, 20, 25, 30),
-        "intermediate": (30, 20, 35, 15),
-    }
-    _dt, _dtt, _do, _dp = _tt_defaults.get(parent_type, (30, 20, 35, 15))
-    w_track = st.session_state.get("pw_track", _dt)
-    w_ttype = st.session_state.get("pw_ttype", _dtt)
-    w_odds  = st.session_state.get("pw_odds", _do)
-    w_prac  = st.session_state.get("pw_prac", _dp)
+    defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_type, TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"])
+    w_track = st.session_state.get("pw_track", defaults["track"])
+    w_ttype = st.session_state.get("pw_ttype", defaults["ttype"])
+    w_odds  = st.session_state.get("pw_odds", defaults["odds"])
+    w_prac  = st.session_state.get("pw_prac", defaults["prac"])
+    w_team  = st.session_state.get("pw_team", defaults["team"])
+    w_qual  = st.session_state.get("pw_qual", defaults["qual"])
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
@@ -52,18 +48,18 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     effective_odds = w_odds if has_odds else 0
     effective_prac = w_prac if has_practice else 0
 
-    raw_total = w_track + w_ttype + effective_prac + effective_odds
+    raw_total = w_track + w_ttype + effective_prac + effective_odds + w_team + w_qual
     if raw_total > 0:
         wn = {
             "track": w_track / raw_total,
             "track_type": w_ttype / raw_total,
-            "qual": 0,
+            "qual": w_qual / raw_total,
             "practice": effective_prac / raw_total,
             "odds": effective_odds / raw_total,
+            "team": w_team / raw_total,
         }
     else:
-        # Fallback: 60% track, 40% track type
-        wn = {"track": 0.60, "track_type": 0.40, "qual": 0, "practice": 0, "odds": 0}
+        wn = {"track": 0.60, "track_type": 0.40, "qual": 0, "practice": 0, "odds": 0, "team": 0}
 
     pool = dk_df.drop_duplicates("Driver").copy()
     field_size = len(pool)

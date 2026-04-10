@@ -165,15 +165,26 @@ DEFAULT_PROJECTION_WEIGHTS = {
 
 # Track-type-specific default weights (single source of truth for all tabs).
 # Values are raw integers that get normalized to 100%.
-# Superspeedways: chaotic → odds matter most.
-# Short tracks: specialists → track history matters most.
+# Superspeedways: chaotic → odds matter most, qualifying huge for drafting diff pts.
+# Short tracks: specialists → track history matters most, team matters.
 # Road courses: setup-dependent → practice matters most.
 # Intermediate: balanced.
 TRACK_TYPE_WEIGHT_DEFAULTS = {
-    "superspeedway": {"odds": 45, "track": 20, "ttype": 25, "prac": 10},
-    "short":         {"odds": 30, "track": 35, "ttype": 15, "prac": 20},
-    "road":          {"odds": 25, "track": 25, "ttype": 20, "prac": 30},
-    "intermediate":  {"odds": 35, "track": 30, "ttype": 20, "prac": 15},
+    "superspeedway": {"odds": 35, "track": 15, "ttype": 15, "prac": 5,  "team": 10, "qual": 20},
+    "short":         {"odds": 25, "track": 25, "ttype": 10, "prac": 15, "team": 15, "qual": 10},
+    "road":          {"odds": 20, "track": 20, "ttype": 15, "prac": 25, "team": 10, "qual": 10},
+    "intermediate":  {"odds": 25, "track": 20, "ttype": 15, "prac": 10, "team": 15, "qual": 15},
+}
+
+# ----------------------------
+# CROSS-SERIES HIERARCHY
+# ----------------------------
+# Higher-series stats flow DOWN to lower series projections (never up).
+# Cup drivers racing Trucks get their Cup track history factored in.
+CROSS_SERIES_HIERARCHY = {
+    1: [],        # Cup: no higher series
+    2: [1],       # O'Reilly: supplement with Cup
+    3: [1, 2],    # Truck: supplement with Cup + O'Reilly
 }
 
 # ----------------------------

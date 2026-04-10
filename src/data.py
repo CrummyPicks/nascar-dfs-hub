@@ -851,6 +851,117 @@ def query_track_type_stats(track_type: str, season: int = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def query_team_stats(series_id: int, track_type: str = None,
+                     min_season: int = 2022, before_date: str = None) -> dict:
+    """Query team performance stats from race_results.
+
+    Returns {team_name: {"avg_finish": X, "avg_arp": Y, "races": N}}.
+    Optionally filtered by track type for track-type-specific team quality.
+    """
+    if not DB_PATH.exists():
+        return {}
+
+    from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+
+    conn = sqlite3.connect(str(DB_PATH))
+    params = [series_id, min_season]
+    track_filter = ""
+
+    if track_type:
+        # Resolve track names for this track type (including parent groups)
+        parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+        matching_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                           if tt == track_type or TRACK_TYPE_PARENT.get(tt, tt) == parent]
+        if matching_tracks:
+            placeholders = ",".join("?" for _ in matching_tracks)
+            track_filter = f"AND t.name IN ({placeholders})"
+            params.extend(matching_tracks)
+
+    if before_date:
+        track_filter += " AND r.race_date < ?"
+        params.append(before_date)
+
+    query = f'''
+        SELECT rr.team, COUNT(*) as races,
+               ROUND(AVG(rr.finish_pos), 1) as avg_finish,
+               ROUND(AVG(rr.avg_running_position), 1) as avg_arp
+        FROM race_results rr
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE r.series_id = ? AND r.season >= ?
+          AND rr.team IS NOT NULL AND rr.team != ''
+          {track_filter}
+        GROUP BY rr.team
+        HAVING races >= 3
+        ORDER BY avg_finish
+    '''
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return {
+            row[0]: {"avg_finish": row[2], "avg_arp": row[3], "races": row[1]}
+            for row in rows if row[0]
+        }
+    except Exception:
+        conn.close()
+        return {}
+
+
+def query_manufacturer_stats(series_id: int, track_type: str = None,
+                              min_season: int = 2022,
+                              before_date: str = None) -> dict:
+    """Query manufacturer performance stats from race_results.
+
+    Returns {manufacturer: {"avg_finish": X, "races": N}}.
+    Filtered by track type for track-specific manufacturer performance.
+    """
+    if not DB_PATH.exists():
+        return {}
+
+    from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+
+    conn = sqlite3.connect(str(DB_PATH))
+    params = [series_id, min_season]
+    track_filter = ""
+
+    if track_type:
+        parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+        matching_tracks = [t for t, tt in TRACK_TYPE_MAP.items()
+                           if tt == track_type or TRACK_TYPE_PARENT.get(tt, tt) == parent]
+        if matching_tracks:
+            placeholders = ",".join("?" for _ in matching_tracks)
+            track_filter = f"AND t.name IN ({placeholders})"
+            params.extend(matching_tracks)
+
+    if before_date:
+        track_filter += " AND r.race_date < ?"
+        params.append(before_date)
+
+    query = f'''
+        SELECT rr.manufacturer, COUNT(*) as races,
+               ROUND(AVG(rr.finish_pos), 1) as avg_finish
+        FROM race_results rr
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE r.series_id = ? AND r.season >= ?
+          AND rr.manufacturer IS NOT NULL AND rr.manufacturer != ''
+          {track_filter}
+        GROUP BY rr.manufacturer
+        HAVING races >= 5
+        ORDER BY avg_finish
+    '''
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return {
+            row[0]: {"avg_finish": row[2], "races": row[1]}
+            for row in rows if row[0]
+        }
+    except Exception:
+        conn.close()
+        return {}
+
+
 def query_salaries(race_id: int = None, platform: str = None) -> pd.DataFrame:
     """Query stored salaries from database.
 
