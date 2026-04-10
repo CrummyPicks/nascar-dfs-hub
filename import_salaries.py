@@ -129,10 +129,10 @@ def check_existing_salaries(race_id, series_id, platform="DraftKings"):
     return len(df) if not df.empty else 0
 
 
-def check_existing_odds(race_id):
+def check_existing_odds(race_id, series_id=None):
     """Check if odds already exist in DB for this race."""
     from src.data import load_race_odds
-    odds = load_race_odds(race_id)
+    odds = load_race_odds(race_id, series_id)
     return len(odds)
 
 
@@ -308,7 +308,7 @@ def import_odds():
     race_name = selected.get("race_name", "Unknown")
 
     # Check for existing
-    existing = check_existing_odds(race_id)
+    existing = check_existing_odds(race_id, series_id)
     if existing:
         confirm = input(f"\n  {existing} odds already saved for this race. Overwrite? (y/N): ").strip().lower()
         if confirm != "y":
@@ -316,7 +316,7 @@ def import_odds():
             return None
 
     # Save to DB
-    count = save_odds_to_db(odds_data, race_id, sportsbook="bovada")
+    count = save_odds_to_db(odds_data, race_id, sportsbook="bovada", series_id=series_id)
     if count and count > 0:
         print(f"\n  Saved {count} odds for {race_name}!")
         return race_name, count, "odds"

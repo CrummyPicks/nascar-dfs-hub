@@ -1794,19 +1794,26 @@ def estimate_odds_from_salaries(dk_df: pd.DataFrame) -> dict:
 # ODDS PERSISTENCE — save/load odds to/from database
 # ============================================================
 
-def _resolve_db_race_id(api_race_id: int):
+def _resolve_db_race_id(api_race_id: int, series_id: int = None):
     """Resolve a NASCAR API race_id to the internal DB race_id.
 
     Looks up via the api_race_id column on the races table.
+    When series_id is provided, filters to that series (prevents cross-series leaks).
     Returns None if not found.
     """
     if not api_race_id or not DB_PATH.exists():
         return None
     conn = sqlite3.connect(str(DB_PATH))
     try:
-        row = conn.execute(
-            "SELECT id FROM races WHERE api_race_id = ?", (api_race_id,)
-        ).fetchone()
+        if series_id:
+            row = conn.execute(
+                "SELECT id FROM races WHERE api_race_id = ? AND series_id = ?",
+                (api_race_id, series_id)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id FROM races WHERE api_race_id = ?", (api_race_id,)
+            ).fetchone()
     except Exception:
         # Column may not exist yet — add it
         try:
@@ -1819,15 +1826,16 @@ def _resolve_db_race_id(api_race_id: int):
     return row[0] if row else None
 
 
-def _resolve_db_race_id_with_fallback(race_id: int):
+def _resolve_db_race_id_with_fallback(race_id: int, series_id: int = None):
     """Resolve API race_id to DB race_id, with date-based fallback."""
-    db_race_id = _resolve_db_race_id(race_id)
+    db_race_id = _resolve_db_race_id(race_id, series_id)
     if db_race_id:
         return db_race_id
 
     # Fallback: try matching by date from API
     try:
-        for sid in [1, 2, 3]:
+        search_series = [series_id] if series_id else [1, 2, 3]
+        for sid in search_series:
             api_url = f"{NASCAR_API_BASE}/2026/{sid}/race_list_basic.json"
             resp = requests.get(api_url, timeout=10)
             if resp.status_code != 200:
@@ -1859,7 +1867,8 @@ def _resolve_db_race_id_with_fallback(race_id: int):
 
 
 def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_network",
-                    top3_data: dict = None, top5_data: dict = None, top10_data: dict = None):
+                    top3_data: dict = None, top5_data: dict = None, top10_data: dict = None,
+                    series_id: int = None):
     """Persist odds dict to the odds table, keyed by race_id.
 
     Smart update: only overwrites top3/top5/top10 odds when new valid data is provided.
@@ -1872,11 +1881,12 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
         top3_data: {driver_name: odds_string} for top 3 finish odds
         top5_data: {driver_name: odds_string} for top 5 finish odds
         top10_data: {driver_name: odds_string} for top 10 finish odds
+        series_id: series filter to prevent cross-series resolution
     """
     if not odds_data or not race_id or not DB_PATH.exists():
         return 0
 
-    db_race_id = _resolve_db_race_id_with_fallback(race_id)
+    db_race_id = _resolve_db_race_id_with_fallback(race_id, series_id)
     if not db_race_id:
         return 0
 
@@ -1956,18 +1966,19 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
     return count
 
 
-def load_race_odds(race_id: int) -> dict:
+def load_race_odds(race_id: int, series_id: int = None) -> dict:
     """Load saved odds for a race from the DB.
 
     Args:
         race_id: NASCAR API race ID (will be resolved to internal DB race_id)
+        series_id: series filter to prevent cross-series resolution
 
     Returns dict of {driver_name: odds_string} matching the live format.
     """
     if not DB_PATH.exists():
         return {}
 
-    db_race_id = _resolve_db_race_id(race_id)
+    db_race_id = _resolve_db_race_id(race_id, series_id)
     if not db_race_id:
         return {}
 
@@ -1989,18 +2000,19 @@ def load_race_odds(race_id: int) -> dict:
     return result
 
 
-def load_race_prop_odds(race_id: int) -> dict:
+def load_race_prop_odds(race_id: int, series_id: int = None) -> dict:
     """Load top3/top5/top10 finish odds for a race from the DB.
 
     Args:
         race_id: NASCAR API race ID
+        series_id: series filter to prevent cross-series resolution
 
     Returns {"top3": {name: odds_int}, "top5": {name: odds_int}, "top10": {name: odds_int}}.
     """
     if not DB_PATH.exists():
         return {"top3": {}, "top5": {}, "top10": {}}
 
-    db_race_id = _resolve_db_race_id(race_id)
+    db_race_id = _resolve_db_race_id(race_id, series_id)
     if not db_race_id:
         return {"top3": {}, "top5": {}, "top10": {}}
 

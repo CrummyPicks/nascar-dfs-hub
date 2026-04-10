@@ -521,7 +521,7 @@ def _generate_race_projections(race, series_id, weights=None):
             start_positions[row["Driver"]] = int(row["Start"])
 
     # Load odds
-    saved_odds = load_race_odds(race_id)
+    saved_odds = load_race_odds(race_id, series_id)
     odds_finish = {}
     if saved_odds:
         clean_odds = {k: v for k, v in saved_odds.items()
@@ -1394,7 +1394,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 start_positions[row["Driver"]] = int(row["Start"])
 
         # Load saved odds for this race from DB
-        saved_odds = load_race_odds(race_id)
+        saved_odds = load_race_odds(race_id, series_id)
         odds_finish = {}
         if saved_odds:
             # Filter null/empty odds

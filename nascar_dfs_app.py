@@ -417,7 +417,7 @@ is_prerace = detect_prerace(feed)
 # For completed races, ONLY use saved odds from DB — never show upcoming race odds
 # But manual entry always takes priority (user pasted odds for this specific race)
 if not is_prerace and race_id and odds_source != "manual":
-    saved_odds = load_race_odds(race_id)
+    saved_odds = load_race_odds(race_id, series_id)
     if saved_odds:
         odds_data = saved_odds
         odds_source = "saved"
@@ -437,7 +437,8 @@ if is_admin and odds_data and race_id:
                         sportsbook="bovada" if odds_source == "manual" else odds_source,
                         top3_data=prop_odds.get("top3"),
                         top5_data=prop_odds.get("top5"),
-                        top10_data=prop_odds.get("top10"))
+                        top10_data=prop_odds.get("top10"),
+                        series_id=series_id)
         if odds_source == "manual":
             st.sidebar.success(f"Saved {len(odds_data)} odds to DB for race {race_id}")
 
@@ -505,7 +506,7 @@ from tabs import tab_accuracy as tacc
 
 with tab_data:
     # Load prop odds (top5/top10) from DB — always available even if live fetch fails
-    _prop_odds = load_race_prop_odds(race_id) if race_id else {"top3": {}, "top5": {}, "top10": {}}
+    _prop_odds = load_race_prop_odds(race_id, series_id) if race_id else {"top3": {}, "top5": {}, "top10": {}}
     td.render(
         feed=feed, lap_data=lap_data, lap_averages_df=lap_averages_df,
         entry_list_df=entry_list_df, qualifying_df=qualifying_df,
