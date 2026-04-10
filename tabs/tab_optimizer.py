@@ -432,31 +432,23 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             dk_df = db_sal.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
         if dk_df.empty:
             if not is_prerace:
-                # Show which races DO have salaries for this series
-                try:
-                    import sqlite3
-                    conn = sqlite3.connect(PROJ_DB)
-                    saved = conn.execute('''
-                        SELECT DISTINCT r.race_name
-                        FROM salaries s
-                        JOIN races r ON r.id = s.race_id
-                        WHERE r.series_id = ? AND s.platform = 'DraftKings'
-                        ORDER BY r.race_date
-                    ''', (series_id,)).fetchall()
-                    conn.close()
-                    if saved:
-                        race_list = ", ".join(r[0] for r in saved)
-                        st.info(f"No saved salary data for this race. "
-                                f"Races with saved salaries: {race_list}. "
-                                f"Use the Import Salaries script to add more.")
+                st.warning("No saved salary data for this race. Upload a DK CSV below to add it.")
+                dk_upload = st.file_uploader(
+                    "Upload DK Salary CSV for this race",
+                    type=["csv"], key=f"opt_dk_upload_{race_id}")
+                if dk_upload:
+                    from src.data import parse_dk_csv, sync_dk_salaries_to_db
+                    dk_df = parse_dk_csv(dk_upload)
+                    if not dk_df.empty:
+                        count = sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
+                        st.success(f"Saved {count} DK salaries to DB for {race_name}")
+                        st.rerun()
                     else:
-                        st.info("No salary data for this series. "
-                                "Use the Import Salaries script to import historical salaries.")
-                except Exception:
-                    st.info("No salary data for this completed race.")
+                        st.error("Could not parse DK CSV")
+                return
             else:
-                st.info("No salary data available. Upload a DK CSV or wait for DK API salaries to enable the optimizer.")
-            return
+                st.info("No salary data available. Upload a DK CSV in Settings to enable the optimizer.")
+                return
 
     # Initialize session state — clear when race/series changes
     race_key = f"{series_id}_{race_id}"
