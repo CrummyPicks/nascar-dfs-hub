@@ -312,30 +312,53 @@ with st.expander("Settings & Data Upload", expanded=False):
                 source_label = "Bovada/Action Network" if is_cup else "Bovada"
                 st.caption(f"Auto: {len(auto_odds)} drivers from {source_label}")
             else:
-                st.caption(f"No auto odds available — paste from Bovada below")
-            odds_text = st.text_area("Odds", placeholder="Kyle Larson, -115\nChase Elliott +1200\nDenny Hamlin +800",
-                                     height=80, label_visibility="collapsed",
-                                     help="Paste odds from Bovada (American format). "
-                                          "Accepts 'Driver, +odds' or 'Driver +odds'")
-            # Manual text overrides auto if provided
+                st.caption(f"No auto odds — paste from Bovada below")
+            odds_text = st.text_area(
+                "Odds", height=120, label_visibility="collapsed",
+                placeholder="Paste directly from Bovada:\nCorey Heim+300\nKyle Busch+450\n\nOr comma/space separated:\nKyle Larson, -115\nChase Elliott +1200",
+                help="Paste odds copied from Bovada webpage. Header lines "
+                     "(race name, date, 'Outright') are auto-skipped.",
+            )
+            # Parse manual odds — supports Bovada copy-paste and CSV formats
             if odds_text.strip():
                 import re as _re
+                # Lines to skip: race name headers, dates, times, section labels
+                _skip_patterns = _re.compile(
+                    r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
+                    r'|\d{1,2}/\d{1,2}/\d{2,4}'   # dates like 4/10/26
+                    r'|\d{1,2}:\d{2}\s*(am|pm)?'    # times like 2:30 PM
+                    r')$', _re.IGNORECASE
+                )
                 for line in odds_text.strip().split("\n"):
                     line = line.strip()
                     if not line:
                         continue
-                    # Try comma-separated first: "Driver Name, +350"
+                    # Skip known header/label lines
+                    if _skip_patterns.match(line):
+                        continue
+                    # Skip lines that look like a race name (no +/- odds number)
+                    if not _re.search(r'[+-]\d+', line):
+                        continue
+                    # Format 1: comma-separated "Driver Name, +350"
                     if "," in line:
                         parts = [p.strip() for p in line.split(",", 1)]
-                        if len(parts) == 2 and parts[0] and parts[1]:
-                            odds_data[parts[0]] = parts[1]
+                        if len(parts) == 2 and parts[0] and _re.match(r'^[+-]?\d+$', parts[1]):
+                            odds_data[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
                             continue
-                    # Try space-separated with odds at end: "Driver Name +350" or "Driver Name -115"
+                    # Format 2: Bovada copy-paste "DriverName+300" (no space before odds)
+                    m = _re.match(r'^(.+?)([+-]\d+)$', line)
+                    if m:
+                        name = m.group(1).strip()
+                        if name:
+                            odds_data[name] = m.group(2)
+                            continue
+                    # Format 3: space-separated "Driver Name +350"
                     m = _re.match(r'^(.+?)\s+([+-]\d+)$', line)
                     if m:
                         odds_data[m.group(1).strip()] = m.group(2)
                 if odds_data:
                     odds_source = "manual"
+                    st.success(f"Parsed {len(odds_data)} drivers from pasted odds")
     else:
         # Read-only view for non-admin users
         st.caption("Read-only mode — enter admin password to upload data")
@@ -380,7 +403,8 @@ with st.spinner("Loading data..."):
 is_prerace = detect_prerace(feed)
 
 # For completed races, ONLY use saved odds from DB — never show upcoming race odds
-if not is_prerace and race_id:
+# But manual entry always takes priority (user pasted odds for this specific race)
+if not is_prerace and race_id and odds_source != "manual":
     saved_odds = load_race_odds(race_id)
     if saved_odds:
         odds_data = saved_odds
@@ -391,16 +415,19 @@ if not is_prerace and race_id:
         odds_data = {}
         odds_source = ""
 
-# Persist odds to DB — only for prerace (auto odds match this race) or manual entry
+# Persist odds to DB for the currently selected race
 if is_admin and odds_data and race_id:
     should_save_odds = (is_prerace and odds_source in ("action_network", "bovada", "salary_estimate")) or \
                        odds_source == "manual"
     if should_save_odds:
         prop_odds = fetch_nascar_prop_odds(series_id)
         save_odds_to_db(odds_data, race_id,
+                        sportsbook="bovada" if odds_source == "manual" else odds_source,
                         top3_data=prop_odds.get("top3"),
                         top5_data=prop_odds.get("top5"),
                         top10_data=prop_odds.get("top10"))
+        if odds_source == "manual":
+            st.sidebar.success(f"Saved {len(odds_data)} odds to DB for race {race_id}")
 
 results_df = extract_race_results(feed) if feed and not is_prerace else pd.DataFrame()
 fl_counts = compute_fastest_laps(lap_data) if lap_data and not is_prerace else {}
