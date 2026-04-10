@@ -186,12 +186,11 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
 
 
 def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
-                        track_type: str) -> dict:
+                        track_type: str, hist_max_ll: int = 0) -> dict:
     """Allocate projected laps led across the field.
 
     Uses driver dominator scores to distribute laps led proportionally.
-    Caps the maximum any single driver can lead at 50% of race laps
-    (even the biggest dominator rarely leads more than half).
+    Per-driver cap based on historical max at this track.
     """
     if not driver_scores or race_laps <= 0:
         return {}
@@ -215,9 +214,7 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     top_drivers = dict(sorted_drivers[:n_leaders])
 
     # Power-curve allocation — top drivers get disproportionately more laps
-    # (laps led is highly concentrated in reality: winner often leads 40%+)
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
-    # Square the scores to concentrate laps on top drivers
     powered = {d: s ** 2.0 for d, s in scores.items()}
     total = sum(powered.values())
     if total <= 0:
@@ -226,29 +223,23 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     # Every lap has a leader — distribute ALL race laps across the field.
     result = {d: (s / total) * race_laps for d, s in powered.items()}
 
-    # Per-driver cap: even the biggest dominator has realistic limits
-    MAX_LEADER_FRAC = {
-        "superspeedway": 0.15,      # ~75 of 500 (pack racing, many lead changes)
-        "road": 0.35,               # ~70 of 200
-        "dirt": 0.30,
-        "intermediate": 0.40,       # ~120 of 300
-        "intermediate_worn": 0.35,
-        "short": 0.45,              # ~225 of 500
-        "short_concrete": 0.50,     # ~250 of 500 (Bristol dominators can lead half)
-    }
-    max_frac = MAX_LEADER_FRAC.get(track_type, MAX_LEADER_FRAC.get(parent, 0.40))
-    max_laps = race_laps * max_frac
+    # Per-driver cap: based on historical max at this track (with headroom)
+    if hist_max_ll > 0:
+        max_laps = min(race_laps, hist_max_ll * 1.1)  # 10% headroom over historical max
+    else:
+        # Fallback if no historical data
+        FALLBACK_FRAC = {"superspeedway": 0.15, "road": 0.35, "intermediate": 0.40,
+                         "intermediate_worn": 0.35, "short": 0.45, "short_concrete": 0.50}
+        max_laps = race_laps * FALLBACK_FRAC.get(track_type, FALLBACK_FRAC.get(parent, 0.40))
 
     # Iteratively cap and redistribute until all laps are allocated
-    for _ in range(10):  # max iterations to prevent infinite loop
+    for _ in range(10):
         deficit = race_laps - sum(result.values())
         if abs(deficit) < 0.5:
             break
-        # Cap any driver over the max
         for d in result:
             if result[d] > max_laps:
                 result[d] = max_laps
-        # Redistribute freed laps to uncapped drivers proportionally
         deficit = race_laps - sum(result.values())
         if deficit > 0.5:
             uncapped = {d: s for d, s in result.items() if s < max_laps}
@@ -261,15 +252,10 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
 
 def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
-                            track_type: str) -> dict:
+                            track_type: str, hist_max_fl: int = 0) -> dict:
     """Allocate projected fastest laps across the field (zero-sum).
 
-    Uses a lower concentration than laps led — fastest laps are more
-    distributed since even mid-pack drivers can post a fastest lap.
-
-    Applies a realistic cutoff: historically ~40-60% of the field earns at
-    least one fastest lap (superspeedways ~90%, championship races ~40%).
-    Drivers below the cutoff get 0.
+    Per-driver cap based on historical max at this track.
     """
     if not driver_fl_scores or race_laps <= 0:
         return {}
@@ -302,17 +288,13 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     # Every lap has a fastest lap — distribute ALL race laps across the field.
     result = {d: (s / total) * race_laps for d, s in powered.items()}
 
-    # Per-driver cap for fastest laps (more distributed than laps led)
-    MAX_FL_FRAC = {
-        "superspeedway": 0.10,      # very distributed in pack racing
-        "road": 0.20,
-        "dirt": 0.20,
-        "intermediate": 0.25,
-        "intermediate_worn": 0.20,
-        "short": 0.25,
-        "short_concrete": 0.25,     # ~125 of 500
-    }
-    max_fl = race_laps * MAX_FL_FRAC.get(track_type, MAX_FL_FRAC.get(parent, 0.20))
+    # Per-driver cap: based on historical max at this track (with headroom)
+    if hist_max_fl > 0:
+        max_fl = min(race_laps, hist_max_fl * 1.1)  # 10% headroom
+    else:
+        FALLBACK_FRAC = {"superspeedway": 0.10, "road": 0.20, "intermediate": 0.25,
+                         "intermediate_worn": 0.20, "short": 0.25, "short_concrete": 0.25}
+        max_fl = race_laps * FALLBACK_FRAC.get(track_type, FALLBACK_FRAC.get(parent, 0.20))
 
     # Iteratively cap and redistribute until all laps are allocated
     for _ in range(10):
@@ -1296,8 +1278,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         driver_proj_finish[d] = round(max(1, min(field_size, proj_finish)), 1)
 
     # ── PASS 2: Allocate laps led and fastest laps (zero-sum, DB-calibrated) ──
-    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type) if race_laps > 0 else {}
-    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type) if race_laps > 0 else {}
+    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
+                                       hist_max_ll=calibration.get("max_laps_led", 0)) if race_laps > 0 else {}
+    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type,
+                                           hist_max_fl=calibration.get("max_fastest_laps", 0)) if race_laps > 0 else {}
 
     # ── PASS 3: Compute final DK points ─────────────────────────────────────
     rows = []
