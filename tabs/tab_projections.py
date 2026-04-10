@@ -198,13 +198,13 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
     # What fraction of the field typically leads laps at this track type
     LEADER_FRAC = {
-        "superspeedway": 0.60,
-        "road": 0.25,
-        "dirt": 0.22,
-        "intermediate": 0.25,
-        "intermediate_worn": 0.22,
-        "short": 0.22,
-        "short_concrete": 0.20,
+        "superspeedway": 0.50,
+        "road": 0.18,
+        "dirt": 0.15,
+        "intermediate": 0.18,
+        "intermediate_worn": 0.15,
+        "short": 0.15,
+        "short_concrete": 0.12,
     }
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.25))
@@ -214,17 +214,17 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_leaders])
 
-    # Linear proportional allocation (no exponent — the scores already
-    # incorporate historical laps led per race, so we just need proportional split)
+    # Power-curve allocation — top drivers get disproportionately more laps
+    # (laps led is highly concentrated in reality: winner often leads 40%+)
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
-    total = sum(scores.values())
+    # Square the scores to concentrate laps on top drivers
+    powered = {d: s ** 2.0 for d, s in scores.items()}
+    total = sum(powered.values())
     if total <= 0:
         return {}
 
     # Every lap has a leader — distribute ALL race laps across the field.
-    # The proportional split from scores handles concentration naturally.
-    # Cap any single driver at realistic maximums by track type.
-    result = {d: (s / total) * race_laps for d, s in scores.items()}
+    result = {d: (s / total) * race_laps for d, s in powered.items()}
 
     # Per-driver cap: even the biggest dominator has realistic limits
     MAX_LEADER_FRAC = {
@@ -273,13 +273,13 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
 
     # What fraction of the field typically gets fastest laps
     FL_FRAC = {
-        "superspeedway": 0.85,
-        "road": 0.55,
-        "dirt": 0.50,
-        "intermediate": 0.65,
-        "intermediate_worn": 0.60,
-        "short": 0.55,
-        "short_concrete": 0.50,
+        "superspeedway": 0.75,
+        "road": 0.40,
+        "dirt": 0.35,
+        "intermediate": 0.45,
+        "intermediate_worn": 0.40,
+        "short": 0.35,
+        "short_concrete": 0.30,
     }
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     frac = FL_FRAC.get(track_type, FL_FRAC.get(parent, 0.55))
@@ -289,14 +289,15 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_with_fl])
 
-    # Linear proportional (less concentrated than laps led)
+    # Moderate power curve (less concentrated than laps led, but not flat)
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
-    total = sum(scores.values())
+    powered = {d: s ** 1.5 for d, s in scores.items()}
+    total = sum(powered.values())
     if total <= 0:
         return {}
 
     # Every lap has a fastest lap — distribute ALL race laps across the field.
-    result = {d: (s / total) * race_laps for d, s in scores.items()}
+    result = {d: (s / total) * race_laps for d, s in powered.items()}
 
     # Per-driver cap for fastest laps (more distributed than laps led)
     MAX_FL_FRAC = {
@@ -489,9 +490,11 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
         return ({}, {}) if cross_series_ids else {}
 
     from src.config import TRACK_TYPE_MAP as _TTM
+    # Match by parent type so subtypes include siblings
+    # e.g. Bristol (short_concrete) includes all "short" tracks
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     matching_tracks = [t for t, tt in _TTM.items()
-                       if tt == track_type
-                       or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+                       if TRACK_TYPE_PARENT.get(tt, tt) == parent]
     if exclude_track:
         matching_tracks = [t for t in matching_tracks if exclude_track not in t]
     if not matching_tracks:
@@ -1286,17 +1289,20 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
-        # Start position fallback: qualifying → track avg start → track type avg start → mid-field
+        # Start position fallback: qualifying → track avg start → track type avg start → odds rank → mid-field
         th_for_start = th_data.get(d)
         tt_for_start = tt_data.get(d)
         historical_avg_start = th_for_start.get("avg_start") if th_for_start else None
         tt_avg_start = tt_for_start.get("avg_start") if isinstance(tt_for_start, dict) else None
+        odds_start = odds_finish.get(d)  # odds-implied position as start proxy
         if qual_pos.get(d):
             start_pos = qual_pos[d]
         elif historical_avg_start:
             start_pos = round(historical_avg_start)
         elif tt_avg_start:
             start_pos = round(tt_avg_start)
+        elif odds_start:
+            start_pos = round(odds_start)
         else:
             start_pos = round(field_size * 0.5)
         proj_finish_int = round(proj_finish)  # DK uses integer positions
@@ -1398,11 +1404,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     if qual_col in proj.columns:
         display_cols.append(qual_col)
     display_cols.extend(["Proj DK", "Proj Finish",
-                         "Sig Odds", "Sig Track", "Sig TType", "Sig Qual",
-                         "Sig Team", "Sig Prac", "Mfr Adj",
                          "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
-                         "Avg DK", "Best DK", "Worst DK"])
+                         "Avg DK", "Best DK", "Worst DK"]
+                        )
+    # Signal detail columns at the end — practice before qualifying
+    display_cols.extend(["Sig Odds", "Sig Track", "Sig TType",
+                         "Sig Prac", "Sig Qual", "Sig Team", "Mfr Adj"])
     if "Value" in proj.columns:
         display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]

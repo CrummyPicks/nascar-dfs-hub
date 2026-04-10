@@ -290,9 +290,9 @@ def _query_driver_track_type_stats(track_type, series_id, exclude_track=None,
         return {}
 
     from src.config import TRACK_TYPE_MAP as _TTM
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     matching_tracks = [t for t, tt in _TTM.items()
-                       if tt == track_type
-                       or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+                       if TRACK_TYPE_PARENT.get(tt, tt) == parent]
     if exclude_track:
         matching_tracks = [t for t in matching_tracks if exclude_track not in t]
     if not matching_tracks:
@@ -406,9 +406,9 @@ def _hybrid_track_type_stats(track_type, series_id, exclude_track=None,
     """
     from src.config import TRACK_TYPE_MAP as _TTM
 
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     matching_tracks = [t for t, tt in _TTM.items()
-                       if tt == track_type
-                       or TRACK_TYPE_PARENT.get(tt, tt) == track_type]
+                       if TRACK_TYPE_PARENT.get(tt, tt) == parent]
     if exclude_track:
         matching_tracks = [t for t in matching_tracks if exclude_track not in t]
     if not matching_tracks:
