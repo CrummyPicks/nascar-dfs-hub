@@ -129,6 +129,8 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
         avg_top_leader: average laps led by the race leader per race
         max_laps_led: highest single-race laps led at this track
         max_fastest_laps: highest single-race fastest laps at this track
+        avg_n_leaders: average number of drivers who lead laps per race
+        avg_n_fl_leaders: average number of drivers who get fastest laps per race
         concentration: exponent for score distribution
     """
     type_defaults = TRACK_TYPE_DOM_DEFAULTS.get(track_type, {"max_ll": 150, "max_fl": 60})
@@ -136,6 +138,8 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
         "avg_top_leader": 80,
         "max_laps_led": type_defaults["max_ll"],
         "max_fastest_laps": type_defaults["max_fl"],
+        "avg_n_leaders": 6,
+        "avg_n_fl_leaders": 10,
         "concentration": TRACK_TYPE_CONCENTRATION.get(track_type, 1.5),
     }
     if not os.path.exists(PROJ_DB):
@@ -143,19 +147,12 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
 
     try:
         conn = sqlite3.connect(PROJ_DB)
-        # Get max laps led per race at this track
-        ll_rows = conn.execute('''
-            SELECT MAX(rr.laps_led) as top_led
-            FROM race_results rr
-            JOIN races r ON r.id = rr.race_id
-            JOIN tracks t ON t.id = r.track_id
-            WHERE t.name LIKE ?
-            GROUP BY r.id
-        ''', (f"%{track_name}%",)).fetchall()
-
-        # Get max fastest laps per race at this track
-        fl_rows = conn.execute('''
-            SELECT MAX(rr.fastest_laps) as top_fl
+        # Get per-race stats: max laps led, number of leaders, max fastest laps, number with FL
+        race_stats = conn.execute('''
+            SELECT MAX(rr.laps_led) as top_led,
+                   COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
+                   MAX(rr.fastest_laps) as top_fl,
+                   COUNT(CASE WHEN rr.fastest_laps > 0 THEN 1 END) as n_fl
             FROM race_results rr
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
@@ -164,18 +161,23 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
         ''', (f"%{track_name}%",)).fetchall()
         conn.close()
 
-        result = dict(defaults)  # start with defaults
+        result = dict(defaults)
 
-        if ll_rows and len(ll_rows) >= 1:
-            top_leaders = [r[0] for r in ll_rows if r[0] and r[0] > 0]
+        if race_stats:
+            top_leaders = [r[0] for r in race_stats if r[0] and r[0] > 0]
+            n_leaders_list = [r[1] for r in race_stats if r[1] and r[1] > 0]
+            top_fl = [r[2] for r in race_stats if r[2] and r[2] > 0]
+            n_fl_list = [r[3] for r in race_stats if r[3] and r[3] > 0]
+
             if top_leaders:
                 result["avg_top_leader"] = np.mean(top_leaders)
                 result["max_laps_led"] = max(top_leaders)
-
-        if fl_rows and len(fl_rows) >= 1:
-            top_fl = [r[0] for r in fl_rows if r[0] and r[0] > 0]
+            if n_leaders_list:
+                result["avg_n_leaders"] = np.mean(n_leaders_list)
             if top_fl:
                 result["max_fastest_laps"] = max(top_fl)
+            if n_fl_list:
+                result["avg_n_fl_leaders"] = np.mean(n_fl_list)
 
         return result
 
@@ -186,51 +188,49 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
 
 
 def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
-                        track_type: str, hist_max_ll: int = 0) -> dict:
+                        track_type: str, calibration: dict = None) -> dict:
     """Allocate projected laps led across the field.
 
-    Uses driver dominator scores to distribute laps led proportionally.
-    Per-driver cap based on historical max at this track.
+    Uses historical data to determine:
+    - How many drivers lead laps (avg_n_leaders from DB)
+    - Per-driver cap (avg_top_leader, NOT the extreme max)
+    - Power curve from track-type concentration
     """
     if not driver_scores or race_laps <= 0:
         return {}
 
-    # What fraction of the field typically leads laps at this track type
-    LEADER_FRAC = {
-        "superspeedway": 0.50,
-        "road": 0.18,
-        "dirt": 0.15,
-        "intermediate": 0.18,
-        "intermediate_worn": 0.15,
-        "short": 0.15,
-        "short_concrete": 0.12,
-    }
+    cal = calibration or {}
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
-    frac = LEADER_FRAC.get(track_type, LEADER_FRAC.get(parent, 0.25))
-    n_leaders = max(4, int(len(driver_scores) * frac))
+
+    # Number of leaders: use historical average, fall back to track-type defaults
+    FALLBACK_LEADERS = {"superspeedway": 15, "road": 8, "intermediate": 8,
+                        "intermediate_worn": 7, "short": 7, "short_concrete": 6}
+    n_leaders = int(cal.get("avg_n_leaders",
+                            FALLBACK_LEADERS.get(track_type, FALLBACK_LEADERS.get(parent, 8))))
+    n_leaders = max(4, min(n_leaders, len(driver_scores)))
 
     # Rank drivers by raw score, only top N get any laps led
     sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_leaders])
 
-    # Power-curve allocation — top drivers get disproportionately more laps
+    # Power curve from track-type concentration (lower = more spread)
+    exponent = cal.get("concentration", TRACK_TYPE_CONCENTRATION.get(track_type, 1.5))
+    # Clamp exponent — we want moderate concentration, not extreme
+    exponent = max(1.0, min(exponent, 1.8))
+
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
-    powered = {d: s ** 2.0 for d, s in scores.items()}
+    powered = {d: s ** exponent for d, s in scores.items()}
     total = sum(powered.values())
     if total <= 0:
         return {}
 
-    # Every lap has a leader — distribute ALL race laps across the field.
+    # Every lap has a leader — distribute ALL race laps
     result = {d: (s / total) * race_laps for d, s in powered.items()}
 
-    # Per-driver cap: based on historical max at this track (with headroom)
-    if hist_max_ll > 0:
-        max_laps = min(race_laps, hist_max_ll * 1.1)  # 10% headroom over historical max
-    else:
-        # Fallback if no historical data
-        FALLBACK_FRAC = {"superspeedway": 0.15, "road": 0.35, "intermediate": 0.40,
-                         "intermediate_worn": 0.35, "short": 0.45, "short_concrete": 0.50}
-        max_laps = race_laps * FALLBACK_FRAC.get(track_type, FALLBACK_FRAC.get(parent, 0.40))
+    # Per-driver cap: use average top leader (NOT the extreme max)
+    # This represents the expected leader, not the once-in-a-decade outlier
+    avg_top = cal.get("avg_top_leader", race_laps * 0.40)
+    max_laps = min(race_laps * 0.60, avg_top * 1.15)  # 15% headroom over average
 
     # Iteratively cap and redistribute until all laps are allocated
     for _ in range(10):
@@ -252,51 +252,44 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
 
 def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
-                            track_type: str, hist_max_fl: int = 0) -> dict:
+                            track_type: str, calibration: dict = None) -> dict:
     """Allocate projected fastest laps across the field (zero-sum).
 
-    Per-driver cap based on historical max at this track.
+    Uses historical data for number of drivers and per-driver cap.
+    Fastest laps are more distributed than laps led.
     """
     if not driver_fl_scores or race_laps <= 0:
         return {}
 
-    # What fraction of the field typically gets fastest laps
-    FL_FRAC = {
-        "superspeedway": 0.75,
-        "road": 0.40,
-        "dirt": 0.35,
-        "intermediate": 0.45,
-        "intermediate_worn": 0.40,
-        "short": 0.35,
-        "short_concrete": 0.30,
-    }
+    cal = calibration or {}
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
-    frac = FL_FRAC.get(track_type, FL_FRAC.get(parent, 0.55))
-    n_with_fl = max(5, int(len(driver_fl_scores) * frac))
+
+    # Number of drivers with fastest laps: historical average or fallback
+    FALLBACK_FL = {"superspeedway": 25, "road": 15, "intermediate": 18,
+                   "intermediate_worn": 16, "short": 14, "short_concrete": 12}
+    n_with_fl = int(cal.get("avg_n_fl_leaders",
+                            FALLBACK_FL.get(track_type, FALLBACK_FL.get(parent, 15))))
+    n_with_fl = max(5, min(n_with_fl, len(driver_fl_scores)))
 
     # Rank drivers by raw FL score, only top N get any fastest laps
     sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_with_fl])
 
-    # Moderate power curve (less concentrated than laps led, but not flat)
+    # Fastest laps use a lower exponent (more distributed than laps led)
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
-    powered = {d: s ** 1.5 for d, s in scores.items()}
+    powered = {d: s ** 1.3 for d, s in scores.items()}
     total = sum(powered.values())
     if total <= 0:
         return {}
 
-    # Every lap has a fastest lap — distribute ALL race laps across the field.
+    # Every lap has a fastest lap — distribute ALL race laps
     result = {d: (s / total) * race_laps for d, s in powered.items()}
 
-    # Per-driver cap: based on historical max at this track (with headroom)
-    if hist_max_fl > 0:
-        max_fl = min(race_laps, hist_max_fl * 1.1)  # 10% headroom
-    else:
-        FALLBACK_FRAC = {"superspeedway": 0.10, "road": 0.20, "intermediate": 0.25,
-                         "intermediate_worn": 0.20, "short": 0.25, "short_concrete": 0.25}
-        max_fl = race_laps * FALLBACK_FRAC.get(track_type, FALLBACK_FRAC.get(parent, 0.20))
+    # Per-driver cap based on historical max fastest laps (with headroom)
+    hist_max_fl = cal.get("max_fastest_laps", race_laps * 0.25)
+    max_fl = min(race_laps * 0.35, hist_max_fl * 1.1)
 
-    # Iteratively cap and redistribute until all laps are allocated
+    # Iteratively cap and redistribute
     for _ in range(10):
         deficit = race_laps - sum(result.values())
         if abs(deficit) < 0.5:
@@ -381,10 +374,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     calibration = _get_track_dominator_calibration(track_name, track_type)
 
     if race_laps > 0:
-        # Historical max at THIS track — the realistic dominator ceiling
+        # Historical stats at THIS track
         hist_max_ll = calibration["max_laps_led"]
         hist_max_fl = calibration["max_fastest_laps"]
-        dom_ceiling = hist_max_ll * 0.25 + hist_max_fl * 0.45
+        avg_top = calibration.get("avg_top_leader", hist_max_ll)
+        avg_leaders = calibration.get("avg_n_leaders", 6)
+        dom_ceiling = avg_top * 0.25 + hist_max_fl * 0.45
 
         info_cols = st.columns(4)
         info_cols[0].metric("Race Laps", f"{race_laps}")
@@ -394,8 +389,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.caption(
             f"Laps led = 0.25 pts/lap | Fastest laps = 0.45 pts/lap | "
             f"Place diff = ±1.0 pts/pos | {race_laps} total laps | "
-            f"Historical max at {track_name}: {hist_max_ll} laps led, "
-            f"{hist_max_fl} fastest laps"
+            f"Avg {avg_leaders:.0f} leaders, avg leader leads {avg_top:.0f} laps "
+            f"(max: {hist_max_ll})"
         )
 
     # Weight info — display BEFORE projections table, using the SAME wn dict
@@ -1279,9 +1274,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     # ── PASS 2: Allocate laps led and fastest laps (zero-sum, DB-calibrated) ──
     allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
-                                       hist_max_ll=calibration.get("max_laps_led", 0)) if race_laps > 0 else {}
+                                       calibration=calibration) if race_laps > 0 else {}
     allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type,
-                                           hist_max_fl=calibration.get("max_fastest_laps", 0)) if race_laps > 0 else {}
+                                           calibration=calibration) if race_laps > 0 else {}
 
     # ── PASS 3: Compute final DK points ─────────────────────────────────────
     rows = []
