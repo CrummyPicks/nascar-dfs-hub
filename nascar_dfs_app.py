@@ -151,11 +151,23 @@ if races:
         labels.append(label)
         race_map[label] = (race_num_idx, race)
 
-    # Default to most recent completed race, or first upcoming
-    if completed_races:
-        default_idx = completed_races[-1][0]
+    # Default race: show upcoming race if last completed race was 3+ days ago
+    if completed_races and upcoming_races:
+        last_completed_race = completed_races[-1][1]
+        try:
+            last_race_date = datetime.fromisoformat(
+                last_completed_race.get("race_date", "").replace("Z", "+00:00").split("+")[0].split("T")[0])
+            days_since = (now.date() - last_race_date.date()).days
+        except Exception:
+            days_since = 0
+        if days_since >= 3:
+            default_idx = upcoming_races[0][0]
+        else:
+            default_idx = completed_races[-1][0]
     elif upcoming_races:
         default_idx = upcoming_races[0][0]
+    elif completed_races:
+        default_idx = completed_races[-1][0]
     else:
         default_idx = 0
 

@@ -234,11 +234,6 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         mask = display_df.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         display_df = display_df[mask]
 
-    # Fill nulls with sentinel values so missing data sorts to bottom
-    for odds_col in ["Win Odds", "Top 3 Odds", "Top 5 Odds", "Top 10 Odds"]:
-        if odds_col in display_df.columns:
-            display_df[odds_col] = display_df[odds_col].fillna(999999)
-
     # Track history: large sentinel for "lower is better" cols, 0 for count/rating cols
     th_high_sentinel = {"TH_Avg Finish": 99, "TH_Avg Start": 99, "TH_DNF": 0}
     th_zero_fill = ["TH_Races", "TH_Rating", "TH_Wins", "TH_T5", "TH_T10", "TH_T20", "TH_Laps Led"]
@@ -249,15 +244,21 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         if col in display_df.columns:
             display_df[col] = display_df[col].fillna(0)
 
-    # Sort: by Finish Position if postrace; by Win Odds (then TH Avg Finish) if prerace
+    # Sort (before replacing null odds with dash, so numeric sort works)
     if not is_prerace and "Finish Position" in display_df.columns:
         display_df = display_df.sort_values("Finish Position", na_position="last")
-    elif is_prerace and "Win Odds" in display_df.columns and display_df["Win Odds"].notna().any() and (display_df["Win Odds"] != 999999).any():
+    elif is_prerace and "Win Odds" in display_df.columns and display_df["Win Odds"].notna().any():
         display_df = display_df.sort_values("Win Odds", na_position="last")
     elif is_prerace and "TH_Avg Finish" in display_df.columns:
         display_df = display_df.sort_values("TH_Avg Finish", na_position="last")
     elif "Qual" in display_df.columns:
         display_df = display_df.sort_values("Qual", na_position="last")
+
+    # Replace null odds with dash for display (after sorting)
+    for odds_col in ["Win Odds", "Top 3 Odds", "Top 5 Odds", "Top 10 Odds",
+                      "Est. Odds", "Est. Impl %"]:
+        if odds_col in display_df.columns:
+            display_df[odds_col] = display_df[odds_col].fillna("—")
 
     # Build MultiIndex columns for grouped headers
     group_map = {}
