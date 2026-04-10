@@ -258,7 +258,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     for odds_col in ["Win Odds", "Top 3 Odds", "Top 5 Odds", "Top 10 Odds",
                       "Est. Odds", "Est. Impl %"]:
         if odds_col in display_df.columns:
-            display_df[odds_col] = display_df[odds_col].fillna("—")
+            display_df[odds_col] = display_df[odds_col].astype(object).fillna("—")
 
     # Build MultiIndex columns for grouped headers
     group_map = {}
