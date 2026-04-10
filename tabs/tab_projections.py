@@ -122,7 +122,8 @@ TRACK_TYPE_DOM_DEFAULTS = {
 }
 
 
-def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
+def _get_track_dominator_calibration(track_name: str, track_type: str,
+                                      series_id: int = None) -> dict:
     """Pull historical domination stats from DB for this track.
 
     Returns dict with:
@@ -148,7 +149,11 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
     try:
         conn = sqlite3.connect(PROJ_DB)
         # Get per-race stats: max laps led, number of leaders, max fastest laps, number with FL
-        race_stats = conn.execute('''
+        series_filter = "AND r.series_id = ?" if series_id else ""
+        params = [f"%{track_name}%"]
+        if series_id:
+            params.append(series_id)
+        race_stats = conn.execute(f'''
             SELECT MAX(rr.laps_led) as top_led,
                    COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
                    MAX(rr.fastest_laps) as top_fl,
@@ -157,8 +162,9 @@ def _get_track_dominator_calibration(track_name: str, track_type: str) -> dict:
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
             WHERE t.name LIKE ?
+            {series_filter}
             GROUP BY r.id
-        ''', (f"%{track_name}%",)).fetchall()
+        ''', params).fetchall()
         conn.close()
 
         result = dict(defaults)
@@ -371,7 +377,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.caption(f"⚠️ {' | '.join(redist_msgs)} — weight redistributed to available signals.")
 
     # ── Dynamic dominator ceiling from DB ────────────────────────────────────
-    calibration = _get_track_dominator_calibration(track_name, track_type)
+    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
 
     if race_laps > 0:
         # Historical stats at THIS track
@@ -700,7 +706,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         odds_data = {}
     if calibration is None:
         track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
-        calibration = _get_track_dominator_calibration(track_name, track_type)
+        calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
 
     # Use entry list or salary list as driver pool
     if not entry_df.empty:
@@ -1457,9 +1463,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     chart_df = chart_df.sort_values("Proj DK", ascending=True)  # horizontal bar: bottom = best
 
     # Build stacked horizontal bar with DK scoring components
-    component_cols = {
+    # Positive components stack right, negative Diff Pts stacks left
+    pos_components = {
         "Finish Pts": "#4a7dfc",
-        "Diff Pts": "#36b37e",
         "Led Pts": "#ff9f43",
         "FL Pts": "#f5365c",
     }
@@ -1468,7 +1474,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     chart_df["Short"] = short_name_series(chart_df["Driver"].tolist())
 
     fig = go.Figure()
-    for comp, color in component_cols.items():
+
+    # Positive Diff Pts (gained positions)
+    if "Diff Pts" in chart_df.columns:
+        fig.add_trace(go.Bar(
+            y=chart_df["Short"],
+            x=chart_df["Diff Pts"].clip(lower=0),
+            name="Diff Pts (+)",
+            orientation="h",
+            marker_color="#36b37e",
+            hovertemplate="%{y}<br>Diff Pts: +%{x:.1f}<extra></extra>",
+        ))
+
+    for comp, color in pos_components.items():
         if comp in chart_df.columns:
             fig.add_trace(go.Bar(
                 y=chart_df["Short"],
@@ -1482,6 +1500,17 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     + "<extra></extra>"
                 ),
             ))
+
+    # Negative Diff Pts (lost positions) — separate trace going left
+    if "Diff Pts" in chart_df.columns and (chart_df["Diff Pts"] < 0).any():
+        fig.add_trace(go.Bar(
+            y=chart_df["Short"],
+            x=chart_df["Diff Pts"].clip(upper=0),
+            name="Diff Pts (-)",
+            orientation="h",
+            marker_color="#e74c3c",
+            hovertemplate="%{y}<br>Diff Pts: %{x:.1f}<extra></extra>",
+        ))
 
     # Custom hover with all components
     custom_hover = []
@@ -1513,7 +1542,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     n_drivers = len(chart_df)
     fig.update_layout(
-        barmode="stack",
+        barmode="relative",
         title="All Drivers — Projected DK Points Breakdown",
         xaxis_title="Projected DK Points",
         yaxis_title="",
