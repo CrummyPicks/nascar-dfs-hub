@@ -954,8 +954,8 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             track_type_acc = TRACK_TYPE_MAP.get(track_name_acc, "intermediate")
             w = _get_default_weights(track_type_acc)
             w_parts = []
-            for lbl, key in [("Track", "track"), ("Track Type", "track_type"),
-                              ("Practice", "practice"), ("Odds", "odds")]:
+            for lbl, key in [("Odds", "odds"), ("Track", "track"), ("Track Type", "track_type"),
+                              ("Practice", "practice"), ("Team", "team"), ("Qual", "qual")]:
                 v = w.get(key, 0)
                 if v > 0:
                     w_parts.append(f"{lbl} {v:.0%}")

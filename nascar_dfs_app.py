@@ -414,18 +414,23 @@ with st.spinner("Loading data..."):
 
 is_prerace = detect_prerace(feed)
 
-# For completed races, ONLY use saved odds from DB — never show upcoming race odds
-# But manual entry always takes priority (user pasted odds for this specific race)
-if not is_prerace and race_id and odds_source != "manual":
-    saved_odds = load_race_odds(race_id, series_id)
-    if saved_odds:
-        odds_data = saved_odds
-        odds_source = "saved"
-    else:
-        # No saved odds for this historical race — clear auto-fetched odds
-        # (they're for the upcoming race, not this one)
-        odds_data = {}
-        odds_source = ""
+# Load saved odds from DB when no live/manual odds available
+if race_id and odds_source != "manual":
+    if not is_prerace:
+        # Completed race: ONLY use saved odds, never upcoming race odds
+        saved_odds = load_race_odds(race_id, series_id)
+        if saved_odds:
+            odds_data = saved_odds
+            odds_source = "saved"
+        else:
+            odds_data = {}
+            odds_source = ""
+    elif not odds_data:
+        # Pre-race with no live/auto odds: try DB (previously saved manual odds)
+        saved_odds = load_race_odds(race_id, series_id)
+        if saved_odds:
+            odds_data = saved_odds
+            odds_source = "saved"
 
 # Persist odds to DB for the currently selected race
 if is_admin and odds_data and race_id:
