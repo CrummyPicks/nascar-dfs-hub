@@ -1402,10 +1402,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         display_cols.append(impl_col)
     if "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
+    display_cols.append("Proj DK")
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)
-    display_cols.extend(["Proj DK", "Proj Finish",
+    display_cols.extend(["Proj Finish",
                          "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
                          "Avg DK", "Best DK", "Worst DK"]
