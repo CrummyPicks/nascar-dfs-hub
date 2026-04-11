@@ -221,8 +221,8 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
     # Power curve from track-type concentration (lower = more spread)
     exponent = cal.get("concentration", TRACK_TYPE_CONCENTRATION.get(track_type, 1.5))
-    # Clamp exponent — we want moderate concentration, not extreme
-    exponent = max(1.0, min(exponent, 1.8))
+    # Clamp to reasonable range — allow full historical concentration
+    exponent = max(1.0, min(exponent, 2.5))
 
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
     powered = {d: s ** exponent for d, s in scores.items()}
@@ -233,10 +233,10 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     # Every lap has a leader — distribute ALL race laps
     result = {d: (s / total) * race_laps for d, s in powered.items()}
 
-    # Per-driver cap: use average top leader (NOT the extreme max)
-    # This represents the expected leader, not the once-in-a-decade outlier
+    # Per-driver cap: use average top leader with generous headroom
+    # A dominant favorite (-100) routinely exceeds the average leader's laps
     avg_top = cal.get("avg_top_leader", race_laps * 0.40)
-    max_laps = min(race_laps * 0.60, avg_top * 1.15)  # 15% headroom over average
+    max_laps = min(race_laps * 0.75, avg_top * 1.40)  # 40% headroom over average
 
     # Iteratively cap and redistribute until all laps are allocated
     for _ in range(10):
@@ -293,7 +293,7 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
 
     # Per-driver cap based on historical max fastest laps (with headroom)
     hist_max_fl = cal.get("max_fastest_laps", race_laps * 0.25)
-    max_fl = min(race_laps * 0.35, hist_max_fl * 1.1)
+    max_fl = min(race_laps * 0.40, hist_max_fl * 1.25)
 
     # Iteratively cap and redistribute
     for _ in range(10):
@@ -794,17 +794,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 arp = row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None
                 af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
 
-                # Cross-series blending: if driver has higher-series data, blend at 30%
+                # Cross-series blending: only blend if cross-series is BETTER
+                # A Cup mid-packer in a bad car may dominate trucks with good equipment,
+                # so cross-series should only help (lower avg finish), never hurt.
                 cross = cross_th_lookup.get(d)
                 if cross and cross["races"] >= 2:
-                    c_arp = cross["avg_running_pos"]
                     c_af = cross["avg_finish"]
-                    # Blend: 70% current series + 30% higher series
-                    af = af * 0.70 + c_af * 0.30
-                    if arp is not None and c_arp is not None:
-                        arp = arp * 0.70 + c_arp * 0.30
-                    elif c_arp is not None:
-                        arp = c_arp
+                    c_arp = cross["avg_running_pos"]
+                    if c_af < af:  # cross-series is better → blend at 30%
+                        af = af * 0.70 + c_af * 0.30
+                        if arp is not None and c_arp is not None and c_arp < arp:
+                            arp = arp * 0.70 + c_arp * 0.30
+                        elif c_arp is not None and c_arp < (arp or 99):
+                            arp = c_arp
 
                 th_data[d] = {
                     "avg_finish": af,
@@ -822,15 +824,26 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 }
 
     # Drivers with NO current-series track history but WITH cross-series data
+    # Use percentile-based scaling: Cup P5 out of 36 (top 14%) → Truck P5.2 out of 37
+    # This accounts for different field sizes and competition levels
+    SERIES_FIELD_SIZE = {1: 36, 2: 38, 3: 36}  # typical field sizes
     for d in drivers:
         if d not in th_data and d in cross_th_lookup:
             cross = cross_th_lookup[d]
             if cross["races"] >= 2:
-                # Use cross-series as primary, but discount trust by 0.7
+                # Percentile-scale: convert position to percentile in source series,
+                # then map to position in current series field
+                source_field = max(SERIES_FIELD_SIZE.get(cross_ids[0], 36) if cross_ids else 36, 1)
+                c_af = cross["avg_finish"]
+                c_arp = cross["avg_running_pos"]
+                pct = c_af / source_field  # percentile (0=best, 1=worst)
+                scaled_af = pct * field_size
+                scaled_arp = (c_arp / source_field) * field_size if c_arp else None
+
                 th_data[d] = {
-                    "avg_finish": cross["avg_finish"],
+                    "avg_finish": scaled_af,
                     "avg_start": 20,
-                    "avg_running_pos": cross["avg_running_pos"],
+                    "avg_running_pos": scaled_arp,
                     "laps_led": 0, "fastest_laps": 0,
                     "laps_led_per_race": 0, "fastest_laps_per_race": 0,
                     "races": cross["races"],
@@ -854,20 +867,27 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             tt_raw = tt_result
             tt_cross_raw = {}
 
-        # Blend cross-series track type data
+        # Blend cross-series track type data (only when it helps)
         if tt_cross_raw:
+            source_field = max(SERIES_FIELD_SIZE.get(cross_ids[0], 36) if cross_ids else 36, 1)
             for name, cdata in tt_cross_raw.items():
                 if name in tt_raw and cdata.get("races", 0) >= 2:
                     cur = tt_raw[name]
-                    cur["avg_finish"] = cur["avg_finish"] * 0.70 + cdata["avg_finish"] * 0.30
-                    if cur.get("avg_running_pos") and cdata.get("avg_running_pos"):
-                        cur["avg_running_pos"] = cur["avg_running_pos"] * 0.70 + cdata["avg_running_pos"] * 0.30
-                    elif cdata.get("avg_running_pos"):
-                        cur["avg_running_pos"] = cdata["avg_running_pos"]
+                    c_af = cdata["avg_finish"]
+                    # Only blend if cross-series is better
+                    if c_af < cur["avg_finish"]:
+                        cur["avg_finish"] = cur["avg_finish"] * 0.70 + c_af * 0.30
+                        c_arp = cdata.get("avg_running_pos")
+                        if cur.get("avg_running_pos") and c_arp and c_arp < cur["avg_running_pos"]:
+                            cur["avg_running_pos"] = cur["avg_running_pos"] * 0.70 + c_arp * 0.30
                 elif name not in tt_raw and cdata.get("races", 0) >= 3:
-                    # Cross-series only for track type — use with discount
-                    tt_raw[name] = cdata
-                    tt_raw[name]["_cross_series_only"] = True
+                    # Cross-series only: percentile-scale to current field size
+                    scaled = dict(cdata)
+                    scaled["avg_finish"] = (cdata["avg_finish"] / source_field) * field_size
+                    if cdata.get("avg_running_pos"):
+                        scaled["avg_running_pos"] = (cdata["avg_running_pos"] / source_field) * field_size
+                    scaled["_cross_series_only"] = True
+                    tt_raw[name] = scaled
 
         if tt_raw:
             tt_names = list(tt_raw.keys())
@@ -1182,26 +1202,36 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         driver_signal_details[d] = sig_detail
 
         # --- Build raw dominator score (laps led potential) — weight-aware ---
-        # All signals normalized to 0-100 scale so they contribute proportionally
+        # All signals normalized to 0-100 scale so they contribute proportionally.
+        # Track history LL uses avg_top_leader as 100-point reference (not half the race).
+        # Drivers WITHOUT track LL history get a low default (not skipped) so having
+        # actual laps-led history is always an advantage.
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
             dom_weights_list = []
 
-            # Track history laps led: normalize to 0-100 using race_laps as reference
+            # Reference for LL normalization: avg laps led by the race leader
+            ll_ref = calibration.get("avg_top_leader", race_laps * 0.35)
+
+            # Track history laps led: normalize against avg top leader
             if th and th["races"] >= 1 and th["laps_led"] > 0:
                 ll_per_race = th["laps_led"] / th["races"]
-                # Normalize: 0 laps = 0, leading half the race = 100
-                ll_norm = min(100, (ll_per_race / max(race_laps * 0.5, 1)) * 100)
+                ll_norm = min(100, (ll_per_race / max(ll_ref, 1)) * 100)
                 dom_signals.append(ll_norm)
-                dom_weights_list.append(wn.get("track", 0.20))
+            else:
+                # No track LL history: low default so missing data penalizes, not rewards
+                dom_signals.append(5.0)
+            dom_weights_list.append(wn.get("track", 0.20))
 
             # Track type laps led: same normalization
             if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
                 tt_ll = tt["laps_led_per_race"]
-                tt_ll_norm = min(100, (tt_ll / max(race_laps * 0.5, 1)) * 100)
+                tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
                 dom_signals.append(tt_ll_norm)
-                dom_weights_list.append(wn.get("track_type", 0.15))
+            else:
+                dom_signals.append(5.0)
+            dom_weights_list.append(wn.get("track_type", 0.15))
 
             # Qualifying: pole = 100, last = 0, with power curve for top positions
             if qp and qp <= field_size and wn.get("qual", 0) > 0:
@@ -1209,9 +1239,16 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 dom_signals.append(qual_dom)
                 dom_weights_list.append(wn.get("qual", 0.15))
 
-            # Odds: favorite = 100, longshot = 0
+            # Odds: use implied win probability for dom signal (not rank)
+            # This preserves the massive gap between a -100 favorite (50%)
+            # and a +500 (16.7%) — rank-based formula compresses this to ~3%
             if od and wn.get("odds", 0) > 0:
-                odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
+                odds_info = driver_odds_display.get(d)
+                if odds_info and odds_info.get("impl_pct"):
+                    max_impl = max((v.get("impl_pct", 0) for v in driver_odds_display.values()), default=1)
+                    odds_dom = min(100, (odds_info["impl_pct"] / max(max_impl, 1)) * 100)
+                else:
+                    odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
                 dom_signals.append(odds_dom)
                 dom_weights_list.append(wn.get("odds", 0.15))
 
@@ -1253,9 +1290,14 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 fl_signals.append(prac_fl)
                 fl_signal_weights.append(wn.get("practice", 0.10))
 
-            # Odds
+            # Odds: use implied probability for FL too
             if od and wn.get("odds", 0) > 0:
-                odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
+                odds_info = driver_odds_display.get(d)
+                if odds_info and odds_info.get("impl_pct"):
+                    max_impl = max((v.get("impl_pct", 0) for v in driver_odds_display.values()), default=1)
+                    odds_fl = min(100, (odds_info["impl_pct"] / max(max_impl, 1)) * 100)
+                else:
+                    odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
                 fl_signals.append(odds_fl)
                 fl_signal_weights.append(wn.get("odds", 0.15))
 
@@ -1417,6 +1459,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     if "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
     display_cols.append("Proj DK")
+    if "Value" in proj.columns:
+        display_cols.append("Value")
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)
@@ -1428,8 +1472,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Signal detail columns at the end — practice before qualifying
     display_cols.extend(["Sig Odds", "Sig Track", "Sig TType",
                          "Sig Prac", "Sig Qual", "Sig Team", "Mfr Adj"])
-    if "Value" in proj.columns:
-        display_cols.append("Value")
     avail = [c for c in display_cols if c in proj.columns]
 
     # Auto-save pre-race projections for historical record

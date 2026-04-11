@@ -1,6 +1,7 @@
-"""Tab 6: Lineup Optimizer — FantasyPros-style with lock/exclude/swap."""
+"""Tab 6: Lineup Optimizer — with player pool lock/exclude and multi-lineup generator."""
 
 import random
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -215,11 +216,12 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
 # ── Lineup Generation ───────────────────────────────────────────────────────
 
-def _solve_optimal(drivers, salary_cap, roster_size):
+def _solve_optimal(drivers, salary_cap, roster_size, timeout_ms=3000):
     """Find the mathematically optimal lineup using branch-and-bound.
 
     Maximizes total Proj Score subject to salary cap and roster size.
     drivers: list of dicts with Driver, DK Salary, Proj Score.
+    timeout_ms: max milliseconds before returning best solution found so far.
     Returns list of driver dicts for the best lineup.
     """
     # Sort by projection descending for better pruning
@@ -228,12 +230,15 @@ def _solve_optimal(drivers, salary_cap, roster_size):
     projs = [d["Proj Score"] for d in drivers]
     sals = [d["DK Salary"] for d in drivers]
 
-    # Precompute: for each index, the sum of top-k remaining projections
-    # Used as upper bound for pruning
     best_score = [0.0]
     best_lineup = [[]]
+    start_time = time.time()
+    deadline = start_time + timeout_ms / 1000.0
+    timed_out = [False]
 
     def branch_and_bound(idx, chosen, total_proj, total_sal, slots_left):
+        if timed_out[0]:
+            return
         if slots_left == 0:
             if total_proj > best_score[0]:
                 best_score[0] = total_proj
@@ -245,8 +250,12 @@ def _solve_optimal(drivers, salary_cap, roster_size):
         if remaining < slots_left:
             return
 
+        # Check timeout periodically (every 10000 nodes)
+        if (idx + len(chosen)) % 50 == 0 and time.time() > deadline:
+            timed_out[0] = True
+            return
+
         # Upper bound: current total + best possible from remaining slots
-        # (take top slots_left projections from remaining drivers)
         upper = total_proj + sum(projs[idx:idx + slots_left])
         if upper <= best_score[0]:
             return
@@ -297,36 +306,30 @@ def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None, exclude
 
 
 def _get_swap_candidates(pool_df, current_lineup, swap_driver, salary_cap, roster_size):
-    """Get ranked replacement candidates for a driver being swapped out.
-
-    Returns DataFrame of eligible replacements sorted by Proj Score.
-    """
+    """Get ranked replacement candidates for a driver being swapped out."""
     lineup_drivers = {d["Driver"] for d in current_lineup}
     lineup_salary = sum(d["DK Salary"] for d in current_lineup)
     swap_salary = next((d["DK Salary"] for d in current_lineup
                         if d["Driver"] == swap_driver), 0)
-
-    # Budget for replacement = cap - (lineup salary - swapped driver salary)
     budget = salary_cap - (lineup_salary - swap_salary)
-
     candidates = pool_df[
         (~pool_df["Driver"].isin(lineup_drivers)) &
         (pool_df["DK Salary"] <= budget)
     ].copy()
-
     candidates = candidates.sort_values("Proj Score", ascending=False)
     return candidates
 
 
 def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
                        max_exposure, mode="gpp", locked=None, excluded=None):
-    """Generate multiple optimized lineups.
+    """Generate multiple optimized lineups with exposure limits.
 
-    Uses branch-and-bound for the first (optimal) lineup, then generates
-    diverse alternatives by excluding drivers from previous lineups.
+    Locked drivers bypass max exposure (always included).
+    Uses a faster approach: solve once, then swap drivers to create diversity.
     """
     locked = locked or []
     excluded = excluded or set()
+    locked_set = set(locked)
 
     available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
     available["Proj Score"] = available["Proj Score"].fillna(0)
@@ -355,15 +358,16 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
     all_lineups = []
     seen_keys = set()
     exposure_count = {}
+    # Locked drivers get unlimited exposure
     max_exp = max(1, int(num_lineups * max_exposure / 100)) if max_exposure < 100 else num_lineups
 
     def _add_lineup(lineup):
         key = tuple(sorted(d["Driver"] for d in lineup))
         if key in seen_keys:
             return False
-        # Check exposure limits
+        # Check exposure limits (locked drivers exempt)
         for d in lineup:
-            if d["Driver"] not in [ld["Driver"] for ld in locked_data]:
+            if d["Driver"] not in locked_set:
                 if exposure_count.get(d["Driver"], 0) >= max_exp:
                     return False
         seen_keys.add(key)
@@ -373,15 +377,15 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
             exposure_count[d["Driver"]] = exposure_count.get(d["Driver"], 0) + 1
         return True
 
-    # Lineup 1: true optimal via branch-and-bound
-    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots)
+    # Lineup 1: true optimal via branch-and-bound (generous timeout)
+    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots, timeout_ms=5000)
     if optimal:
         _add_lineup(locked_data + optimal)
 
     # Generate diverse lineups by excluding 1-2 drivers from previous lineups
-    # This forces the solver to find different combinations
+    # Use shorter timeout for subsequent solves since they're generating variety
     attempts = 0
-    max_attempts = num_lineups * 15
+    max_attempts = num_lineups * 8
 
     while len(all_lineups) < num_lineups and attempts < max_attempts:
         attempts += 1
@@ -392,8 +396,7 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
         # Pick a random previous lineup and exclude 1-2 of its variable drivers
         base_idx = random.randint(0, len(all_lineups) - 1)
         base = all_lineups[base_idx][1]
-        variable_drivers = [d for d in base
-                            if d["Driver"] not in [ld["Driver"] for ld in locked_data]]
+        variable_drivers = [d for d in base if d["Driver"] not in locked_set]
 
         if not variable_drivers:
             continue
@@ -403,11 +406,14 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
         to_exclude = random.sample(variable_drivers, n_exclude)
         exclude_names = {d["Driver"] for d in to_exclude}
 
-        reduced = [d for d in candidates if d["Driver"] not in exclude_names]
+        # Also filter out over-exposed drivers
+        reduced = [d for d in candidates
+                   if d["Driver"] not in exclude_names
+                   and exposure_count.get(d["Driver"], 0) < max_exp]
         if len(reduced) < remaining_slots:
             continue
 
-        alt = _solve_optimal(reduced, remaining_cap, remaining_slots)
+        alt = _solve_optimal(reduced, remaining_cap, remaining_slots, timeout_ms=1500)
         if alt:
             _add_lineup(locked_data + alt)
 
@@ -479,7 +485,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     with s4:
         max_exposure = st.slider("Max Exposure %", 10, 100,
                                  60 if mode == "GPP" else 100, 5, key="opt_exposure",
-                                 help="Max % of lineups a driver can appear in (multi-lineup)")
+                                 help="Max % of lineups a non-locked driver can appear in")
 
     # Build projection pool (uses same weights as Projections tab)
     with st.spinner("Building projections..."):
@@ -493,7 +499,6 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         return
 
     # ─── PROJECTION OVERRIDES ──────────────────────────────────────────────
-    # Allow manual override of projected points for specific drivers
     if "opt_overrides" not in st.session_state:
         st.session_state.opt_overrides = {}
 
@@ -519,7 +524,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.markdown("**Active overrides:**")
             for drv, pts in sorted(st.session_state.opt_overrides.items()):
                 orig = pool[pool["Driver"] == drv]["Proj Score"].values[0] if drv in pool["Driver"].values else 0
-                st.caption(f"  {drv}: {orig:.1f} → **{pts:.1f}**")
+                st.caption(f"  {drv}: {orig:.1f} -> **{pts:.1f}**")
             if st.button("Clear All Overrides", key="opt_ov_clear"):
                 st.session_state.opt_overrides = {}
                 st.rerun()
@@ -533,6 +538,108 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
 
     proj_source = engine_label
+
+    # ─── PLAYER POOL WITH LOCK/EXCLUDE ─────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Player Pool**")
+
+    pool_display = pool.copy()
+    lineup_drivers = {d["Driver"] for d in st.session_state.opt_lineup} if st.session_state.opt_lineup else set()
+
+    # Build status column
+    pool_display["In Lineup"] = pool_display["Driver"].apply(
+        lambda d: "Yes" if d in lineup_drivers else "")
+    pool_display["Rank"] = range(1, len(pool_display) + 1)
+
+    # Search filter
+    search = st.text_input("Search players...", "", key="pool_search",
+                            label_visibility="collapsed",
+                            placeholder="Search drivers...")
+    if search:
+        pool_display = pool_display[
+            pool_display["Driver"].str.contains(search, case=False, na=False)]
+
+    # Lock/Exclude checkboxes in a table-like layout
+    # Header row
+    hdr_cols = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
+    hdr_cols[0].markdown("**Lock**")
+    hdr_cols[1].markdown("**Exc**")
+    hdr_cols[2].markdown("**Driver**")
+    hdr_cols[3].markdown("**Salary**")
+    hdr_cols[4].markdown("**Proj**")
+    hdr_cols[5].markdown("**Value**")
+    hdr_cols[6].markdown("**Status**")
+
+    # Scrollable player rows
+    pool_rows = pool_display.head(40).to_dict("records")
+    locks_changed = False
+    excludes_changed = False
+
+    for i, row in enumerate(pool_rows):
+        driver = row["Driver"]
+        is_locked = driver in st.session_state.opt_locked
+        is_excluded = driver in st.session_state.opt_excluded
+        in_lineup = driver in lineup_drivers
+
+        r = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
+
+        with r[0]:
+            new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{i}",
+                                    label_visibility="collapsed")
+            if new_lock != is_locked:
+                if new_lock:
+                    st.session_state.opt_locked.add(driver)
+                    st.session_state.opt_excluded.discard(driver)
+                else:
+                    st.session_state.opt_locked.discard(driver)
+                locks_changed = True
+
+        with r[1]:
+            new_excl = st.checkbox("X", value=is_excluded, key=f"pp_excl_{i}",
+                                    label_visibility="collapsed")
+            if new_excl != is_excluded:
+                if new_excl:
+                    st.session_state.opt_excluded.add(driver)
+                    st.session_state.opt_locked.discard(driver)
+                else:
+                    st.session_state.opt_excluded.discard(driver)
+                excludes_changed = True
+
+        # Style: bold if locked, dim if excluded
+        name_style = f"**{driver}**" if is_locked else (f"~~{driver}~~" if is_excluded else driver)
+        r[2].markdown(name_style)
+        r[3].markdown(f"${row['DK Salary']:,.0f}")
+        r[4].markdown(f"{row['Proj Score']:.1f}")
+        r[5].markdown(f"{row['Value']:.2f}x")
+
+        status = ""
+        if is_locked:
+            status = "Locked"
+        elif is_excluded:
+            status = "Out"
+        elif in_lineup:
+            status = "In"
+        r[6].markdown(status)
+
+    if locks_changed or excludes_changed:
+        st.session_state.opt_lineup = _build_optimal_lineup(
+            pool, salary_cap, roster_size,
+            locked=list(st.session_state.opt_locked),
+            excluded=st.session_state.opt_excluded)
+        st.rerun()
+
+    # Clear all button
+    if st.button("Clear All Locks/Excludes", key="opt_clear"):
+        st.session_state.opt_locked = set()
+        st.session_state.opt_excluded = set()
+        st.session_state.opt_lineup = []
+        st.session_state.opt_multi_lineups = []
+        st.rerun()
+
+    # Salary vs Projection scatter
+    sal_fig = salary_vs_projection_scatter(pool)
+    if sal_fig:
+        st.plotly_chart(sal_fig, use_container_width=True)
 
     # ─── OPTIMAL LINEUP PANEL ───────────────────────────────────────────────
     st.markdown("---")
@@ -576,17 +683,16 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             # Lock toggle
             with row_cols[0]:
                 lock_key = f"lock_{slot_idx}"
-                if st.checkbox("🔒", value=is_locked, key=lock_key, label_visibility="collapsed"):
+                if st.checkbox("L", value=is_locked, key=lock_key, label_visibility="collapsed"):
                     st.session_state.opt_locked.add(driver)
                 elif driver in st.session_state.opt_locked:
                     st.session_state.opt_locked.discard(driver)
 
             # Exclude (remove from lineup)
             with row_cols[1]:
-                if st.button("✕", key=f"excl_{slot_idx}"):
+                if st.button("X", key=f"excl_{slot_idx}"):
                     st.session_state.opt_excluded.add(driver)
                     st.session_state.opt_locked.discard(driver)
-                    # Rebuild lineup without this driver
                     st.session_state.opt_lineup = _build_optimal_lineup(
                         pool, salary_cap, roster_size,
                         locked=list(st.session_state.opt_locked),
@@ -612,11 +718,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         "swap", swap_options, key=f"swap_{slot_idx}",
                         label_visibility="collapsed")
                     if swap_pick != "Swap...":
-                        # Extract driver name from selection
                         swap_name = swap_pick.split(" ($")[0]
                         new_driver = swap_candidates[
                             swap_candidates["Driver"] == swap_name].iloc[0].to_dict()
-                        # Replace in lineup
                         new_lineup = [d for d in st.session_state.opt_lineup
                                       if d["Driver"] != driver]
                         new_lineup.append(new_driver)
@@ -626,76 +730,6 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
     else:
         st.warning("Could not build a valid lineup within the salary cap.")
-
-    # ─── PLAYER POOL ────────────────────────────────────────────────────────
-    st.markdown("---")
-
-    with st.expander("Player Pool", expanded=True):
-        pool_display = pool.copy()
-
-        # Mark status
-        lineup_drivers = {d["Driver"] for d in lineup} if lineup else set()
-        pool_display["Status"] = pool_display["Driver"].apply(
-            lambda d: "🔒 Locked" if d in st.session_state.opt_locked
-            else ("✕ Excluded" if d in st.session_state.opt_excluded
-                  else ("In Lineup" if d in lineup_drivers else "")))
-
-        pool_display["Rank"] = range(1, len(pool_display) + 1)
-        show_cols = ["Rank", "Status", "Driver", "DK Salary", "Proj Score", "Value"]
-        avail = [c for c in show_cols if c in pool_display.columns]
-
-        # Search
-        search = st.text_input("Search players...", "", key="pool_search",
-                                label_visibility="collapsed",
-                                placeholder="Search drivers...")
-        if search:
-            pool_display = pool_display[
-                pool_display["Driver"].str.contains(search, case=False, na=False)]
-
-        disp = format_display_df(pool_display[avail].copy())
-        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=400)
-
-        # Salary vs Projection scatter
-        sal_fig = salary_vs_projection_scatter(pool)
-        if sal_fig:
-            st.plotly_chart(sal_fig, width="stretch")
-
-        # Quick lock/exclude controls
-        lk_col, ex_col, clr_col = st.columns([2, 2, 1])
-        with lk_col:
-            all_drivers = sorted(pool["Driver"].dropna().unique())
-            to_lock = st.multiselect("Lock drivers", all_drivers,
-                                      default=list(st.session_state.opt_locked),
-                                      key="opt_lock_multi")
-            if set(to_lock) != st.session_state.opt_locked:
-                st.session_state.opt_locked = set(to_lock)
-                st.session_state.opt_lineup = _build_optimal_lineup(
-                    pool, salary_cap, roster_size,
-                    locked=list(st.session_state.opt_locked),
-                    excluded=st.session_state.opt_excluded)
-                st.rerun()
-
-        with ex_col:
-            to_exclude = st.multiselect("Exclude drivers",
-                                         [d for d in all_drivers
-                                          if d not in st.session_state.opt_locked],
-                                         default=list(st.session_state.opt_excluded),
-                                         key="opt_exclude_multi")
-            if set(to_exclude) != st.session_state.opt_excluded:
-                st.session_state.opt_excluded = set(to_exclude)
-                st.session_state.opt_lineup = _build_optimal_lineup(
-                    pool, salary_cap, roster_size,
-                    locked=list(st.session_state.opt_locked),
-                    excluded=st.session_state.opt_excluded)
-                st.rerun()
-
-        with clr_col:
-            if st.button("Clear All", key="opt_clear"):
-                st.session_state.opt_locked = set()
-                st.session_state.opt_excluded = set()
-                st.session_state.opt_lineup = []
-                st.session_state.opt_multi_lineups = []
-                st.rerun()
 
     # ─── MULTI-LINEUP GENERATION ────────────────────────────────────────────
     st.markdown("---")
@@ -741,15 +775,17 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             exp_rows = []
             for driver, count in sorted(exposure.items(), key=lambda x: x[1], reverse=True):
                 match = pool[pool["Driver"] == driver]
+                is_lk = driver in st.session_state.opt_locked
                 exp_rows.append({
                     "Driver": driver,
                     "Count": count,
                     "Exposure": f"{count / len(multi_lineups) * 100:.0f}%",
+                    "Locked": "Yes" if is_lk else "",
                     "Proj Score": match.iloc[0]["Proj Score"] if not match.empty else 0,
                     "DK Salary": match.iloc[0]["DK Salary"] if not match.empty else 0,
                 })
             exp_df = format_display_df(pd.DataFrame(exp_rows))
-            st.dataframe(safe_fillna(exp_df), width="stretch", hide_index=True, height=350)
+            st.dataframe(safe_fillna(exp_df), use_container_width=True, hide_index=True, height=350)
 
         # Lineup cards
         for i, lu in enumerate(multi_lineups):
@@ -758,7 +794,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             remaining = salary_cap - total_sal
 
             with st.expander(
-                f"Lineup {i + 1} — {total_pts:.1f} pts | ${total_sal:,} | ${remaining:,} left",
+                f"Lineup {i + 1} -- {total_pts:.1f} pts | ${total_sal:,} | ${remaining:,} left",
                 expanded=(i < 3)):
                 lu_df = pd.DataFrame([{
                     "Driver": d["Driver"],
@@ -766,7 +802,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     "Proj Score": round(d["Proj Score"], 1),
                     "Value": round(d.get("Value", 0), 2),
                 } for d in sorted(lu, key=lambda x: x["Proj Score"], reverse=True)])
-                st.dataframe(lu_df, width="stretch", hide_index=True)
+                st.dataframe(lu_df, use_container_width=True, hide_index=True)
 
         # Export
         st.markdown("---")
@@ -811,4 +847,4 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         Avg_Proj=("Proj Score", "mean"),
         Avg_Value=("Value", "mean"),
     ).round(1)
-    st.dataframe(tier_summary, width="stretch")
+    st.dataframe(tier_summary, use_container_width=True)

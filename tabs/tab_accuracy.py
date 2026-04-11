@@ -596,6 +596,11 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
     dom_raw_scores = {}
     fl_raw_scores = {}
 
+    # Load calibration early for dominator score normalization
+    from tabs.tab_projections import _get_track_dominator_calibration
+    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
+    ll_ref = calibration.get("avg_top_leader", race_laps * 0.35)
+
     for d in drivers:
         th = th_data.get(d)
         tt = tt_data.get(d)
@@ -688,17 +693,20 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         driver_raw_scores[d] = raw_finish
 
         # ── Dominator score (laps led potential) — weight-aware ──
-        # All signals normalized to 0-100 scale so qual/practice/odds
-        # properly impact laps led projections
+        # All signals normalized to 0-100 using avg_top_leader as reference.
+        # Drivers WITHOUT track LL history get a low default (not skipped).
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
             dom_w = []
 
+            # Track history laps led: normalize against avg top leader
             if th and th.get("laps_led_per_race", 0) > 0:
-                ll_norm = min(100, (th["laps_led_per_race"] / max(race_laps * 0.5, 1)) * 100)
+                ll_norm = min(100, (th["laps_led_per_race"] / max(ll_ref, 1)) * 100)
                 dom_signals.append(ll_norm)
-                dom_w.append(wn.get("track", 0.20))
+            else:
+                dom_signals.append(5.0)
+            dom_w.append(wn.get("track", 0.20))
 
             if sp and sp <= field_size and wn.get("qual", 0) > 0:
                 qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 100
@@ -765,9 +773,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         driver_proj_finish[d] = max(1, min(field_size, proj_finish))
 
     # ── Allocate laps led and fastest laps (shared logic with projections tab) ──
-    from tabs.tab_projections import (_allocate_laps_led, _allocate_fastest_laps,
-                                      _get_track_dominator_calibration)
-    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
+    from tabs.tab_projections import _allocate_laps_led, _allocate_fastest_laps
     allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
                                        calibration=calibration) if race_laps > 0 else {}
     allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type,
@@ -1202,56 +1208,186 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
 
 # ── Weight Optimizer ─────────────────────────────────────────────────────────
 
+def _query_db_completed_races(series_ids, track_type=None, track_name=None):
+    """Query completed races from DB matching filters.
+
+    Returns list of (index, race_dict) tuples compatible with _run_backtest.
+    race_dict keys: race_id, track_name, race_date, scheduled_laps, race_name, series_id
+    """
+    if not os.path.exists(PROJ_DB):
+        return []
+
+    conn = sqlite3.connect(PROJ_DB)
+
+    placeholders = ",".join("?" for _ in series_ids)
+    params = list(series_ids)
+
+    # Only races that have results (completed)
+    query = f'''
+        SELECT DISTINCT r.api_race_id, t.name, r.race_date, r.laps,
+               r.race_name, r.series_id
+        FROM races r
+        JOIN tracks t ON t.id = r.track_id
+        JOIN race_results rr ON rr.race_id = r.id
+        WHERE r.series_id IN ({placeholders})
+          AND r.api_race_id IS NOT NULL
+          AND r.race_date < date('now')
+    '''
+
+    if track_name:
+        query += " AND t.name = ?"
+        params.append(track_name)
+
+    query += " GROUP BY r.id HAVING COUNT(rr.id) >= 10"
+    query += " ORDER BY r.race_date DESC"
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    result = []
+    for i, row in enumerate(rows):
+        api_race_id, t_name, race_date, laps, race_name, sid = row
+        tt = TRACK_TYPE_MAP.get(t_name, "intermediate")
+        parent = TRACK_TYPE_PARENT.get(tt, tt)
+
+        # Filter by track type if specified
+        if track_type and parent != track_type:
+            continue
+
+        result.append((i, {
+            "race_id": api_race_id,
+            "track_name": t_name,
+            "race_date": race_date,
+            "scheduled_laps": laps or 0,
+            "race_name": race_name,
+            "series_id": sid,
+        }))
+
+    return result
+
+
 def _render_weight_optimizer(completed_races, series_id, selected_year, series_name):
     """Find optimal weights by backtesting against completed races."""
-    st.markdown(f"**Backtest Weight Combinations — {series_name} Series**")
+    from src.config import SERIES_OPTIONS, SERIES_LABELS
+
+    st.markdown("**Weight Optimizer**")
     st.caption(
-        "Runs the full 5-signal projection model with different weight combinations "
-        "against completed races using DB-stored track history, track type stats, "
-        "qualifying positions, speed ratings, and saved odds."
+        "Find optimal signal weights by backtesting the projection model "
+        "against completed races. Search by track type or specific track."
     )
 
-    if not completed_races:
-        st.info("No completed races available for backtesting.")
-        return
-
-    max_races = min(len(completed_races), 20)
-    f_cols = st.columns(3)
-    with f_cols[0]:
-        n_races = st.slider("Races to backtest", 1, max_races,
-                             min(5, max_races), key="acc_n_races")
-    with f_cols[1]:
-        # Show parent types for filtering (group subtypes together)
-        parent_types = sorted(set(TRACK_TYPE_PARENT.get(v, v)
-                                   for v in TRACK_TYPE_MAP.values()))
-        type_opts = ["All Types"] + parent_types
-        track_type_filter = st.selectbox("Track Type Filter", type_opts,
-                                          key="acc_tt_filter")
-    with f_cols[2]:
-        include_dnf = st.checkbox("Include DNF risk adjustment", value=True,
+    # ── Search mode + series controls ──
+    ctrl_cols = st.columns([1.5, 1.5, 1.5, 1])
+    with ctrl_cols[0]:
+        search_mode = st.radio("Search By", ["Track Type", "Specific Track"],
+                               horizontal=True, key="acc_search_mode")
+    with ctrl_cols[1]:
+        series_opts = list(SERIES_OPTIONS.keys())
+        default_idx = series_opts.index(series_name) if series_name in series_opts else 0
+        primary_series = st.selectbox("Primary Series", series_opts,
+                                       index=default_idx, key="acc_opt_series_sel")
+        primary_sid = SERIES_OPTIONS[primary_series]
+    with ctrl_cols[2]:
+        cross_series = st.checkbox("Include other series", value=False,
+                                    key="acc_cross_series",
+                                    help="Add races from other series for more sample size")
+    with ctrl_cols[3]:
+        include_dnf = st.checkbox("DNF adjustment", value=True,
                                    key="acc_dnf_toggle")
 
-    test_races = list(completed_races)
-    if track_type_filter != "All Types":
-        test_races = [
-            (i, r) for i, r in test_races
-            if TRACK_TYPE_PARENT.get(
-                TRACK_TYPE_MAP.get(r.get("track_name", ""), "intermediate"),
-                "intermediate"
-            ) == track_type_filter
-        ]
-    test_races = test_races[-n_races:]
+    # Build series list
+    if cross_series:
+        query_series = list(SERIES_OPTIONS.values())
+    else:
+        query_series = [primary_sid]
 
-    if not test_races:
+    # ── Track type or track selection ──
+    if search_mode == "Track Type":
+        parent_types = sorted(set(TRACK_TYPE_PARENT.get(v, v)
+                                   for v in TRACK_TYPE_MAP.values()))
+        # Default to current track type if available
+        current_tt = st.session_state.get("acc_current_track_type")
+        default_tt = parent_types.index(current_tt) if current_tt in parent_types else 0
+        selected_type = st.selectbox("Track Type", parent_types,
+                                      index=default_tt, key="acc_tt_select",
+                                      format_func=lambda x: {
+                                          "superspeedway": "Superspeedway",
+                                          "short": "Short Track",
+                                          "road": "Road Course",
+                                          "intermediate": "Intermediate",
+                                      }.get(x, x.title()))
+
+        all_races = _query_db_completed_races(query_series, track_type=selected_type)
+        context_label = f"{selected_type.replace('_', ' ').title()}"
+        current_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(selected_type,
+                            TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {}))
+    else:
+        # Build list of tracks that have race data
+        all_db_races = _query_db_completed_races(query_series)
+        track_counts = {}
+        for _, r in all_db_races:
+            tn = r["track_name"]
+            track_counts[tn] = track_counts.get(tn, 0) + 1
+        # Sort by race count descending
+        track_list = sorted(track_counts.keys(), key=lambda t: track_counts[t], reverse=True)
+        if not track_list:
+            st.info("No completed races found in the database.")
+            return
+
+        selected_track = st.selectbox(
+            "Track", track_list, key="acc_track_select",
+            format_func=lambda t: f"{t} ({track_counts[t]} races)")
+
+        all_races = _query_db_completed_races(query_series, track_name=selected_track)
+        tt = TRACK_TYPE_MAP.get(selected_track, "intermediate")
+        parent_tt = TRACK_TYPE_PARENT.get(tt, tt)
+        context_label = selected_track
+        current_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_tt,
+                            TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {}))
+
+    if not all_races:
         st.info("No completed races match the selected filters.")
         return
 
-    race_names = [f"{r.get('track_name', '')}" for _, r in test_races]
-    st.caption(f"Tracks: {', '.join(race_names)}")
+    # ── Race count slider ──
+    max_races = min(len(all_races), 30)
+    r_cols = st.columns([2, 4])
+    with r_cols[0]:
+        n_races = st.slider("Races to test", 3, max_races,
+                             min(max_races, 15), key="acc_n_races")
+
+    test_races = all_races[:n_races]  # already sorted by date desc
+
+    # Show which races will be tested
+    series_breakdown = {}
+    track_names = []
+    for _, r in test_races:
+        sid = r.get("series_id", primary_sid)
+        sname = SERIES_LABELS.get(sid, str(sid))
+        series_breakdown[sname] = series_breakdown.get(sname, 0) + 1
+        track_names.append(r.get("track_name", ""))
+
+    breakdown_str = ", ".join(f"{v} {k}" for k, v in sorted(series_breakdown.items()))
+    unique_tracks = sorted(set(track_names))
+    if len(unique_tracks) <= 8:
+        st.caption(f"**{n_races} races** ({breakdown_str}): {', '.join(unique_tracks)}")
+    else:
+        st.caption(f"**{n_races} races** ({breakdown_str}) across {len(unique_tracks)} tracks")
+
+    # Show current defaults for this context
+    st.caption(
+        f"Current defaults ({context_label}): "
+        f"Odds {current_defaults.get('odds', 25)}% | "
+        f"Track {current_defaults.get('track', 20)}% | "
+        f"TType {current_defaults.get('ttype', 15)}% | "
+        f"Prac {current_defaults.get('prac', 10)}% | "
+        f"Team {current_defaults.get('team', 15)}% | "
+        f"Qual {current_defaults.get('qual', 15)}%"
+    )
 
     btn_cols = st.columns([1, 1, 4])
     with btn_cols[0]:
-        run_clicked = st.button("Run Weight Optimization", type="primary",
+        run_clicked = st.button("Run Optimization", type="primary",
                                  key="acc_run_opt")
     with btn_cols[1]:
         cancel_clicked = st.button("Cancel", key="acc_cancel_opt",
@@ -1264,23 +1400,29 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
 
     if run_clicked:
         st.session_state["acc_cancel"] = False
-        _run_backtest(test_races, series_id, selected_year, series_name,
-                      include_dnf)
+        _run_backtest(test_races, primary_sid, selected_year,
+                      context_label, include_dnf)
     elif "acc_opt_results" in st.session_state:
-        # Show previous results without re-running
         _display_backtest_results(
             st.session_state["acc_opt_results"],
-            st.session_state.get("acc_opt_series", series_name),
+            st.session_state.get("acc_opt_series", context_label),
         )
 
 
-def _run_backtest(test_races, series_id, selected_year, series_name,
+def _run_backtest(test_races, series_id, selected_year, context_label,
                   include_dnf=True, grid_step=5):
-    """Run full-signal backtest across weight combinations."""
+    """Run full-signal backtest across weight combinations.
+
+    Args:
+        test_races: list of (index, race_dict) — each race_dict has series_id
+        series_id: primary series (used as fallback)
+        context_label: display label for results (e.g. "Short Track" or "Bristol")
+        include_dnf: include DNF risk adjustment
+        grid_step: weight grid step size
+    """
     from src.utils import fuzzy_match_name
 
     # ── Per-signal weight constraints ──────────────────────────────────────
-    # These define the realistic min/max for each signal (must sum to 100%).
     SIGNAL_RANGES = {
         "odds":       (10, 40),
         "track":      (10, 35),
@@ -1308,7 +1450,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                     "practice": "Practice", "team": "Team", "qual": "Qualifying"}
     ranges_str = " | ".join(f"{range_labels.get(k,k)}: {v[0]}-{v[1]}%" for k, v in SIGNAL_RANGES.items())
     st.caption(f"Testing **{len(weight_combos)}** weight combinations across "
-               f"{len(test_races)} races ({series_name})")
+               f"{len(test_races)} races ({context_label})")
     st.caption(f"Signal constraints: {ranges_str}")
     progress = st.progress(0)
 
@@ -1330,9 +1472,12 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
         except Exception:
             yr = selected_year
 
+        # Each race may be from a different series
+        race_sid = race.get("series_id", series_id)
+
         # Load actual results (still needs API for race results)
-        feed = fetch_weekend_feed(series_id, race_id, yr)
-        laps = fetch_lap_times(series_id, race_id, yr)
+        feed = fetch_weekend_feed(race_sid, race_id, yr)
+        laps = fetch_lap_times(race_sid, race_id, yr)
         if not feed:
             continue
 
@@ -1352,13 +1497,13 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
 
         # Hybrid approach: scrape driveraverages.com baseline, subtract future races
         race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
-        th_data = _hybrid_track_stats(track_name, series_id, race_date=race_date)
+        th_data = _hybrid_track_stats(track_name, race_sid, race_date=race_date)
 
         # Track type removed from model
         tt_data = {}
 
         # DNF data — also time-bounded
-        dnf_data = query_driver_career_dnf(series_id, before_date=race_date) if include_dnf else {}
+        dnf_data = query_driver_career_dnf(race_sid, before_date=race_date) if include_dnf else {}
 
         # Start positions from actual results (qualifying proxy)
         start_positions = {}
@@ -1367,7 +1512,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
                 start_positions[row["Driver"]] = int(row["Start"])
 
         # Load saved odds for this race from DB
-        saved_odds = load_race_odds(race_id, series_id)
+        saved_odds = load_race_odds(race_id, race_sid)
         odds_finish = {}
         if saved_odds:
             # Filter null/empty odds
@@ -1430,7 +1575,7 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
             "race_laps": race_laps,
             "track_type": track_type,
             "track_name": race.get("track_name", ""),
-            "series_id": series_id,
+            "series_id": race_sid,
             "actual_dk": actual_dk,
             "dnf_data": dnf_data,
         })
@@ -1562,17 +1707,16 @@ def _run_backtest(test_races, series_id, selected_year, series_name,
 
     # Store results + race data in session state for drill-down
     st.session_state["acc_opt_results"] = results_df
-    st.session_state["acc_opt_series"] = series_name
+    st.session_state["acc_opt_series"] = context_label
     st.session_state["acc_opt_race_data"] = race_data
-    # dnf_data is now per-race inside race_data dicts
 
-    _display_backtest_results(results_df, series_name)
+    _display_backtest_results(results_df, context_label)
 
 
-def _display_backtest_results(results_df, series_name):
+def _display_backtest_results(results_df, context_label):
     """Display backtest results (separated so export doesn't re-run)."""
     # Show top 15
-    st.markdown(f"**Top 15 Weight Combinations — {series_name}**")
+    st.markdown(f"**Top 15 Weight Combinations — {context_label}**")
     top = results_df.head(15).copy()
     top["MAE"] = top["MAE"].round(1)
     top["Rank Corr"] = top["Rank Corr"].round(3)
@@ -1585,7 +1729,7 @@ def _display_backtest_results(results_df, series_name):
 
     best = results_df.iloc[0]
     st.success(
-        f"**Best weights ({series_name}):** Odds **{int(best['Odds'])}%** | "
+        f"**Best weights ({context_label}):** Odds **{int(best['Odds'])}%** | "
         f"Track **{int(best['Track'])}%** | "
         f"Track Type **{int(best.get('Track Type', 0))}%** | "
         f"Practice **{int(best.get('Practice', 0))}%** | "
@@ -1593,6 +1737,20 @@ def _display_backtest_results(results_df, series_name):
         f"Qual **{int(best.get('Qualifying', 0))}%** | "
         f"MAE: {best['MAE']:.1f} | Rank Corr: {best['Rank Corr']:.3f}"
     )
+
+    # "Apply to Projections" button — sets session state weights
+    apply_cols = st.columns([1.5, 4.5])
+    with apply_cols[0]:
+        if st.button("Apply Best to Projections", key="acc_apply_best",
+                      type="primary",
+                      help="Set the projections tab sliders to these optimal weights"):
+            st.session_state["pw_odds"] = int(best["Odds"])
+            st.session_state["pw_track"] = int(best["Track"])
+            st.session_state["pw_ttype"] = int(best.get("Track Type", 0))
+            st.session_state["pw_prac"] = int(best.get("Practice", 0))
+            st.session_state["pw_team"] = int(best.get("Team", 0))
+            st.session_state["pw_qual"] = int(best.get("Qualifying", 0))
+            st.success("Applied! Switch to the Projections tab and re-run to use these weights.")
 
     # Show current vs optimal comparison — read from projections tab session state
     int_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {})
@@ -1628,12 +1786,12 @@ def _display_backtest_results(results_df, series_name):
     else:
         st.caption("Your current weights weren't in the test grid (some are below the 5% minimum floor).")
 
-    # Export (does NOT re-run backtest)
+    # Export
     export_df = results_df.drop(columns=["Score"], errors="ignore").copy()
-    export_df.insert(0, "Series", series_name)
+    export_df.insert(0, "Context", context_label)
     csv = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("Export All Results CSV", csv,
-                       f"weight_optimization_{series_name}.csv", "text/csv",
+                       f"weight_optimization_{context_label}.csv", "text/csv",
                        key="acc_opt_export")
 
     # ── Drill-down: select a weight combo to see driver-level detail ──
@@ -1648,11 +1806,11 @@ def _display_backtest_results(results_df, series_name):
         top15 = results_df.head(15)
         combo_labels = []
         for idx, row in top15.iterrows():
-            tt_pct = int(row.get('Track Type', 0))
             lbl = (f"#{len(combo_labels) + 1}: "
-                   f"Odds {int(row['Odds'])}% | Track {int(row['Track'])}% | "
-                   f"TType {tt_pct}% | Prac {int(row['Practice'])}% — "
-                   f"MAE {row['MAE']:.1f}, Rank Corr {row['Rank Corr']:.3f}")
+                   f"O{int(row['Odds'])} T{int(row['Track'])} "
+                   f"TT{int(row.get('Track Type', 0))} P{int(row['Practice'])} "
+                   f"Tm{int(row.get('Team', 0))} Q{int(row.get('Qualifying', 0))} — "
+                   f"MAE {row['MAE']:.1f}, r={row['Rank Corr']:.3f}")
             combo_labels.append((lbl, row))
 
         selected_lbl = st.selectbox(
@@ -1944,7 +2102,7 @@ def _display_backtest_results(results_df, series_name):
 
                 csv_detail = detail_df.to_csv(index=True).encode("utf-8")
                 st.download_button("Export Detail CSV", csv_detail,
-                                   f"weight_detail_{series_name}.csv", "text/csv",
+                                   f"weight_detail_{context_label}.csv", "text/csv",
                                    key="acc_drill_export")
 
     # Clear saved projections button (separate from export)
