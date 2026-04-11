@@ -907,6 +907,177 @@ def query_team_stats(series_id: int, track_type: str = None,
         return {}
 
 
+def query_team_quality_lookup(series_id: int, min_season: int = 2022,
+                              before_date: str = None) -> dict:
+    """Query overall team quality: avg finish across all races per team.
+
+    Returns {team_name: avg_finish_pos} for teams with sufficient data.
+    This is a broad measure of team competitiveness (lower = better).
+    """
+    if not DB_PATH.exists():
+        return {}
+
+    conn = sqlite3.connect(str(DB_PATH))
+    params = [series_id, min_season]
+    date_filter = ""
+    if before_date:
+        date_filter = "AND r.race_date < ?"
+        params.append(before_date)
+
+    query = f'''
+        SELECT rr.team, ROUND(AVG(rr.finish_pos), 2) as avg_finish,
+               COUNT(*) as entries
+        FROM race_results rr
+        JOIN races r ON r.id = rr.race_id
+        WHERE r.series_id = ? AND r.season >= ?
+          AND rr.team IS NOT NULL AND rr.team != ''
+          {date_filter}
+        GROUP BY rr.team
+        HAVING entries >= 20
+        ORDER BY avg_finish
+    '''
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return {row[0]: row[1] for row in rows if row[0]}
+    except Exception:
+        conn.close()
+        return {}
+
+
+def query_driver_track_history_by_team(track_name: str, series_id: int,
+                                        before_date: str = None) -> dict:
+    """Query per-driver track history broken down by team.
+
+    Returns {driver_name: [{"team": str, "finish_pos": int, "race_date": str}, ...]}
+    Each entry is one race at this track with the team they drove for.
+    """
+    if not DB_PATH.exists():
+        return {}
+
+    conn = sqlite3.connect(str(DB_PATH))
+    params = [f"%{track_name}%", series_id]
+    date_filter = ""
+    if before_date:
+        date_filter = "AND r.race_date < ?"
+        params.append(before_date)
+
+    query = f'''
+        SELECT d.full_name, rr.team, rr.finish_pos, r.race_date
+        FROM race_results rr
+        JOIN drivers d ON d.id = rr.driver_id
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE t.name LIKE ? AND r.series_id = ?
+          AND rr.team IS NOT NULL AND rr.team != ''
+          {date_filter}
+        ORDER BY d.full_name, r.race_date
+    '''
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+    except Exception:
+        conn.close()
+        return {}
+
+    result = defaultdict(list)
+    for name, team, finish_pos, race_date in rows:
+        result[name].append({
+            "team": team,
+            "finish_pos": finish_pos,
+            "race_date": race_date,
+        })
+    return dict(result)
+
+
+def compute_team_adjusted_track_history(track_name: str, series_id: int,
+                                         driver_team_map: dict,
+                                         before_date: str = None) -> dict:
+    """Compute team-adjusted track history for all drivers.
+
+    For each driver, compares the quality of their historical teams at this
+    track to their current team. Adjusts avg_finish by the team quality delta.
+
+    Args:
+        track_name: track name for DB query
+        series_id: series ID
+        driver_team_map: {driver_name: current_team_name} from entry list
+        before_date: only include races before this date
+
+    Returns {driver_name: {"team_adj": float}} where team_adj is the
+    position adjustment to apply to track history (negative = improved team).
+    """
+    if not driver_team_map:
+        return {}
+
+    # Get overall team quality scores
+    team_quality = query_team_quality_lookup(series_id, before_date=before_date)
+    if not team_quality:
+        return {}
+
+    # Get per-driver race-by-race history with teams
+    driver_history = query_driver_track_history_by_team(
+        track_name, series_id, before_date=before_date)
+    if not driver_history:
+        return {}
+
+    # Compute field-average team quality for normalization
+    avg_team_quality = sum(team_quality.values()) / len(team_quality) if team_quality else 20.0
+
+    from src.utils import fuzzy_match_name
+
+    result = {}
+    team_names = list(team_quality.keys())
+
+    for driver, current_team in driver_team_map.items():
+        # Match current team to team quality lookup
+        matched_current = current_team if current_team in team_quality else \
+            fuzzy_match_name(current_team, team_names) if team_names else None
+        if not matched_current:
+            continue
+        current_quality = team_quality[matched_current]
+
+        # Get this driver's race-by-race history
+        # Try exact match first, then fuzzy
+        hist = driver_history.get(driver)
+        if not hist:
+            matched_driver = fuzzy_match_name(driver, list(driver_history.keys()))
+            hist = driver_history.get(matched_driver) if matched_driver else None
+        if not hist:
+            continue
+
+        # Compute weighted average of historical team qualities
+        # Weight recent races more heavily
+        hist_team_quals = []
+        for entry in hist:
+            h_team = entry["team"]
+            matched_h = h_team if h_team in team_quality else \
+                fuzzy_match_name(h_team, team_names) if team_names else None
+            if matched_h:
+                hist_team_quals.append(team_quality[matched_h])
+
+        if not hist_team_quals:
+            continue
+
+        avg_hist_team = sum(hist_team_quals) / len(hist_team_quals)
+
+        # Team adjustment: current quality vs historical quality
+        # Negative = improved (lower avg finish = better team)
+        # Cap the adjustment to prevent extreme swings
+        raw_adj = current_quality - avg_hist_team
+        # Cap at +/- 4 positions (generous but not extreme)
+        team_adj = max(-4.0, min(4.0, raw_adj))
+
+        # Only apply 60% of the adjustment (regression toward reality)
+        team_adj *= 0.60
+
+        result[driver] = {"team_adj": round(team_adj, 2),
+                          "current_team_quality": current_quality,
+                          "hist_team_quality": round(avg_hist_team, 2)}
+
+    return result
+
+
 def query_manufacturer_stats(series_id: int, track_type: str = None,
                               min_season: int = 2022,
                               before_date: str = None) -> dict:
@@ -2144,10 +2315,16 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
                 track_id = row["id"]
 
         # --- Find or create race ---
+        # First try by api_race_id (most reliable), then by series/season/race_num
         race_row = conn.execute(
-            "SELECT id FROM races WHERE series_id = ? AND season = ? AND race_num = ?",
-            (series_id, year, race_num),
+            "SELECT id FROM races WHERE api_race_id = ? AND series_id = ?",
+            (race_id, series_id),
         ).fetchone()
+        if not race_row:
+            race_row = conn.execute(
+                "SELECT id FROM races WHERE series_id = ? AND season = ? AND race_num = ?",
+                (series_id, year, race_num),
+            ).fetchone()
 
         if race_row:
             db_race_id = race_row["id"]

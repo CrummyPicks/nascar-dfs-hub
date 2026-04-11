@@ -24,6 +24,7 @@ from src.config import (
 from src.data import (
     query_projections, scrape_track_history, query_driver_dk_points_at_track,
     query_driver_career_dnf, query_team_stats, query_manufacturer_stats,
+    compute_team_adjusted_track_history,
 )
 # projection_bar no longer used — replaced with inline stacked bar
 from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge
@@ -928,7 +929,24 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     trust = min(1.0, ts["races"] / 10)
                     team_signal[d] = team_finish * trust + (field_size * 0.5) * (1 - trust)
 
-    # ── 2c. Manufacturer Adjustment (track-type specific) ────────────────────
+    # ── 2c. Team-Adjusted Track History ──────────────────────────────────────
+    # If a driver changed teams, adjust their historical avg_finish at this
+    # track by the difference in team quality (e.g., moving to Hendrick from
+    # a mid-pack team should lower their expected finish).
+    team_adj_data = {}  # {driver: {"team_adj": float, ...}}
+    if wn.get("team", 0) > 0:
+        _driver_team_map = {}
+        if not entry_df.empty and "Team" in entry_df.columns:
+            for _, row in entry_df.iterrows():
+                if pd.notna(row.get("Driver")) and pd.notna(row.get("Team")):
+                    _driver_team_map[row["Driver"]] = row["Team"]
+        if _driver_team_map:
+            team_adj_data = compute_team_adjusted_track_history(
+                track_name, series_id, _driver_team_map,
+                before_date=race_date if not is_prerace else None,
+            )
+
+    # ── 2d. Manufacturer Adjustment (track-type specific) ────────────────────
     mfr_adjustment = {}  # {driver: position adjustment (+/- 1.5 max)}
     mfr_stats = query_manufacturer_stats(
         series_id, track_type=track_type, min_season=2022,
@@ -1106,6 +1124,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 base_finish = arp * 0.65 + af * 0.35
             else:
                 base_finish = af
+
+            # Team-adjusted track history: if driver changed teams, shift
+            # their historical avg_finish by the team quality delta
+            t_adj = team_adj_data.get(d)
+            if t_adj and t_adj.get("team_adj", 0) != 0:
+                base_finish = base_finish + t_adj["team_adj"]
+                sig_detail["Team Adj"] = round(t_adj["team_adj"], 1)
 
             regressed = base_finish * trust + mid_field * (1 - trust)
             finish_signals.append(regressed)
@@ -1411,6 +1436,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "Sig Team": sig.get("Team"),
             "Sig Prac": sig.get("Prac"),
             "Mfr Adj": sig.get("Mfr"),
+            "Team Adj": sig.get("Team Adj"),
         })
 
     proj = pd.DataFrame(rows)
@@ -1471,7 +1497,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                         )
     # Signal detail columns at the end — practice before qualifying
     display_cols.extend(["Sig Odds", "Sig Track", "Sig TType",
-                         "Sig Prac", "Sig Qual", "Sig Team", "Mfr Adj"])
+                         "Sig Prac", "Sig Qual", "Sig Team", "Team Adj", "Mfr Adj"])
     avail = [c for c in display_cols if c in proj.columns]
 
     # Auto-save pre-race projections for historical record
