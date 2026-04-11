@@ -541,100 +541,110 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
     # ─── PLAYER POOL WITH LOCK/EXCLUDE ─────────────────────────────────────
     st.markdown("---")
-    st.markdown("**Player Pool**")
+    n_locked = len(st.session_state.opt_locked)
+    n_excluded = len(st.session_state.opt_excluded)
+    pool_label = "Player Pool"
+    if n_locked or n_excluded:
+        parts = []
+        if n_locked:
+            parts.append(f"{n_locked} locked")
+        if n_excluded:
+            parts.append(f"{n_excluded} excluded")
+        pool_label += f"  ({', '.join(parts)})"
 
-    pool_display = pool.copy()
-    lineup_drivers = {d["Driver"] for d in st.session_state.opt_lineup} if st.session_state.opt_lineup else set()
+    with st.expander(pool_label, expanded=False):
+        pool_display = pool.copy()
+        lineup_drivers = {d["Driver"] for d in st.session_state.opt_lineup} if st.session_state.opt_lineup else set()
 
-    # Build status column
-    pool_display["In Lineup"] = pool_display["Driver"].apply(
-        lambda d: "Yes" if d in lineup_drivers else "")
-    pool_display["Rank"] = range(1, len(pool_display) + 1)
+        # Build status column
+        pool_display["In Lineup"] = pool_display["Driver"].apply(
+            lambda d: "Yes" if d in lineup_drivers else "")
+        pool_display["Rank"] = range(1, len(pool_display) + 1)
 
-    # Search filter
-    search = st.text_input("Search players...", "", key="pool_search",
-                            label_visibility="collapsed",
-                            placeholder="Search drivers...")
-    if search:
-        pool_display = pool_display[
-            pool_display["Driver"].str.contains(search, case=False, na=False)]
+        # Search filter
+        search = st.text_input("Search players...", "", key="pool_search",
+                                label_visibility="collapsed",
+                                placeholder="Search drivers...")
+        if search:
+            pool_display = pool_display[
+                pool_display["Driver"].str.contains(search, case=False, na=False)]
 
-    # Lock/Exclude checkboxes in a table-like layout
-    # Header row
-    hdr_cols = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
-    hdr_cols[0].markdown("**Lock**")
-    hdr_cols[1].markdown("**Exc**")
-    hdr_cols[2].markdown("**Driver**")
-    hdr_cols[3].markdown("**Salary**")
-    hdr_cols[4].markdown("**Proj**")
-    hdr_cols[5].markdown("**Value**")
-    hdr_cols[6].markdown("**Status**")
+        # Lock/Exclude checkboxes in a table-like layout
+        # Header row
+        hdr_cols = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
+        hdr_cols[0].markdown("**Lock**")
+        hdr_cols[1].markdown("**Exc**")
+        hdr_cols[2].markdown("**Driver**")
+        hdr_cols[3].markdown("**Salary**")
+        hdr_cols[4].markdown("**Proj**")
+        hdr_cols[5].markdown("**Value**")
+        hdr_cols[6].markdown("**Status**")
 
-    # Scrollable player rows
-    pool_rows = pool_display.head(40).to_dict("records")
-    locks_changed = False
-    excludes_changed = False
+        # Scrollable player rows
+        pool_rows = pool_display.head(40).to_dict("records")
+        locks_changed = False
+        excludes_changed = False
 
-    for i, row in enumerate(pool_rows):
-        driver = row["Driver"]
-        is_locked = driver in st.session_state.opt_locked
-        is_excluded = driver in st.session_state.opt_excluded
-        in_lineup = driver in lineup_drivers
+        for i, row in enumerate(pool_rows):
+            driver = row["Driver"]
+            is_locked = driver in st.session_state.opt_locked
+            is_excluded = driver in st.session_state.opt_excluded
+            in_lineup = driver in lineup_drivers
 
-        r = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
+            r = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
 
-        with r[0]:
-            new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{i}",
-                                    label_visibility="collapsed")
-            if new_lock != is_locked:
-                if new_lock:
-                    st.session_state.opt_locked.add(driver)
-                    st.session_state.opt_excluded.discard(driver)
-                else:
-                    st.session_state.opt_locked.discard(driver)
-                locks_changed = True
+            with r[0]:
+                new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{i}",
+                                        label_visibility="collapsed")
+                if new_lock != is_locked:
+                    if new_lock:
+                        st.session_state.opt_locked.add(driver)
+                        st.session_state.opt_excluded.discard(driver)
+                    else:
+                        st.session_state.opt_locked.discard(driver)
+                    locks_changed = True
 
-        with r[1]:
-            new_excl = st.checkbox("X", value=is_excluded, key=f"pp_excl_{i}",
-                                    label_visibility="collapsed")
-            if new_excl != is_excluded:
-                if new_excl:
-                    st.session_state.opt_excluded.add(driver)
-                    st.session_state.opt_locked.discard(driver)
-                else:
-                    st.session_state.opt_excluded.discard(driver)
-                excludes_changed = True
+            with r[1]:
+                new_excl = st.checkbox("X", value=is_excluded, key=f"pp_excl_{i}",
+                                        label_visibility="collapsed")
+                if new_excl != is_excluded:
+                    if new_excl:
+                        st.session_state.opt_excluded.add(driver)
+                        st.session_state.opt_locked.discard(driver)
+                    else:
+                        st.session_state.opt_excluded.discard(driver)
+                    excludes_changed = True
 
-        # Style: bold if locked, dim if excluded
-        name_style = f"**{driver}**" if is_locked else (f"~~{driver}~~" if is_excluded else driver)
-        r[2].markdown(name_style)
-        r[3].markdown(f"${row['DK Salary']:,.0f}")
-        r[4].markdown(f"{row['Proj Score']:.1f}")
-        r[5].markdown(f"{row['Value']:.2f}x")
+            # Style: bold if locked, dim if excluded
+            name_style = f"**{driver}**" if is_locked else (f"~~{driver}~~" if is_excluded else driver)
+            r[2].markdown(name_style)
+            r[3].markdown(f"${row['DK Salary']:,.0f}")
+            r[4].markdown(f"{row['Proj Score']:.1f}")
+            r[5].markdown(f"{row['Value']:.2f}x")
 
-        status = ""
-        if is_locked:
-            status = "Locked"
-        elif is_excluded:
-            status = "Out"
-        elif in_lineup:
-            status = "In"
-        r[6].markdown(status)
+            status = ""
+            if is_locked:
+                status = "Locked"
+            elif is_excluded:
+                status = "Out"
+            elif in_lineup:
+                status = "In"
+            r[6].markdown(status)
 
-    if locks_changed or excludes_changed:
-        st.session_state.opt_lineup = _build_optimal_lineup(
-            pool, salary_cap, roster_size,
-            locked=list(st.session_state.opt_locked),
-            excluded=st.session_state.opt_excluded)
-        st.rerun()
+        if locks_changed or excludes_changed:
+            st.session_state.opt_lineup = _build_optimal_lineup(
+                pool, salary_cap, roster_size,
+                locked=list(st.session_state.opt_locked),
+                excluded=st.session_state.opt_excluded)
+            st.rerun()
 
-    # Clear all button
-    if st.button("Clear All Locks/Excludes", key="opt_clear"):
-        st.session_state.opt_locked = set()
-        st.session_state.opt_excluded = set()
-        st.session_state.opt_lineup = []
-        st.session_state.opt_multi_lineups = []
-        st.rerun()
+        # Clear all button
+        if st.button("Clear All Locks/Excludes", key="opt_clear"):
+            st.session_state.opt_locked = set()
+            st.session_state.opt_excluded = set()
+            st.session_state.opt_lineup = []
+            st.session_state.opt_multi_lineups = []
+            st.rerun()
 
     # Salary vs Projection scatter
     sal_fig = salary_vs_projection_scatter(pool)
