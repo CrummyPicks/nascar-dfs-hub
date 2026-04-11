@@ -465,6 +465,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.session_state.opt_excluded = set()
         st.session_state.opt_multi_lineups = []
         st.session_state.opt_overrides = {}
+        st.session_state.opt_pool_expanded = False
     if "opt_lineup" not in st.session_state:
         st.session_state.opt_lineup = []
     if "opt_locked" not in st.session_state:
@@ -527,7 +528,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     if status_parts:
         pool_label += f"  ({', '.join(status_parts)})"
 
-    with st.expander(pool_label, expanded=False):
+    # Keep expander open if user was interacting with player pool
+    pool_expanded = st.session_state.pop("opt_pool_expanded", False)
+    with st.expander(pool_label, expanded=pool_expanded):
         pool_display = pool.copy()
         lineup_drivers = {d["Driver"] for d in st.session_state.opt_lineup} if st.session_state.opt_lineup else set()
 
@@ -543,6 +546,21 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         if search:
             pool_display = pool_display[
                 pool_display["Driver"].str.contains(search, case=False, na=False)]
+
+        # Reset All button — above the driver list
+        if st.button("Reset All (Locks, Excludes, Overrides)", key="opt_reset_all",
+                      type="secondary"):
+            st.session_state.opt_locked = set()
+            st.session_state.opt_excluded = set()
+            st.session_state.opt_overrides = {}
+            st.session_state.opt_lineup = []
+            st.session_state.opt_multi_lineups = []
+            st.session_state.opt_pool_expanded = False
+            # Clear all widget keys so checkboxes/overrides reset on next render
+            for k in list(st.session_state.keys()):
+                if k.startswith(("pp_lock_", "pp_excl_", "pp_ov_", "lu_lock_", "lu_excl_")):
+                    del st.session_state[k]
+            st.rerun()
 
         # Lock/Exclude/Override in a table-like layout
         # Header row
@@ -637,16 +655,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 pool, salary_cap, roster_size,
                 locked=list(st.session_state.opt_locked),
                 excluded=st.session_state.opt_excluded)
-            st.rerun()
-
-        # Reset All button
-        if st.button("Reset All (Locks, Excludes, Overrides)", key="opt_reset_all",
-                      type="secondary"):
-            st.session_state.opt_locked = set()
-            st.session_state.opt_excluded = set()
-            st.session_state.opt_overrides = {}
-            st.session_state.opt_lineup = []
-            st.session_state.opt_multi_lineups = []
+            # Keep player pool open so user can continue making changes
+            st.session_state.opt_pool_expanded = True
             st.rerun()
 
     # Salary vs Projection scatter
