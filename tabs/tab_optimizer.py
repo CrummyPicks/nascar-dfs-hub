@@ -464,6 +464,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.session_state.opt_locked = set()
         st.session_state.opt_excluded = set()
         st.session_state.opt_multi_lineups = []
+        st.session_state.opt_overrides = {}
     if "opt_lineup" not in st.session_state:
         st.session_state.opt_lineup = []
     if "opt_locked" not in st.session_state:
@@ -472,6 +473,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.session_state.opt_excluded = set()
     if "opt_multi_lineups" not in st.session_state:
         st.session_state.opt_multi_lineups = []
+    if "opt_overrides" not in st.session_state:
+        st.session_state.opt_overrides = {}
 
     # --- Settings bar ---
     s1, s2, s3, s4 = st.columns(4)
@@ -498,38 +501,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.warning("Could not build projection pool. Check salary data.")
         return
 
-    # ─── PROJECTION OVERRIDES ──────────────────────────────────────────────
-    if "opt_overrides" not in st.session_state:
-        st.session_state.opt_overrides = {}
-
-    with st.expander("Projection Overrides", expanded=False):
-        st.caption("Override projected points for specific drivers. "
-                   "Lineups will optimize using your custom values.")
-        ov_cols = st.columns([2, 1, 1])
-        with ov_cols[0]:
-            all_drivers = sorted(pool["Driver"].tolist())
-            ov_driver = st.selectbox("Driver", [""] + all_drivers,
-                                      key="opt_ov_driver", label_visibility="collapsed")
-        with ov_cols[1]:
-            current = pool[pool["Driver"] == ov_driver]["Proj Score"].values[0] if ov_driver else 0
-            ov_pts = st.number_input("Proj Pts", 0.0, 300.0, float(current), 1.0,
-                                      key="opt_ov_pts", label_visibility="collapsed")
-        with ov_cols[2]:
-            if st.button("Set Override", key="opt_ov_set") and ov_driver:
-                st.session_state.opt_overrides[ov_driver] = ov_pts
-                st.rerun()
-
-        # Show active overrides
-        if st.session_state.opt_overrides:
-            st.markdown("**Active overrides:**")
-            for drv, pts in sorted(st.session_state.opt_overrides.items()):
-                orig = pool[pool["Driver"] == drv]["Proj Score"].values[0] if drv in pool["Driver"].values else 0
-                st.caption(f"  {drv}: {orig:.1f} -> **{pts:.1f}**")
-            if st.button("Clear All Overrides", key="opt_ov_clear"):
-                st.session_state.opt_overrides = {}
-                st.rerun()
-
-    # Apply overrides to pool
+    # Apply overrides to pool BEFORE anything else uses it
     for drv, pts in st.session_state.opt_overrides.items():
         mask = pool["Driver"] == drv
         if mask.any():
@@ -539,18 +511,21 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
     proj_source = engine_label
 
-    # ─── PLAYER POOL WITH LOCK/EXCLUDE ─────────────────────────────────────
+    # ─── PLAYER POOL WITH LOCK/EXCLUDE/OVERRIDES ──────────────────────────
     st.markdown("---")
     n_locked = len(st.session_state.opt_locked)
     n_excluded = len(st.session_state.opt_excluded)
+    n_overrides = len(st.session_state.opt_overrides)
     pool_label = "Player Pool"
-    if n_locked or n_excluded:
-        parts = []
-        if n_locked:
-            parts.append(f"{n_locked} locked")
-        if n_excluded:
-            parts.append(f"{n_excluded} excluded")
-        pool_label += f"  ({', '.join(parts)})"
+    status_parts = []
+    if n_locked:
+        status_parts.append(f"{n_locked} locked")
+    if n_excluded:
+        status_parts.append(f"{n_excluded} excluded")
+    if n_overrides:
+        status_parts.append(f"{n_overrides} overrides")
+    if status_parts:
+        pool_label += f"  ({', '.join(status_parts)})"
 
     with st.expander(pool_label, expanded=False):
         pool_display = pool.copy()
@@ -569,29 +544,30 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             pool_display = pool_display[
                 pool_display["Driver"].str.contains(search, case=False, na=False)]
 
-        # Lock/Exclude checkboxes in a table-like layout
+        # Lock/Exclude/Override in a table-like layout
         # Header row
-        hdr_cols = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
-        hdr_cols[0].markdown("**Lock**")
-        hdr_cols[1].markdown("**Exc**")
+        hdr_cols = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.7])
+        hdr_cols[0].markdown("**L**")
+        hdr_cols[1].markdown("**X**")
         hdr_cols[2].markdown("**Driver**")
         hdr_cols[3].markdown("**Salary**")
         hdr_cols[4].markdown("**Proj**")
-        hdr_cols[5].markdown("**Value**")
-        hdr_cols[6].markdown("**Status**")
+        hdr_cols[5].markdown("**Override**")
+        hdr_cols[6].markdown("**Value**")
+        hdr_cols[7].markdown("**Status**")
 
         # Scrollable player rows
-        pool_rows = pool_display.head(40).to_dict("records")
-        locks_changed = False
-        excludes_changed = False
+        pool_rows = pool_display.head(50).to_dict("records")
+        needs_rerun = False
 
         for i, row in enumerate(pool_rows):
             driver = row["Driver"]
             is_locked = driver in st.session_state.opt_locked
             is_excluded = driver in st.session_state.opt_excluded
             in_lineup = driver in lineup_drivers
+            has_override = driver in st.session_state.opt_overrides
 
-            r = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 0.8])
+            r = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.7])
 
             with r[0]:
                 new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{i}",
@@ -602,7 +578,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         st.session_state.opt_excluded.discard(driver)
                     else:
                         st.session_state.opt_locked.discard(driver)
-                    locks_changed = True
+                    needs_rerun = True
 
             with r[1]:
                 new_excl = st.checkbox("X", value=is_excluded, key=f"pp_excl_{i}",
@@ -613,14 +589,32 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         st.session_state.opt_locked.discard(driver)
                     else:
                         st.session_state.opt_excluded.discard(driver)
-                    excludes_changed = True
+                    needs_rerun = True
 
-            # Style: bold if locked, dim if excluded
+            # Driver name: bold if locked, strikethrough if excluded
             name_style = f"**{driver}**" if is_locked else (f"~~{driver}~~" if is_excluded else driver)
             r[2].markdown(name_style)
             r[3].markdown(f"${row['DK Salary']:,.0f}")
             r[4].markdown(f"{row['Proj Score']:.1f}")
-            r[5].markdown(f"{row['Value']:.2f}x")
+
+            # Override input — small number field
+            with r[5]:
+                override_val = st.number_input(
+                    "ov", min_value=0.0, max_value=300.0,
+                    value=float(st.session_state.opt_overrides.get(driver, 0)),
+                    step=1.0, key=f"pp_ov_{i}",
+                    label_visibility="collapsed",
+                    format="%.0f",
+                )
+                # 0 means no override; any positive value is an override
+                if override_val > 0 and override_val != st.session_state.opt_overrides.get(driver):
+                    st.session_state.opt_overrides[driver] = override_val
+                    needs_rerun = True
+                elif override_val == 0 and driver in st.session_state.opt_overrides:
+                    del st.session_state.opt_overrides[driver]
+                    needs_rerun = True
+
+            r[6].markdown(f"{row['Value']:.2f}x")
 
             status = ""
             if is_locked:
@@ -629,19 +623,28 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 status = "Out"
             elif in_lineup:
                 status = "In"
-            r[6].markdown(status)
+            r[7].markdown(status)
 
-        if locks_changed or excludes_changed:
+        if needs_rerun:
+            # Re-apply overrides to pool before re-optimizing
+            for drv, pts in st.session_state.opt_overrides.items():
+                mask = pool["Driver"] == drv
+                if mask.any():
+                    pool.loc[mask, "Proj Score"] = pts
+                    sal = pool.loc[mask, "DK Salary"].values[0]
+                    pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=list(st.session_state.opt_locked),
                 excluded=st.session_state.opt_excluded)
             st.rerun()
 
-        # Clear all button
-        if st.button("Clear All Locks/Excludes", key="opt_clear"):
+        # Reset All button
+        if st.button("Reset All (Locks, Excludes, Overrides)", key="opt_reset_all",
+                      type="secondary"):
             st.session_state.opt_locked = set()
             st.session_state.opt_excluded = set()
+            st.session_state.opt_overrides = {}
             st.session_state.opt_lineup = []
             st.session_state.opt_multi_lineups = []
             st.rerun()
@@ -662,7 +665,15 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.session_state.opt_lineup = _build_optimal_lineup(
             pool, salary_cap, roster_size, locked=locked, excluded=excluded)
 
+    # Sync lineup scores with current pool (overrides may have changed)
     lineup = st.session_state.opt_lineup
+    if lineup:
+        pool_scores = pool.set_index("Driver")["Proj Score"].to_dict()
+        pool_values = pool.set_index("Driver")["Value"].to_dict()
+        for d in lineup:
+            if d["Driver"] in pool_scores:
+                d["Proj Score"] = pool_scores[d["Driver"]]
+                d["Value"] = pool_values.get(d["Driver"], d.get("Value", 0))
 
     # Lineup header
     if lineup:
@@ -677,32 +688,42 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         hdr[3].metric("Remaining", f"${remaining:,}")
         with hdr[4]:
             if st.button("Re-Optimize", key="opt_reoptimize", type="primary"):
+                # Clear swap keys so dropdowns reset
+                for k in list(st.session_state.keys()):
+                    if k.startswith("swap_"):
+                        del st.session_state[k]
                 st.session_state.opt_lineup = _build_optimal_lineup(
                     pool, salary_cap, roster_size,
                     locked=locked, excluded=excluded)
                 st.rerun()
 
         # Lineup table with swap controls
-        for slot_idx, driver_data in enumerate(
-                sorted(lineup, key=lambda x: x["Proj Score"], reverse=True)):
+        sorted_lineup = sorted(lineup, key=lambda x: x["Proj Score"], reverse=True)
+        for slot_idx, driver_data in enumerate(sorted_lineup):
             driver = driver_data["Driver"]
             is_locked = driver in st.session_state.opt_locked
 
-            row_cols = st.columns([0.4, 0.4, 2.5, 1, 1, 1, 2])
+            row_cols = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 2.2])
 
             # Lock toggle
             with row_cols[0]:
-                lock_key = f"lock_{slot_idx}"
-                if st.checkbox("L", value=is_locked, key=lock_key, label_visibility="collapsed"):
+                new_lock = st.checkbox("L", value=is_locked,
+                                        key=f"lu_lock_{slot_idx}",
+                                        label_visibility="collapsed")
+                if new_lock and not is_locked:
                     st.session_state.opt_locked.add(driver)
-                elif driver in st.session_state.opt_locked:
+                elif not new_lock and is_locked:
                     st.session_state.opt_locked.discard(driver)
 
-            # Exclude (remove from lineup)
+            # Exclude (remove from lineup and add to excluded set)
             with row_cols[1]:
-                if st.button("X", key=f"excl_{slot_idx}"):
+                if st.button("X", key=f"lu_excl_{slot_idx}"):
                     st.session_state.opt_excluded.add(driver)
                     st.session_state.opt_locked.discard(driver)
+                    # Clear swap keys so dropdowns reset
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("swap_"):
+                            del st.session_state[k]
                     st.session_state.opt_lineup = _build_optimal_lineup(
                         pool, salary_cap, roster_size,
                         locked=list(st.session_state.opt_locked),
@@ -715,7 +736,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             row_cols[4].markdown(f"{driver_data['Proj Score']:.1f}")
             row_cols[5].markdown(f"{driver_data.get('Value', 0):.2f}x")
 
-            # Swap dropdown
+            # Swap dropdown — use on_change callback pattern
             with row_cols[6]:
                 swap_candidates = _get_swap_candidates(
                     pool, lineup, driver, salary_cap, roster_size)
@@ -724,18 +745,25 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         f"{r['Driver']} (${r['DK Salary']:,} | {r['Proj Score']:.1f})"
                         for _, r in swap_candidates.head(10).iterrows()
                     ]
+                    swap_key = f"swap_{slot_idx}"
                     swap_pick = st.selectbox(
-                        "swap", swap_options, key=f"swap_{slot_idx}",
+                        "swap", swap_options, key=swap_key,
                         label_visibility="collapsed")
                     if swap_pick != "Swap...":
                         swap_name = swap_pick.split(" ($")[0]
                         new_driver = swap_candidates[
                             swap_candidates["Driver"] == swap_name].iloc[0].to_dict()
+                        # Replace in lineup
                         new_lineup = [d for d in st.session_state.opt_lineup
                                       if d["Driver"] != driver]
                         new_lineup.append(new_driver)
                         st.session_state.opt_lineup = new_lineup
+                        # Remove lock from swapped-out driver
                         st.session_state.opt_locked.discard(driver)
+                        # Clear ALL swap keys so dropdowns reset to "Swap..."
+                        for k in list(st.session_state.keys()):
+                            if k.startswith("swap_"):
+                                del st.session_state[k]
                         st.rerun()
 
     else:
