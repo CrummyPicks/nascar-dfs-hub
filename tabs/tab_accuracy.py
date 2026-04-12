@@ -577,30 +577,22 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                            track_name="", series_id=None):
     """Run the full projection model for a single race.
 
-    Matches the live projection engine: finish pts + diff pts + laps led + fastest laps.
-    Uses all 5 signals with weight redistribution when data is missing.
+    Synchronized with the live projection engine in tab_projections.py:
+    - Two-pass signal normalization (per-signal-type strategy)
+    - Probability-weighted odds conversion
+    - Finish pts + diff pts + laps led + fastest laps
     Returns dict of {driver: proj_dk_points}
-
-    Args:
-        drivers: list of driver names
-        field_size: number of drivers in field
-        wn: normalized weights dict {track, track_type, qual, practice, odds}
-        th_data: {driver: {avg_finish, speed_score, laps_led_per_race, ...}}
-        tt_data: {driver: {avg_finish, laps_led_per_race, ...}}
-        start_positions: {driver: start_pos} (qualifying proxy)
-        odds_finish: {driver: implied_finish} from odds
-        dnf_data: {driver: {dnf_rate, crash_rate, speed_score}} career DNF info
-        race_laps: scheduled laps for the race (needed for LL/FL allocation)
-        track_type: track type string for concentration lookup
     """
-    driver_raw_scores = {}
-    dom_raw_scores = {}
-    fl_raw_scores = {}
-
-    # Load calibration early for dominator score normalization
     from tabs.tab_projections import _get_track_dominator_calibration
     calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
     ll_ref = calibration.get("avg_top_leader", race_laps * 0.35)
+
+    mid_field = field_size * 0.5
+    MIN_RACES_FULL_TRUST = 5
+
+    # ── Pass 1: Collect raw signal values per driver ──
+    raw_signals = {}
+    signal_weight_map = {}
 
     for d in drivers:
         th = th_data.get(d)
@@ -608,32 +600,18 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         sp = start_positions.get(d)
         od = odds_finish.get(d)
 
-        # ── Finish composite (same as live engine) ──
-        finish_signals = []
-        signal_weights = []
-        has_history = bool(th or tt)
-
-        # Sample-size regression: regress avg_finish toward mid-field for
-        # drivers with very few races. This prevents 1-race wonders from
-        # being ranked as if their small sample is reliable.
-        mid_field = field_size * 0.5
-        MIN_RACES_FULL_TRUST = 5  # fully trust avg_finish at 5+ races
+        sigs = {}
+        sig_w = {}
 
         if th and wn.get("track", 0) > 0:
             races = th.get("races", 1)
             trust = min(1.0, races / MIN_RACES_FULL_TRUST)
-            # ARP 65% + Avg Finish 35% (matches live projection engine)
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
-            if arp is not None:
-                base_finish = arp * 0.65 + af * 0.35
-            else:
-                base_finish = af
-            regressed_finish = base_finish * trust + mid_field * (1 - trust)
-            finish_signals.append(regressed_finish)
-            signal_weights.append(wn["track"])
+            base_finish = arp * 0.65 + af * 0.35 if arp is not None else af
+            sigs["track"] = base_finish * trust + mid_field * (1 - trust)
+            sig_w["track"] = wn["track"]
 
-        # Track type — absorb track weight if no track-specific data
         tt_weight = wn.get("track_type", 0)
         if not th and tt and wn.get("track", 0) > 0:
             tt_weight = wn.get("track_type", 0) + wn.get("track", 0)
@@ -642,21 +620,16 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
             tt_arp = tt.get("avg_running_pos")
             tt_af = tt.get("avg_finish", mid_field)
-            if tt_arp is not None:
-                tt_avg = tt_arp * 0.65 + tt_af * 0.35
-            else:
-                tt_avg = tt_af
-            tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
-            finish_signals.append(tt_regressed)
-            signal_weights.append(tt_weight)
+            tt_avg = tt_arp * 0.65 + tt_af * 0.35 if tt_arp is not None else tt_af
+            sigs["ttype"] = tt_avg * tt_trust + mid_field * (1 - tt_trust)
+            sig_w["ttype"] = tt_weight
 
-        # Qualifying — place differential potential
         if sp and sp <= field_size and wn.get("qual", 0) > 0:
-            qual_finish = sp * 0.80 + mid_field * 0.20
-            finish_signals.append(qual_finish)
-            signal_weights.append(wn["qual"])
+            has_history = bool(th or tt)
+            sigs["qual"] = sp * 0.80 + mid_field * 0.20 if has_history else sp * 0.40 + mid_field * 0.60
+            sig_w["qual"] = wn["qual"]
 
-        # Practice proxy: use speed_score from track history OR track type
+        # Practice proxy: use speed_score from track history or track type
         speed_source = th if (th and th.get("speed_score", 0) > 0) else (
             tt if (tt and tt.get("speed_score", 0) > 0) else None)
         if speed_source and wn.get("practice", 0) > 0:
@@ -665,13 +638,59 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             max_speed = max(all_speeds) if all_speeds else 1
             if max_speed > 0:
                 speed_pct = speed_source["speed_score"] / max_speed
-                prac_finish = field_size * (1 - speed_pct * 0.8)
-                finish_signals.append(max(1, prac_finish))
-                signal_weights.append(wn["practice"])
+                sigs["prac"] = max(1, field_size * (1 - speed_pct * 0.8))
+                sig_w["prac"] = wn["practice"]
 
         if od and wn.get("odds", 0) > 0:
-            finish_signals.append(od)
-            signal_weights.append(wn["odds"])
+            has_history = bool(th or tt)
+            sigs["odds"] = od if has_history else od * 0.60 + mid_field * 0.40
+            sig_w["odds"] = wn["odds"]
+
+        raw_signals[d] = sigs
+        signal_weight_map[d] = sig_w
+
+    # ── Pass 2: Per-signal-type normalization to 1→field_size ──
+    signal_names = set()
+    for sigs in raw_signals.values():
+        signal_names.update(sigs.keys())
+
+    MINMAX_SIGNALS = {"odds", "track", "ttype"}
+    PASSTHROUGH_SIGNALS = {"qual", "prac"}
+
+    normalized_signals = {d: {} for d in drivers}
+    for sig_name in signal_names:
+        sig_vals = [(d, raw_signals[d][sig_name]) for d in drivers if sig_name in raw_signals[d]]
+        if not sig_vals:
+            continue
+
+        if sig_name in MINMAX_SIGNALS:
+            vals_only = [v for _, v in sig_vals]
+            raw_min, raw_max = min(vals_only), max(vals_only)
+            raw_range = raw_max - raw_min
+            for d, val in sig_vals:
+                if raw_range > 0:
+                    t = (val - raw_min) / raw_range
+                    normalized_signals[d][sig_name] = 1 + (field_size - 1) * t
+                else:
+                    normalized_signals[d][sig_name] = mid_field
+        else:
+            for d, val in sig_vals:
+                normalized_signals[d][sig_name] = max(1, min(field_size, val))
+
+    # ── Pass 3: Weighted average of normalized signals + adjustments ──
+    driver_raw_scores = {}
+    dom_raw_scores = {}
+    fl_raw_scores = {}
+
+    for d in drivers:
+        norm = normalized_signals[d]
+        weights = signal_weight_map[d]
+
+        finish_signals = []
+        signal_weights = []
+        for sig_name in norm:
+            finish_signals.append(norm[sig_name])
+            signal_weights.append(weights.get(sig_name, 0))
 
         if finish_signals and sum(signal_weights) > 0:
             total_w = sum(signal_weights)
@@ -694,14 +713,15 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         driver_raw_scores[d] = raw_finish
 
         # ── Dominator score (laps led potential) — weight-aware ──
-        # All signals normalized to 0-100 using avg_top_leader as reference.
-        # Drivers WITHOUT track LL history get a low default (not skipped).
+        th = th_data.get(d)
+        sp = start_positions.get(d)
+        od = odds_finish.get(d)
+
         dom_score = 0.0
         if race_laps > 0:
             dom_signals = []
             dom_w = []
 
-            # Track history laps led: normalize against avg top leader
             if th and th.get("laps_led_per_race", 0) > 0:
                 ll_norm = min(100, (th["laps_led_per_race"] / max(ll_ref, 1)) * 100)
                 dom_signals.append(ll_norm)
@@ -725,8 +745,6 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                     dom_score = sum(s * w for s, w in zip(dom_signals, dom_w)) / total_dw
                 else:
                     dom_score = max(0, (field_size - raw_finish) / field_size) * 5
-            else:
-                dom_score = max(0, (field_size - raw_finish) / field_size) * 5
 
         dom_raw_scores[d] = dom_score
 
@@ -784,7 +802,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
     proj_dk = {}
     for d in drivers:
         proj_finish = driver_proj_finish[d]
-        pf_int = round(proj_finish)  # DK uses integer positions
+        pf_int = round(proj_finish)
         finish_pts = DK_FINISH_POINTS.get(max(1, min(40, pf_int)), 0)
 
         sp = start_positions.get(d)
