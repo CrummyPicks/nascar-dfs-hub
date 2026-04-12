@@ -11,6 +11,7 @@ from src.config import (
     SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, DK_FINISH_POINTS,
     TRACK_TYPE_WEIGHT_DEFAULTS,
 )
+from src.components import section_header
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps,
@@ -802,7 +803,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
 def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     """Render the Accuracy tab."""
-    st.markdown("### Projection Accuracy")
+    section_header("Projection Accuracy")
     st.caption("Compare projections vs actual results to improve future weight tuning")
 
     mode = st.radio("Mode",

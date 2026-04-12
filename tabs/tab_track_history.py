@@ -8,6 +8,7 @@ from src.data import (
 )
 from src.charts import track_history_bar, rating_vs_finish_scatter, arp_vs_finish_scatter, finish_distribution_box
 from src.utils import format_display_df, safe_fillna
+from src.components import section_header
 
 
 # Track type badge colors
@@ -63,7 +64,7 @@ def render(*, track_name, track_type, series_id):
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     badge = TRACK_TYPE_BADGES.get(track_type, TRACK_TYPE_BADGES.get(parent_type, ""))
     display_type = track_type.replace("_", " ").title()
-    st.markdown(f"### {track_name} — Driver History")
+    section_header(f"{track_name}", "Driver History")
     st.caption(f"Track type: {badge} **{display_type}**")
 
     # Track type filter — show all types + parent groups (only if parent has subtypes)

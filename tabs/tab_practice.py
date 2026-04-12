@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.components import render_practice_heatmap
+from src.components import render_practice_heatmap, section_header
 from src.charts import practice_lap_chart, practice_bar_chart
 from src.data import extract_practice_laps, extract_practice_lap_counts
 from src.utils import format_display_df, safe_fillna
@@ -12,7 +12,7 @@ from src.utils import format_display_df, safe_fillna
 
 def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_year):
     """Render the Practice tab."""
-    st.markdown(f"### Practice — {race_name}")
+    section_header("Practice", race_name)
 
     if lap_averages_df.empty:
         st.info("Practice data not yet available for this race.")

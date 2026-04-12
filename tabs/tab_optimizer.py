@@ -428,7 +428,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
            odds_data=None):
     """Render the Optimizer tab."""
-    st.markdown(f"### Lineup Optimizer — {race_name}")
+    from src.components import section_header
+    section_header("Lineup Optimizer", race_name)
 
     if dk_df.empty:
         # Try loading salaries from DB for completed races

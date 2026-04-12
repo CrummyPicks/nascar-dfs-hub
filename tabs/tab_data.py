@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from src.config import SERIES_LABELS
+from src.components import section_header
 from src.data import (
     scrape_track_history, query_db_track_history, query_driver_dk_points_at_track,
     compute_fastest_laps, compute_avg_running_position, load_arp_from_db,
@@ -25,7 +26,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     """Render the consolidated Data tab — same wide table for pre and post race."""
 
     series_name = SERIES_LABELS.get(series_id, "Cup")
-    st.markdown(f"### NASCAR — {series_name} Data")
+    section_header(f"NASCAR — {series_name} Data")
 
     # Toggle: Table | Charts
     view_mode = st.radio("View", ["Table", "Charts"], horizontal=True,

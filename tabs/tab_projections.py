@@ -362,7 +362,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
            odds_data=None, scheduled_laps=0, race_date="", season=2026):
     """Render the Projections tab."""
-    st.markdown(f"### Projections — {race_name}")
+    from src.components import section_header
+    section_header("Projections", race_name)
 
     if not is_prerace:
         st.caption("Race completed — projections shown for review")

@@ -35,64 +35,154 @@ st.set_page_config(page_title="NASCAR DFS Hub", page_icon="🏁", layout="wide",
                    initial_sidebar_state="collapsed")
 
 st.markdown("""<style>
+/* ══════════════════════════════════════════════════════════════
+   NASCAR DFS Hub — Global Theme
+   Palette: slate-950 bg, sky-500 accent (#0ea5e9)
+   ══════════════════════════════════════════════════════════════ */
+
 /* ── Base layout ── */
-.block-container { padding-top: 0.8rem; padding-bottom: 0.5rem; max-width: 1600px; }
+.block-container { padding-top: 0.5rem; padding-bottom: 0.5rem; max-width: 1600px; }
 [data-testid="collapsedControl"] { display: none; }
+.main .block-container { padding-top: 0.5rem; }
 
 /* ── Metrics ── */
 div[data-testid="stMetric"] {
-    background: #1a1f2e; border: 1px solid #2d3548; border-radius: 8px; padding: 8px 12px;
+    background: linear-gradient(135deg, #111827, #0f172a);
+    border: 1px solid #1e293b;
+    border-left: 3px solid #0ea5e9;
+    border-radius: 10px;
+    padding: 10px 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
-div[data-testid="stMetric"] label { color: #8892a4 !important; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
-div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #c9d1d9 !important; font-size: 1.1rem; }
+div[data-testid="stMetric"] label {
+    color: #64748b !important; font-size: 0.65rem; text-transform: uppercase;
+    letter-spacing: 0.8px; font-weight: 600;
+}
+div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: #f1f5f9 !important; font-size: 1.15rem; font-weight: 700;
+}
 
 /* ── Tabs ── */
-.stTabs [data-baseweb="tab-list"] { gap: 2px; background: #161b26; border-radius: 8px; padding: 3px; }
-.stTabs [data-baseweb="tab"] { background: transparent; border-radius: 6px; padding: 6px 16px;
-    font-weight: 500; color: #7c8599; font-size: 0.85rem; }
-.stTabs [data-baseweb="tab"][aria-selected="true"] { background: #252d3d; color: #e6edf3; }
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2px; background: #0f172a; border-radius: 10px; padding: 4px;
+    border: 1px solid #1e293b;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent; border-radius: 8px; padding: 8px 18px;
+    font-weight: 600; color: #64748b; font-size: 0.82rem;
+    transition: all 0.15s ease;
+}
+.stTabs [data-baseweb="tab"]:hover { color: #94a3b8; background: #1e293b40; }
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: #1e293b; color: #e2e8f0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+[data-baseweb="tab-highlight"] { background-color: #0ea5e9 !important; }
 
 /* ── Expanders ── */
-.streamlit-expanderHeader { border-radius: 6px; font-size: 0.85rem; }
-div[data-testid="stExpander"] { margin-bottom: 0.3rem; }
+div[data-testid="stExpander"] {
+    background: #111827; border: 1px solid #1e293b; border-radius: 10px;
+    margin-bottom: 0.4rem; overflow: hidden;
+}
+div[data-testid="stExpander"] summary {
+    font-size: 0.85rem; font-weight: 600; color: #cbd5e1;
+}
+div[data-testid="stExpander"] summary:hover { color: #e2e8f0; }
+
+/* ── Buttons ── */
+.stButton > button {
+    border: 1px solid #1e293b; border-radius: 8px; font-weight: 600;
+    font-size: 0.8rem; transition: all 0.15s ease;
+}
+.stButton > button:hover {
+    border-color: #0ea5e9; color: #0ea5e9;
+    box-shadow: 0 0 12px rgba(14,165,233,0.15);
+}
+.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #0ea5e9, #0284c7) !important;
+    border: none !important; color: #0f172a !important;
+}
+.stButton > button[kind="primary"]:hover, .stButton > button[data-testid="stBaseButton-primary"]:hover {
+    background: linear-gradient(135deg, #38bdf8, #0ea5e9) !important;
+    box-shadow: 0 0 16px rgba(14,165,233,0.3) !important;
+}
+.stDownloadButton > button {
+    border-color: #0ea5e9 !important; color: #0ea5e9 !important;
+    border-radius: 8px;
+}
+.stDownloadButton > button:hover {
+    background: #0ea5e910 !important;
+    box-shadow: 0 0 12px rgba(14,165,233,0.15);
+}
+
+/* ── Inputs & Selects ── */
+[data-baseweb="input"] [data-baseweb="base-input"] { border-color: #1e293b !important; border-radius: 8px; }
+[data-baseweb="input"]:focus-within [data-baseweb="base-input"] { border-color: #0ea5e9 !important; }
+[data-baseweb="select"] > div { border-color: #1e293b !important; border-radius: 8px !important; }
+div[data-baseweb="select"] ul { max-height: 300px !important; overflow-y: auto !important; }
+div[data-baseweb="popover"] { max-height: 350px !important; overflow-y: auto !important; }
+div[data-baseweb="popover"] > div { border-radius: 10px !important; border: 1px solid #1e293b !important; }
+
+/* ── Dataframes ── */
+[data-testid="stDataFrame"] {
+    border: 1px solid #1e293b; border-radius: 10px; overflow: hidden;
+}
 
 /* ── Spacing ── */
 .element-container { margin-bottom: 0.2rem; }
-div[data-baseweb="select"] ul { max-height: 300px !important; overflow-y: auto !important; }
-div[data-baseweb="popover"] { max-height: 350px !important; overflow-y: auto !important; }
+
+/* ── Dividers ── */
+hr { border-color: #1e293b !important; margin: 0.6rem 0 !important; }
 
 /* ── Remove underlines everywhere ── */
 .stMarkdown a, .stCaption a { text-decoration: none !important; }
 h1, h2, h3, h4, h5 { text-decoration: none !important; border-bottom: none !important; }
-.stMarkdown h3 { border-bottom: none !important; }
-[data-testid="stMarkdownContainer"] h3 { border-bottom: none !important; text-decoration: none !important; }
+.stMarkdown h3, [data-testid="stMarkdownContainer"] h3 { border-bottom: none !important; text-decoration: none !important; }
 [data-testid="stMarkdownContainer"] { text-decoration: none !important; }
-hr { border-color: #2d3548 !important; }
-/* ── Accent color overrides (supplements .streamlit/config.toml primaryColor) ── */
-[data-baseweb="tab-highlight"] { background-color: #4a7dfc !important; }
-[data-baseweb="input"] [data-baseweb="base-input"] { border-color: #2d3548 !important; }
-[data-baseweb="input"]:focus-within [data-baseweb="base-input"] { border-color: #4a7dfc !important; }
-.stDownloadButton > button { border-color: #4a7dfc !important; color: #4a7dfc !important; }
+
+/* ── Captions ── */
+.stCaption, [data-testid="stCaptionContainer"] { color: #475569 !important; }
+
+/* ── Checkboxes ── */
+[data-testid="stCheckbox"] label span { font-size: 0.82rem; }
+
+/* ── Number inputs ── */
+[data-testid="stNumberInput"] input { border-radius: 6px; }
 
 /* ── Mobile ── */
 @media (max-width: 768px) {
-    .block-container { padding-top: 0.5rem; padding-left: 0.5rem; padding-right: 0.5rem; }
-    .stTabs [data-baseweb="tab"] { padding: 4px 8px; font-size: 0.7rem; }
-    div[data-testid="stMetric"] { padding: 4px 6px; }
+    .block-container { padding-top: 0.3rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+    .stTabs [data-baseweb="tab"] { padding: 5px 10px; font-size: 0.7rem; }
+    div[data-testid="stMetric"] { padding: 6px 8px; }
     div[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size: 0.9rem; }
     h1 { font-size: 1.1rem !important; }
+    .nascar-header { padding: 0.5rem 0.8rem !important; }
+    .nascar-header h1 { font-size: 1.1rem !important; }
+    .nascar-header p { font-size: 0.7rem !important; }
 }
 @media (max-width: 480px) {
     .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap; }
-    .stTabs [data-baseweb="tab"] { padding: 3px 6px; font-size: 0.65rem; }
+    .stTabs [data-baseweb="tab"] { padding: 4px 7px; font-size: 0.65rem; }
 }
 </style>""", unsafe_allow_html=True)
 
 # Header
-st.markdown("""<div style='text-align:center; padding:0.6rem 1rem; border-bottom:2px solid #4a7dfc;
-  margin-bottom:0.5rem; background: linear-gradient(135deg, #1a1f2e, #161b26);'>
-  <h1 style='color:#c9d1d9; margin:0; font-size:1.4rem; line-height:1.3; letter-spacing:1px;
-  font-weight:600;'>NASCAR DFS Hub</h1>
+st.markdown("""<div class="nascar-header" style='
+  text-align: center;
+  padding: 0.8rem 1.2rem;
+  margin-bottom: 0.6rem;
+  background: linear-gradient(135deg, #0f172a 0%, #111827 50%, #0f172a 100%);
+  border-bottom: 2px solid #0ea5e9;
+  border-radius: 0 0 12px 12px;
+  box-shadow: 0 4px 20px rgba(14,165,233,0.08);
+'>
+  <h1 style='
+    color: #f1f5f9; margin: 0; font-size: 1.5rem; line-height: 1.2;
+    letter-spacing: 1.5px; font-weight: 700;
+  '>NASCAR DFS Hub</h1>
+  <p style='color: #475569; margin: 0.15rem 0 0; font-size: 0.78rem; letter-spacing: 0.5px;'>
+    Projections &middot; Optimizer &middot; Analytics
+  </p>
 </div>""", unsafe_allow_html=True)
 
 

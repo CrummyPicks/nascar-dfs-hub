@@ -5,6 +5,7 @@ import streamlit as st
 from datetime import datetime
 
 from src.config import SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+from src.components import section_header
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps, compute_avg_running_position,
@@ -35,7 +36,7 @@ def _get_tracks_for_type(track_type: str) -> list:
 
 def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     """Render the Race Analyzer tab."""
-    st.markdown("### Race Analyzer")
+    section_header("Race Analyzer")
     st.caption(f"Analyzing **{series_name}** — {selected_year} (change series/year in the top bar)")
 
     # --- Mode selector ---
