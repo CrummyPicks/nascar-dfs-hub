@@ -791,6 +791,14 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     comp.index.name = "Rank"
 
     # Driver exclusion selector
+    # Handle reset before rendering the multiselect so widget key is cleared first
+    if st.session_state.get("acc_do_reset", False):
+        st.session_state["acc_do_reset"] = False
+        st.session_state["acc_excluded_drivers"] = []
+        if "acc_exclude_select" in st.session_state:
+            del st.session_state["acc_exclude_select"]
+        st.rerun()
+
     all_drivers = comp["Driver"].tolist()
     exc_col1, exc_col2 = st.columns([4, 1])
     with exc_col1:
@@ -804,8 +812,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     with exc_col2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Reset", key="acc_reset_exclude"):
-            st.session_state["acc_excluded_drivers"] = []
-            st.session_state["acc_exclude_select"] = []
+            st.session_state["acc_do_reset"] = True
             st.rerun()
 
     st.session_state["acc_excluded_drivers"] = excluded_drivers
