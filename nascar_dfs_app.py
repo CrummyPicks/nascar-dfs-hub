@@ -359,15 +359,17 @@ with st.expander("Settings & Data Upload", expanded=False):
     # Refresh All button
     ref_cols = st.columns([1, 1, 4])
     with ref_cols[0]:
-        if st.button("Refresh Odds", key="refresh_all_btn", type="primary"):
+        if st.button("Auto-Fetch Odds", key="refresh_all_btn", type="primary",
+                     help="Attempts to scrape live win/top5/top10 odds from sportsbook APIs. "
+                          "May not always be available — paste manually if it fails."):
             _fetch_all_nascar_odds.clear()
             fresh_odds = fetch_nascar_odds(series_id)
             if fresh_odds:
                 auto_odds = fresh_odds
                 st.session_state[_odds_cache_key] = fresh_odds
-                st.success(f"Refreshed — Odds: {len(fresh_odds)} drivers")
+                st.success(f"Auto-fetched odds for {len(fresh_odds)} drivers")
             else:
-                st.warning("Odds refresh failed")
+                st.warning("Auto-fetch unavailable — paste odds manually")
 
     s_cols = st.columns([1, 1, 1, 1])
     with s_cols[0]:
