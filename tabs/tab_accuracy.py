@@ -805,6 +805,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Reset", key="acc_reset_exclude"):
             st.session_state["acc_excluded_drivers"] = []
+            st.session_state["acc_exclude_select"] = []
             st.rerun()
 
     st.session_state["acc_excluded_drivers"] = excluded_drivers
