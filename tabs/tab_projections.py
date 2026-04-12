@@ -1044,6 +1044,13 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 adj = max(-1.5, min(1.5, delta * 0.5))
                 mfr_adjustment[d] = adj
 
+    # ── 2e. Lapping Profile (short/short_concrete place diff adjustment) ───
+    lapping_profile = {}
+    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
+    if parent_type in ("short", "short_concrete"):
+        from src.data import query_lapping_profile
+        lapping_profile = query_lapping_profile(track_type, series_id)
+
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
     qual_pos = {}
     if not qualifying_df.empty and "Qualifying Position" in qualifying_df.columns:
@@ -1449,7 +1456,47 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         # DK scoring components (all based on integer positions)
         finish_pts = _expected_finish_from_avg(proj_finish_int)
-        diff_pts = int(start_pos - proj_finish_int)  # DK: ±1 per position, always integer
+        raw_diff = int(start_pos - proj_finish_int)  # DK: ±1 per position, always integer
+
+        # Lapping-adjusted place differential for short tracks
+        diff_pts = raw_diff
+        if lapping_profile and proj_finish_int > 0:
+            # Determine which bucket this driver falls into based on projected finish
+            if proj_finish_int <= 10:
+                # Frontrunners: no adjustment — these cars don't get lapped
+                pass
+            elif proj_finish_int <= 20:
+                bucket = lapping_profile.get("p11_20", {})
+                pct_lapped = bucket.get("pct_lapped", 0)
+                if pct_lapped > 30:
+                    # High lapping rate — cap upside, these drivers are often stuck a lap down
+                    max_gain = max(2, int(8 - pct_lapped * 0.06))  # 69% → max +3, 40% → max +5
+                    if diff_pts > max_gain:
+                        diff_pts = max_gain
+                    # Floor negative at -3 (lapped cars behind protect them)
+                    if diff_pts < -3:
+                        diff_pts = -3
+            elif proj_finish_int <= 30:
+                bucket = lapping_profile.get("p21_30", {})
+                pct_lapped = bucket.get("pct_lapped", 0)
+                avg_down = bucket.get("avg_laps_down", 0)
+                if pct_lapped > 50:
+                    # Heavily lapped — very limited upside, mild downside protection
+                    max_gain = max(1, int(5 - avg_down * 0.3))  # 8.9 down → max +2
+                    if diff_pts > max_gain:
+                        diff_pts = max_gain
+                    # Their downside is also limited — lapped cars behind them
+                    if diff_pts < -2:
+                        diff_pts = -2
+            else:
+                # P31+ backmarkers — almost always lapped, minimal movement
+                bucket = lapping_profile.get("p31_plus", {})
+                if bucket.get("pct_lapped", 0) > 80:
+                    # Cap upside severely, these cars are stuck laps down
+                    if diff_pts > 1:
+                        diff_pts = 1
+                    # But they can still lose positions (wreck, mechanical)
+                    # so don't floor negative
         led_pts = round(proj_laps_led) * 0.25
         fl_pts = round(proj_fastest) * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)

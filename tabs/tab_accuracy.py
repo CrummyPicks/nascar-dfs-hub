@@ -8,8 +8,8 @@ import os
 from datetime import datetime
 
 from src.config import (
-    SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, DK_FINISH_POINTS,
-    TRACK_TYPE_WEIGHT_DEFAULTS,
+    SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, TRACK_TYPE_DISPLAY,
+    DK_FINISH_POINTS, TRACK_TYPE_WEIGHT_DEFAULTS,
 )
 from src.components import section_header
 from src.data import (
@@ -1314,12 +1314,7 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
         default_tt = parent_types.index(current_tt) if current_tt in parent_types else 0
         selected_type = st.selectbox("Track Type", parent_types,
                                       index=default_tt, key="acc_tt_select",
-                                      format_func=lambda x: {
-                                          "superspeedway": "Superspeedway",
-                                          "short": "Short Track",
-                                          "road": "Road Course",
-                                          "intermediate": "Intermediate",
-                                      }.get(x, x.title()))
+                                      format_func=lambda x: TRACK_TYPE_DISPLAY.get(x, x.title()))
 
         all_races = _query_db_completed_races(query_series, track_type=selected_type)
         context_label = f"{selected_type.replace('_', ' ').title()}"

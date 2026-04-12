@@ -2515,3 +2515,74 @@ def detect_prerace(feed: dict) -> bool:
         return True
     # All finishing_position=0 means pre-race
     return all(r.get("finishing_position", 0) == 0 for r in results)
+
+
+def query_lapping_profile(track_type: str, series_id: int = 1,
+                          min_season: int = 2022) -> dict:
+    """Build a lapping profile for a track type from historical data.
+
+    Returns dict with finish-position buckets:
+        {
+            "p1_10":  {"avg_laps_down": 0.1, "pct_lapped": 8, "n": 80},
+            "p11_20": {"avg_laps_down": 1.1, "pct_lapped": 69, "n": 80},
+            "p21_30": {"avg_laps_down": 8.9, "pct_lapped": 84, "n": 80},
+            "p31_plus": {"avg_laps_down": 108.2, "pct_lapped": 100, "n": 56},
+        }
+    """
+    from src.config import DB_PATH, TRACK_TYPE_MAP
+    if not DB_PATH.exists():
+        return {}
+
+    # Collect track names for this track type
+    tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type]
+    if not tracks:
+        return {}
+
+    import sqlite3
+    conn = sqlite3.connect(str(DB_PATH))
+    placeholders = ",".join("?" for _ in tracks)
+    rows = conn.execute(f'''
+        SELECT r.id as race_id, rr.finish_pos, rr.laps_completed, rr.status
+        FROM race_results rr
+        JOIN races r ON r.id = rr.race_id
+        JOIN tracks t ON t.id = r.track_id
+        WHERE t.name IN ({placeholders})
+          AND r.series_id = ? AND r.season >= ?
+        ORDER BY r.id, rr.finish_pos
+    ''', [*tracks, series_id, min_season]).fetchall()
+    conn.close()
+
+    if not rows:
+        return {}
+
+    # Group by race, compute laps down relative to leader
+    from collections import defaultdict
+    races = defaultdict(list)
+    for race_id, finish_pos, laps_completed, status in rows:
+        races[race_id].append((finish_pos, laps_completed, status))
+
+    buckets = {"p1_10": [], "p11_20": [], "p21_30": [], "p31_plus": []}
+    for race_drivers in races.values():
+        max_laps = max(lc for _, lc, _ in race_drivers)
+        if max_laps == 0:
+            continue
+        for fp, lc, status in race_drivers:
+            down = max_laps - lc
+            if fp <= 10:
+                buckets["p1_10"].append(down)
+            elif fp <= 20:
+                buckets["p11_20"].append(down)
+            elif fp <= 30:
+                buckets["p21_30"].append(down)
+            else:
+                buckets["p31_plus"].append(down)
+
+    result = {}
+    for bkt, vals in buckets.items():
+        if vals:
+            result[bkt] = {
+                "avg_laps_down": round(sum(vals) / len(vals), 1),
+                "pct_lapped": round(sum(1 for v in vals if v > 0) / len(vals) * 100),
+                "n": len(vals),
+            }
+    return result

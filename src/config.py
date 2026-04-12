@@ -66,7 +66,7 @@ TRACK_TYPE_PARENT = {
     "superspeedway": "superspeedway",
     "road": "road",
     "short": "short",
-    "short_concrete": "short",
+    "short_concrete": "short_concrete",
     "intermediate": "intermediate",
     "intermediate_worn": "intermediate",
 }
@@ -167,13 +167,15 @@ DEFAULT_PROJECTION_WEIGHTS = {
 # Values are raw integers that get normalized to 100%.
 # Superspeedways: chaotic → odds matter most, qualifying huge for drafting diff pts.
 # Short tracks: specialists → track history matters most, team matters.
+# Short concrete (Bristol/Dover): aggressive lapping, high-banked concrete.
 # Road courses: setup-dependent → practice matters most.
 # Intermediate: balanced.
 TRACK_TYPE_WEIGHT_DEFAULTS = {
-    "superspeedway": {"odds": 35, "track": 15, "ttype": 15, "prac": 5,  "team": 10, "qual": 20},
-    "short":         {"odds": 30, "track": 25, "ttype": 10, "prac": 15, "team": 10, "qual": 10},
-    "road":          {"odds": 25, "track": 20, "ttype": 15, "prac": 25, "team": 10, "qual": 5},
-    "intermediate":  {"odds": 30, "track": 20, "ttype": 15, "prac": 10, "team": 10, "qual": 15},
+    "superspeedway":  {"odds": 35, "track": 15, "ttype": 15, "prac": 5,  "team": 10, "qual": 20},
+    "short":          {"odds": 30, "track": 25, "ttype": 10, "prac": 15, "team": 10, "qual": 10},
+    "short_concrete": {"odds": 30, "track": 25, "ttype": 5,  "prac": 15, "team": 10, "qual": 15},
+    "road":           {"odds": 25, "track": 20, "ttype": 15, "prac": 25, "team": 10, "qual": 5},
+    "intermediate":   {"odds": 30, "track": 20, "ttype": 15, "prac": 10, "team": 10, "qual": 15},
 }
 
 # ----------------------------
