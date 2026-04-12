@@ -320,19 +320,6 @@ else:
 # SETTINGS EXPANDER (DK/FD upload, weights)
 # ============================================================
 with st.expander("Settings & Data Upload", expanded=False):
-    # ── Admin authentication ──────────────────────────────────────────────
-    _admin_pw = st.secrets.get("ADMIN_PASSWORD", "") if hasattr(st, "secrets") else ""
-    is_admin = False
-    if _admin_pw:
-        pw_input = st.text_input("Admin Password", type="password", key="admin_pw",
-                                 placeholder="Enter password to enable uploads")
-        is_admin = (pw_input == _admin_pw)
-        if pw_input and not is_admin:
-            st.error("Incorrect password")
-    else:
-        # No password configured — allow everything (local dev)
-        is_admin = True
-
     # ── Auto-fetch status row ──────────────────────────────────────────────
     auto_odds = fetch_nascar_odds(series_id)
 
@@ -349,7 +336,11 @@ with st.expander("Settings & Data Upload", expanded=False):
         status_parts.append(f"Odds: {len(auto_odds)} drivers")
     else:
         status_parts.append("Odds: unavailable")
-    st.caption(" | ".join(status_parts))
+    st.markdown(
+        f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+        f'{" | ".join(status_parts)}</p>',
+        unsafe_allow_html=True,
+    )
 
     # Check for saved salaries in DB for this race
     db_dk_df = query_salaries(race_id=race_id, platform="DraftKings")
@@ -365,145 +356,157 @@ with st.expander("Settings & Data Upload", expanded=False):
     odds_source = ""
     is_cup = (series_id == 1)
 
-    if is_admin:
-        # Refresh All button
-        ref_cols = st.columns([1, 1, 4])
-        with ref_cols[0]:
-            if st.button("Refresh Odds", key="refresh_all_btn", type="primary"):
-                _fetch_all_nascar_odds.clear()
-                fresh_odds = fetch_nascar_odds(series_id)
-                if fresh_odds:
-                    auto_odds = fresh_odds
-                    st.session_state[_odds_cache_key] = fresh_odds
-                    st.success(f"Refreshed — Odds: {len(fresh_odds)} drivers")
-                else:
-                    st.warning("Odds refresh failed")
-
-        s_cols = st.columns([1, 1, 1, 1])
-        with s_cols[0]:
-            st.markdown("**DK Salary**")
-            if has_saved_dk:
-                st.caption(f"Saved: {len(db_dk_df)} drivers in DB for this race")
-            dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed",
-                                       key=f"dk_upload_{race_id}")
-            if dk_file:
-                st.caption("CSV uploaded — will save to DB")
-            # Clear button for saved salaries
-            if has_saved_dk:
-                if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
-                    try:
-                        import sqlite3 as _sql
-                        _conn = _sql.connect(str(DB_PATH))
-                        _db_race = _conn.execute(
-                            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                        ).fetchone()
-                        if _db_race:
-                            _conn.execute(
-                                "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
-                                (_db_race[0],))
-                            _conn.commit()
-                        _conn.close()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to clear salaries: {e}")
-        with s_cols[1]:
-            st.markdown("**FD Salary CSV**")
-            if has_saved_fd:
-                st.caption(f"Saved: {len(db_fd_df)} drivers in DB for this race")
-            fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed",
-                                       key=f"fd_upload_{race_id}")
-            if fd_file:
-                st.caption("CSV uploaded — will save to DB")
-            if has_saved_fd:
-                if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
-                    try:
-                        import sqlite3 as _sql
-                        _conn = _sql.connect(str(DB_PATH))
-                        _db_race = _conn.execute(
-                            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                        ).fetchone()
-                        if _db_race:
-                            _conn.execute(
-                                "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
-                                (_db_race[0],))
-                            _conn.commit()
-                        _conn.close()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to clear salaries: {e}")
-        with s_cols[2]:
-            st.markdown("**Manual Practice**")
-            practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
-                                         height=80, label_visibility="collapsed")
-            if practice_text.strip():
-                for line in practice_text.strip().split("\n"):
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 2:
-                        try:
-                            practice_data[parts[0]] = float(parts[1])
-                        except (ValueError, IndexError):
-                            pass
-        with s_cols[3]:
-            st.markdown("**Betting Odds**")
-            if auto_odds:
-                source_label = "Bovada/Action Network" if is_cup else "Bovada"
-                st.caption(f"Auto: {len(auto_odds)} drivers from {source_label}")
+    # Refresh All button
+    ref_cols = st.columns([1, 1, 4])
+    with ref_cols[0]:
+        if st.button("Refresh Odds", key="refresh_all_btn", type="primary"):
+            _fetch_all_nascar_odds.clear()
+            fresh_odds = fetch_nascar_odds(series_id)
+            if fresh_odds:
+                auto_odds = fresh_odds
+                st.session_state[_odds_cache_key] = fresh_odds
+                st.success(f"Refreshed — Odds: {len(fresh_odds)} drivers")
             else:
-                st.caption(f"No auto odds — paste from Bovada below")
-            odds_text = st.text_area(
-                "Odds", height=120, label_visibility="collapsed",
-                placeholder="Paste directly from Bovada:\nCorey Heim+300\nKyle Busch+450\n\nOr comma/space separated:\nKyle Larson, -115\nChase Elliott +1200",
-                help="Paste odds copied from Bovada webpage. Header lines "
-                     "(race name, date, 'Outright') are auto-skipped.",
-                key=f"odds_paste_{series_id}_{race_id}",
-            )
-            # Parse manual odds — supports Bovada copy-paste and CSV formats
-            if odds_text.strip():
-                import re as _re
-                # Lines to skip: race name headers, dates, times, section labels
-                _skip_patterns = _re.compile(
-                    r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
-                    r'|\d{1,2}/\d{1,2}/\d{2,4}'   # dates like 4/10/26
-                    r'|\d{1,2}:\d{2}\s*(am|pm)?'    # times like 2:30 PM
-                    r')$', _re.IGNORECASE
-                )
-                for line in odds_text.strip().split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # Skip known header/label lines
-                    if _skip_patterns.match(line):
-                        continue
-                    # Skip lines that look like a race name (no +/- odds number)
-                    if not _re.search(r'[+-]\d+', line):
-                        continue
-                    # Format 1: comma-separated "Driver Name, +350"
-                    if "," in line:
-                        parts = [p.strip() for p in line.split(",", 1)]
-                        if len(parts) == 2 and parts[0] and _re.match(r'^[+-]?\d+$', parts[1]):
-                            odds_data[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
-                            continue
-                    # Format 2: Bovada copy-paste "DriverName+300" (no space before odds)
-                    m = _re.match(r'^(.+?)([+-]\d+)$', line)
-                    if m:
-                        name = m.group(1).strip()
-                        if name:
-                            odds_data[name] = m.group(2)
-                            continue
-                    # Format 3: space-separated "Driver Name +350"
-                    m = _re.match(r'^(.+?)\s+([+-]\d+)$', line)
-                    if m:
-                        odds_data[m.group(1).strip()] = m.group(2)
-                if odds_data:
-                    odds_source = "manual"
-                    st.success(f"Parsed {len(odds_data)} drivers from pasted odds")
-    else:
-        # Read-only view for non-admin users
-        st.caption("Read-only mode — enter admin password to upload data")
+                st.warning("Odds refresh failed")
+
+    s_cols = st.columns([1, 1, 1, 1])
+    with s_cols[0]:
+        st.markdown("**DK Salary**")
         if has_saved_dk:
-            st.caption(f"DK Salary: {len(db_dk_df)} drivers saved for this race")
+            st.markdown(
+                f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                f'Saved: {len(db_dk_df)} drivers in DB for this race</p>',
+                unsafe_allow_html=True,
+            )
+        dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed",
+                                   key=f"dk_upload_{race_id}")
+        if dk_file:
+            st.markdown(
+                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                'CSV uploaded — will save to DB</p>',
+                unsafe_allow_html=True,
+            )
+        if has_saved_dk:
+            if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
+                try:
+                    import sqlite3 as _sql
+                    _conn = _sql.connect(str(DB_PATH))
+                    _db_race = _conn.execute(
+                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                    ).fetchone()
+                    if _db_race:
+                        _conn.execute(
+                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
+                            (_db_race[0],))
+                        _conn.commit()
+                    _conn.close()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to clear salaries: {e}")
+    with s_cols[1]:
+        st.markdown("**FD Salary CSV**")
         if has_saved_fd:
-            st.caption(f"FD Salary: {len(db_fd_df)} drivers saved for this race")
+            st.markdown(
+                f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                f'Saved: {len(db_fd_df)} drivers in DB for this race</p>',
+                unsafe_allow_html=True,
+            )
+        fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed",
+                                   key=f"fd_upload_{race_id}")
+        if fd_file:
+            st.markdown(
+                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                'CSV uploaded — will save to DB</p>',
+                unsafe_allow_html=True,
+            )
+        if has_saved_fd:
+            if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
+                try:
+                    import sqlite3 as _sql
+                    _conn = _sql.connect(str(DB_PATH))
+                    _db_race = _conn.execute(
+                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                    ).fetchone()
+                    if _db_race:
+                        _conn.execute(
+                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
+                            (_db_race[0],))
+                        _conn.commit()
+                    _conn.close()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to clear salaries: {e}")
+    with s_cols[2]:
+        st.markdown("**Manual Practice**")
+        practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
+                                     height=80, label_visibility="collapsed")
+        if practice_text.strip():
+            for line in practice_text.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    try:
+                        practice_data[parts[0]] = float(parts[1])
+                    except (ValueError, IndexError):
+                        pass
+    with s_cols[3]:
+        st.markdown("**Betting Odds**")
+        if auto_odds:
+            st.markdown(
+                f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                f'Auto: {len(auto_odds)} drivers loaded</p>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                'No auto odds — paste win odds below</p>',
+                unsafe_allow_html=True,
+            )
+        odds_text = st.text_area(
+            "Odds", height=120, label_visibility="collapsed",
+            placeholder="Paste win odds:\nCorey Heim+300\nKyle Busch+450\n\nOr comma/space separated:\nKyle Larson, -115\nChase Elliott +1200",
+            help="Paste win odds from any sportsbook. Header lines "
+                 "(race name, date, 'Outright') are auto-skipped.",
+            key=f"odds_paste_{series_id}_{race_id}",
+        )
+        # Parse manual odds — supports copy-paste and CSV formats
+        if odds_text.strip():
+            import re as _re
+            # Lines to skip: race name headers, dates, times, section labels
+            _skip_patterns = _re.compile(
+                r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
+                r'|\d{1,2}/\d{1,2}/\d{2,4}'   # dates like 4/10/26
+                r'|\d{1,2}:\d{2}\s*(am|pm)?'    # times like 2:30 PM
+                r')$', _re.IGNORECASE
+            )
+            for line in odds_text.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if _skip_patterns.match(line):
+                    continue
+                if not _re.search(r'[+-]\d+', line):
+                    continue
+                # Format 1: comma-separated "Driver Name, +350"
+                if "," in line:
+                    parts = [p.strip() for p in line.split(",", 1)]
+                    if len(parts) == 2 and parts[0] and _re.match(r'^[+-]?\d+$', parts[1]):
+                        odds_data[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
+                        continue
+                # Format 2: copy-paste "DriverName+300" (no space before odds)
+                m = _re.match(r'^(.+?)([+-]\d+)$', line)
+                if m:
+                    name = m.group(1).strip()
+                    if name:
+                        odds_data[name] = m.group(2)
+                        continue
+                # Format 3: space-separated "Driver Name +350"
+                m = _re.match(r'^(.+?)\s+([+-]\d+)$', line)
+                if m:
+                    odds_data[m.group(1).strip()] = m.group(2)
+            if odds_data:
+                odds_source = "manual"
+                st.success(f"Parsed {len(odds_data)} drivers from pasted odds")
 
     # Odds priority: manual paste > saved DB > auto-fetched API > salary estimate
     if not odds_data and race_id:
@@ -515,7 +518,7 @@ with st.expander("Settings & Data Upload", expanded=False):
 
     if not odds_data and auto_odds:
         odds_data = auto_odds
-        odds_source = "bovada" if not is_cup else "action_network"
+        odds_source = "auto"
 
     # Fallback: estimate odds from DK salary when no real odds available
     _salary_for_odds = (
@@ -526,7 +529,11 @@ with st.expander("Settings & Data Upload", expanded=False):
         odds_data = estimate_odds_from_salaries(_salary_for_odds)
         if odds_data:
             odds_source = "salary_estimate"
-            st.caption(f"Using salary-estimated odds — paste real odds from Bovada to improve projections")
+            st.markdown(
+                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+                'Using salary-estimated odds — paste real odds to improve projections</p>',
+                unsafe_allow_html=True,
+            )
 
     # Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
     if odds_data:
