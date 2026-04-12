@@ -1092,11 +1092,24 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         # Only use odds if we have data for a meaningful fraction of the field
         if len(odds_probs) >= field_size * 0.3:
+            # Convert implied probability to a finish position that preserves
+            # the magnitude of probability gaps. A -100 favorite (50%) is
+            # massively separated from a +500 (16.7%), not just rank 1 vs 2.
+            # Method: normalize probs so the weakest driver maps to field_size
+            # and the strongest maps to 1, with proportional spacing between.
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-            for rank, (name, prob) in enumerate(ranked, 1):
+            max_prob = ranked[0][1]
+            min_prob = ranked[-1][1]
+            prob_range = max_prob - min_prob
+            for name, prob in ranked:
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    odds_finish[matched] = rank * (field_size / len(ranked))
+                    if prob_range > 0:
+                        # Higher prob → lower (better) finish position
+                        t = 1 - (prob - min_prob) / prob_range  # 0=best, 1=worst
+                        odds_finish[matched] = 1 + (field_size - 1) * t
+                    else:
+                        odds_finish[matched] = mid_field
         elif odds_probs:
             pct = len(odds_probs) / field_size * 100
             st.caption(f"⚠️ Odds cover only {len(odds_probs)}/{field_size} drivers "
@@ -1222,29 +1235,58 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         signal_weight_map[d] = sig_w
         sig_extras[d] = extras
 
-    # Pass 2: Rank-normalize each signal to 1→field_size scale
-    # For each signal type, rank all drivers who have it, then map rank to
-    # an evenly spaced position in [1, field_size].
+    # Pass 2: Normalize each signal to a 1→field_size scale.
+    # Different signals need different normalization strategies:
+    #   - "odds": min-max scale preserving the natural probability gaps
+    #             (a -100 favorite is 13x more likely than +2500, not just rank 1 vs 10)
+    #   - "track", "ttype": min-max scale (natural finish position range, ~5-28)
+    #   - "team": rank-normalize (very compressed range ~15-22, need to stretch)
+    #   - "qual", "prac": already on a natural 1-field_size scale, pass through
     signal_names = set()
     for sigs in raw_signals.values():
         signal_names.update(sigs.keys())
 
-    normalized_signals = {d: {} for d in drivers}  # d -> {"track": norm_val, ...}
+    # Signals that should preserve proportional gaps (min-max scaling)
+    MINMAX_SIGNALS = {"odds", "track", "ttype"}
+    # Signals that need rank-stretching (compressed natural range)
+    RANK_SIGNALS = {"team"}
+    # Signals already on position scale (minimal transform)
+    PASSTHROUGH_SIGNALS = {"qual", "prac"}
+
+    normalized_signals = {d: {} for d in drivers}
     for sig_name in signal_names:
-        # Collect all (driver, raw_value) pairs for this signal
         sig_vals = [(d, raw_signals[d][sig_name]) for d in drivers if sig_name in raw_signals[d]]
         if not sig_vals:
             continue
-        # Sort by value (lower = better for finish-position signals)
-        sig_vals.sort(key=lambda x: x[1])
-        n_with_sig = len(sig_vals)
-        for rank_idx, (d, _) in enumerate(sig_vals):
-            if n_with_sig > 1:
-                # Map rank 0 (best) → 1, rank n-1 (worst) → field_size
-                norm_val = 1 + (field_size - 1) * (rank_idx / (n_with_sig - 1))
-            else:
-                norm_val = mid_field
-            normalized_signals[d][sig_name] = norm_val
+
+        if sig_name in MINMAX_SIGNALS:
+            # Min-max: preserve proportional gaps, scale to 1→field_size
+            vals_only = [v for _, v in sig_vals]
+            raw_min = min(vals_only)
+            raw_max = max(vals_only)
+            raw_range = raw_max - raw_min
+            for d, val in sig_vals:
+                if raw_range > 0:
+                    t = (val - raw_min) / raw_range  # 0 (best) to 1 (worst)
+                    normalized_signals[d][sig_name] = 1 + (field_size - 1) * t
+                else:
+                    normalized_signals[d][sig_name] = mid_field
+
+        elif sig_name in RANK_SIGNALS:
+            # Rank: stretch compressed range to full 1→field_size
+            sig_vals.sort(key=lambda x: x[1])
+            n_with_sig = len(sig_vals)
+            for rank_idx, (d, _) in enumerate(sig_vals):
+                if n_with_sig > 1:
+                    normalized_signals[d][sig_name] = 1 + (field_size - 1) * (rank_idx / (n_with_sig - 1))
+                else:
+                    normalized_signals[d][sig_name] = mid_field
+
+        else:
+            # Passthrough: qual and prac are already on ~1-field_size scale
+            # Just clamp to valid range
+            for d, val in sig_vals:
+                normalized_signals[d][sig_name] = max(1, min(field_size, val))
 
     # Pass 3: Weighted average of normalized signals + adjustments
     driver_raw_scores = {}
