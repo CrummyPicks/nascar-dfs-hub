@@ -975,7 +975,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
 
     # Scatter: Projected vs Actual DK Points
     import plotly.graph_objects as go
-    from src.charts import DARK_LAYOUT
+    from src.charts import DARK_LAYOUT, apply_dark_theme
 
     fig = go.Figure()
     min_val = min(comp["Proj DK"].min(), comp["Actual DK"].min()) - 5
@@ -1005,6 +1005,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                       title="Projected vs Actual DK Points",
                       xaxis_title="Actual DK Points",
                       yaxis_title="Projected DK Points")
+    apply_dark_theme(fig)
     st.plotly_chart(fig, width="stretch", key="acc_scatter_dk")
 
     # Scatter: Projected vs Actual Finish
@@ -1034,6 +1035,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                        xaxis_title="Actual Finish", yaxis_title="Projected Finish",
                        xaxis=dict(autorange="reversed"),
                        yaxis=dict(autorange="reversed"))
+    apply_dark_theme(fig2)
     st.plotly_chart(fig2, width="stretch", key="acc_scatter_finish")
 
     # Error distribution
@@ -1045,6 +1047,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                        title="DK Points Error Distribution (Projected - Actual)",
                        xaxis_title="Error (+ = over-projected, - = under-projected)",
                        yaxis_title="Count")
+    apply_dark_theme(fig3)
     st.plotly_chart(fig3, width="stretch", key="acc_error_dist")
 
     csv = comp.to_csv(index=True).encode("utf-8")
@@ -2054,7 +2057,7 @@ def _display_backtest_results(results_df, context_label):
 
                     # Scatter: Projected vs Actual DK Points with trend line
                     import plotly.graph_objects as go
-                    from src.charts import DARK_LAYOUT
+                    from src.charts import DARK_LAYOUT, apply_dark_theme
 
                     fig = go.Figure()
                     min_val = min(valid["Proj DK"].min(), valid["Actual DK"].min()) - 5
@@ -2099,6 +2102,7 @@ def _display_backtest_results(results_df, context_label):
                         xaxis_title="Actual DK Points",
                         yaxis_title="Projected DK Points",
                     )
+                    apply_dark_theme(fig)
                     st.plotly_chart(fig, width="stretch", key="acc_drill_scatter")
 
                 csv_detail = detail_df.to_csv(index=True).encode("utf-8")

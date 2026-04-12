@@ -1683,7 +1683,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         showlegend=False,
     ))
 
-    from src.charts import DARK_LAYOUT
+    from src.charts import DARK_LAYOUT, apply_dark_theme
     n_drivers = len(chart_df)
     fig.update_layout(
         **DARK_LAYOUT,
@@ -1694,7 +1694,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         height=max(400, n_drivers * 22),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=10, r=10, t=40, b=30),
-        yaxis=dict(tickfont=dict(size=10), gridcolor="#1e293b"),
-        xaxis=dict(gridcolor="#1e293b"),
+        yaxis=dict(tickfont=dict(size=10)),
+        xaxis=dict(),
     )
+    apply_dark_theme(fig)
     st.plotly_chart(fig, width="stretch")

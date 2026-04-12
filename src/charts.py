@@ -14,11 +14,18 @@ DARK_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(15,23,42,0.95)",
     font=dict(color="#e2e8f0", family="system-ui, -apple-system, sans-serif"),
-    xaxis=dict(gridcolor="#1e293b", zerolinecolor="#334155"),
-    yaxis=dict(gridcolor="#1e293b", zerolinecolor="#334155"),
     colorway=["#0ea5e9", "#38bdf8", "#7dd3fc", "#22d3ee", "#2dd4bf",
               "#4ade80", "#a78bfa", "#f472b6", "#fb923c", "#facc15"],
 )
+
+_GRID_STYLE = dict(gridcolor="#1e293b", zerolinecolor="#334155")
+
+
+def apply_dark_theme(fig):
+    """Apply DARK_LAYOUT + grid colors to a figure. Call after update_layout."""
+    fig.update_xaxes(**_GRID_STYLE)
+    fig.update_yaxes(**_GRID_STYLE)
+    return fig
 
 
 def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
@@ -75,7 +82,7 @@ def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
         yaxis_title="",
         yaxis=dict(tickfont=dict(size=10)),
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 500) -> go.Figure:
@@ -108,7 +115,7 @@ def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 500) -> go.F
     fig.update_layout(**DARK_LAYOUT, height=height,
                       yaxis=dict(autorange="reversed"))
     fig.update_traces(textposition="top right", textfont_size=10)
-    return fig
+    return apply_dark_theme(fig)
 
 
 def practice_bar_chart(lap_averages_df: pd.DataFrame, metric_col: str = "Overall Avg",
@@ -166,7 +173,7 @@ def practice_bar_chart(lap_averages_df: pd.DataFrame, metric_col: str = "Overall
         yaxis_title="",
         yaxis=dict(tickfont=dict(size=10), autorange="reversed"),
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def track_history_bar(hist_df: pd.DataFrame, track_name: str,
@@ -180,7 +187,7 @@ def track_history_bar(hist_df: pd.DataFrame, track_name: str,
                  color=color_col, color_continuous_scale="RdYlGn_r",
                  title=f"Top {top_n} by Avg Finish at {track_name}")
     fig.update_layout(**DARK_LAYOUT, height=height)
-    return fig
+    return apply_dark_theme(fig)
 
 
 def projection_bar(proj_df: pd.DataFrame, top_n: int = 20, height: int = 280) -> go.Figure:
@@ -189,7 +196,7 @@ def projection_bar(proj_df: pd.DataFrame, top_n: int = 20, height: int = 280) ->
                  color="Proj Score", color_continuous_scale="Viridis",
                  title=f"Top {top_n} by Projected Score")
     fig.update_layout(**DARK_LAYOUT, height=height)
-    return fig
+    return apply_dark_theme(fig)
 
 
 def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
@@ -245,7 +252,7 @@ def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
         ),
         hovermode="x unified",
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
@@ -286,7 +293,7 @@ def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
         yaxis_title="Avg Driver Rating",
         xaxis=dict(autorange="reversed"),  # Lower running pos = better = right side
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def race_scatter(results_df: pd.DataFrame, height: int = 350) -> go.Figure:
@@ -319,7 +326,7 @@ def race_scatter(results_df: pd.DataFrame, height: int = 350) -> go.Figure:
         yaxis_title="DK Points",
         xaxis=dict(autorange="reversed"),
     )
-    return fig_obj
+    return apply_dark_theme(fig_obj)
 
 
 def rating_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
@@ -358,7 +365,7 @@ def rating_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
         yaxis_title="Avg Driver Rating",
         xaxis=dict(autorange="reversed"),  # Lower finish = better = right side
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
@@ -418,7 +425,7 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
         showarrow=False, font=dict(size=10, color="#64748b"),
         align="left",
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go.Figure:
@@ -472,7 +479,7 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go
         text="Above line = better value than average",
         showarrow=False, font=dict(size=9, color="#64748b"),
     )
-    return fig
+    return apply_dark_theme(fig)
 
 
 def finish_distribution_box(track_name: str, series_id: int = 1,
@@ -517,7 +524,7 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
     fig.update_layout(**DARK_LAYOUT, height=height,
                       yaxis=dict(autorange="reversed"),
                       xaxis_tickangle=-45)
-    return fig
+    return apply_dark_theme(fig)
 
 
 def season_trend_line(series_id: int = 1, season: int = 2026,
@@ -564,7 +571,7 @@ def season_trend_line(series_id: int = 1, season: int = 2026,
     fig.update_layout(**DARK_LAYOUT, height=height,
                       xaxis_title="", yaxis_title="DK Points",
                       legend=dict(font=dict(size=9)))
-    return fig
+    return apply_dark_theme(fig)
 
 
 def race_lap_chart(lap_data: dict, selected_drivers: list = None,
@@ -632,4 +639,4 @@ def race_lap_chart(lap_data: dict, selected_drivers: list = None,
         ),
         hovermode="x unified",
     )
-    return fig
+    return apply_dark_theme(fig)

@@ -370,7 +370,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
 
     # Season charts
     import plotly.graph_objects as go
-    from src.charts import DARK_LAYOUT, season_scatter
+    from src.charts import DARK_LAYOUT, apply_dark_theme, season_scatter
     from src.utils import short_name_series
 
     # Top 25 Avg DK Points bar chart
@@ -390,6 +390,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
         fig_dk.update_layout(**DARK_LAYOUT, height=max(400, len(top_dk) * 18),
                              title=f"Top 25 Avg DK Points — {year_label}",
                              xaxis_title="Avg DK Points", yaxis_title="")
+        apply_dark_theme(fig_dk)
         st.plotly_chart(fig_dk, width="stretch", key="ra_season_dk_bar")
 
     # Top 25 Avg Finish bar chart
@@ -409,6 +410,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
         fig_fin.update_layout(**DARK_LAYOUT, height=max(400, len(top_finish) * 18),
                               title=f"Top 25 Avg Finish — {year_label}",
                               xaxis_title="Avg Finish Position", yaxis_title="")
+        apply_dark_theme(fig_fin)
         st.plotly_chart(fig_fin, width="stretch", key="ra_season_fin_bar")
 
     # Season scatter
@@ -578,7 +580,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
     else:
         # Fallback: plot Avg Finish vs Avg DK
         import plotly.graph_objects as go
-        from src.charts import DARK_LAYOUT
+        from src.charts import DARK_LAYOUT, apply_dark_theme
         plot_df = agg[agg["Races"] >= 2].head(40).copy()
         if not plot_df.empty:
             fig = go.Figure()
@@ -597,6 +599,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
                 yaxis_title="Avg DK Points",
                 xaxis=dict(autorange="reversed"),
             )
+            apply_dark_theme(fig)
             st.plotly_chart(fig, width="stretch", key="ra_tt_fallback_scatter")
 
     # Export
@@ -689,7 +692,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
 
     # ── Charts ─────────────────────────────────────────────────────────────
     import plotly.graph_objects as go
-    from src.charts import DARK_LAYOUT
+    from src.charts import DARK_LAYOUT, apply_dark_theme
 
     # DK Points trend line
     if len(m) >= 2 and "DK Pts" in m.columns:
@@ -715,6 +718,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
                              xaxis_title="", yaxis_title="DK Points",
                              showlegend=len(m) >= 4,
                              xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
+        apply_dark_theme(fig_dk)
         st.plotly_chart(fig_dk, width="stretch", key="ra_lookup_dk_trend")
 
     # Finish Position trend
@@ -733,6 +737,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
                               xaxis_title="", yaxis_title="Finish Position",
                               yaxis=dict(autorange="reversed"),
                               xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
+        apply_dark_theme(fig_fin)
         st.plotly_chart(fig_fin, width="stretch", key="ra_lookup_fin_trend")
 
     # Export
@@ -810,7 +815,7 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
 
     # Race-by-race charts
     import plotly.graph_objects as go
-    from src.charts import DARK_LAYOUT
+    from src.charts import DARK_LAYOUT, apply_dark_theme
 
     a_races = a_data[["Race", "Date", "Finish", "DK Pts"]].rename(
         columns={"Finish": f"{driver_a} Finish", "DK Pts": f"{driver_a} DK Pts"})
@@ -830,6 +835,7 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
                           title="DK Points by Race",
                           xaxis_title="", yaxis_title="DK Points",
                           xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
+        apply_dark_theme(fig)
         st.plotly_chart(fig, width="stretch")
 
         fig2 = go.Figure()
@@ -844,4 +850,5 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
                            xaxis_title="", yaxis_title="Finish Position",
                            yaxis=dict(autorange="reversed"),
                            xaxis=dict(tickangle=-45, tickfont=dict(size=9)))
+        apply_dark_theme(fig2)
         st.plotly_chart(fig2, width="stretch")
