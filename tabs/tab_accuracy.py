@@ -1201,7 +1201,7 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         race_id = race.get("race_id")
         track_name = race.get("track_name", "")
 
-        proj_dk, _detail, actuals, meta = _generate_race_projections(race, series_id)
+        proj_dk, proj_detail_agg, actuals, meta = _generate_race_projections(race, series_id)
         if proj_dk is None or actuals is None:
             continue
 
@@ -1223,15 +1223,15 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         proj_finish_rank = proj_s.rank(ascending=False)
         actual_finish_rank = actual_s.rank(ascending=False)
 
-        # Compute projected finish positions from DK rank and actual finishes
+        # Compute projected finish positions and actual finishes
         proj_finish_list = []
         actual_finish_list = []
-        sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
-        proj_finish_map = {d: i + 1 for i, (d, _) in enumerate(sorted_proj)}
         for _, row in actuals.iterrows():
             d = row["Driver"]
-            if d in proj_dk and pd.notna(row.get("Finish Position")):
-                proj_finish_list.append(proj_finish_map.get(d, len(sorted_proj)))
+            det = proj_detail_agg.get(d, {}) if proj_detail_agg else {}
+            pf = det.get("proj_finish")
+            if pf is not None and pd.notna(row.get("Finish Position")):
+                proj_finish_list.append(pf)
                 actual_finish_list.append(int(row["Finish Position"]))
 
         finish_mae = 0.0
