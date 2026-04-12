@@ -250,7 +250,7 @@ with st.expander("Settings & Data Upload", expanded=False):
                 fresh_odds = fetch_nascar_odds(series_id)
                 if fresh_odds:
                     auto_odds = fresh_odds
-                    st.session_state["last_good_odds"] = fresh_odds
+                    st.session_state[_odds_cache_key] = fresh_odds
                     st.success(f"Refreshed — Odds: {len(fresh_odds)} drivers")
                 else:
                     st.warning("Odds refresh failed")
@@ -331,6 +331,7 @@ with st.expander("Settings & Data Upload", expanded=False):
                 placeholder="Paste directly from Bovada:\nCorey Heim+300\nKyle Busch+450\n\nOr comma/space separated:\nKyle Larson, -115\nChase Elliott +1200",
                 help="Paste odds copied from Bovada webpage. Header lines "
                      "(race name, date, 'Outright') are auto-skipped.",
+                key=f"odds_paste_{series_id}_{race_id}",
             )
             # Parse manual odds — supports Bovada copy-paste and CSV formats
             if odds_text.strip():
