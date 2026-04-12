@@ -832,13 +832,50 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     corr_finish = comp_filtered["Proj Finish"].corr(comp_filtered["Actual Finish"])
     rank_corr = comp_filtered["Proj DK Finish"].corr(comp_filtered["Actual DK Finish"])
 
+    def _metric_color(value, elite_thresh, good_thresh, lower_is_better=True):
+        """Return hex color: green=elite, yellow=good, red=needs work."""
+        if lower_is_better:
+            if value <= elite_thresh:
+                # Interpolate green (elite) — the lower the better
+                return "#22c55e"
+            elif value <= good_thresh:
+                # Interpolate from green toward yellow/orange
+                ratio = (value - elite_thresh) / (good_thresh - elite_thresh)
+                r = int(34 + ratio * (234 - 34))
+                g = int(197 - ratio * (197 - 179))
+                return f"#{r:02x}{g:02x}3e"
+            else:
+                # Red zone
+                return "#ef4444"
+        else:
+            if value >= elite_thresh:
+                return "#22c55e"
+            elif value >= good_thresh:
+                ratio = (elite_thresh - value) / (elite_thresh - good_thresh)
+                r = int(34 + ratio * (234 - 34))
+                g = int(197 - ratio * (197 - 179))
+                return f"#{r:02x}{g:02x}3e"
+            else:
+                return "#ef4444"
+
+    metrics = [
+        ("DK Pts MAE", f"{mae_dk:.1f}", _metric_color(mae_dk, 15, 25, True)),
+        ("DK Finish MAE", f"{mae_dk_finish:.1f}", _metric_color(mae_dk_finish, 5, 10, True)),
+        ("Finish MAE", f"{mae_finish:.1f}", _metric_color(mae_finish, 5, 10, True)),
+        ("DK Pts Correlation", f"{corr_dk:.3f}", _metric_color(corr_dk, 0.70, 0.45, False)),
+        ("Finish Correlation", f"{corr_finish:.3f}", _metric_color(corr_finish, 0.55, 0.30, False)),
+        ("DK Finish Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.70, 0.45, False)),
+    ]
+
     m_cols = st.columns(6)
-    m_cols[0].metric("DK Pts MAE", f"{mae_dk:.1f}")
-    m_cols[1].metric("DK Finish MAE", f"{mae_dk_finish:.1f}")
-    m_cols[2].metric("Finish MAE", f"{mae_finish:.1f}")
-    m_cols[3].metric("DK Pts Correlation", f"{corr_dk:.3f}")
-    m_cols[4].metric("Finish Correlation", f"{corr_finish:.3f}")
-    m_cols[5].metric("DK Finish Rank Corr", f"{rank_corr:.3f}")
+    for col, (label, value, color) in zip(m_cols, metrics):
+        col.markdown(
+            f'<div style="background:{color}22; border:2px solid {color}; '
+            f'border-radius:8px; padding:12px 16px; text-align:center;">'
+            f'<span style="color:#8892a4; font-size:0.75rem; text-transform:uppercase;">{label}</span><br>'
+            f'<span style="color:{color}; font-size:1.5rem; font-weight:700;">{value}</span></div>',
+            unsafe_allow_html=True,
+        )
 
     st.caption(
         "**MAE** = Mean Absolute Error (lower is better) | "
