@@ -1693,9 +1693,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         yaxis_title="",
         height=max(400, n_drivers * 22),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=10, r=10, t=40, b=30),
         yaxis=dict(tickfont=dict(size=10)),
-        xaxis=dict(),
     )
     apply_dark_theme(fig)
     st.plotly_chart(fig, width="stretch")
