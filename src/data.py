@@ -2103,6 +2103,15 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
         except Exception:
             pass
 
+    # When importing from script (bovada), remove competing sportsbook entries
+    # so the manually-loaded odds become the single source of truth
+    if sportsbook == "bovada":
+        conn.execute(
+            "DELETE FROM odds WHERE race_id = ? AND sportsbook IN ('action_network', 'auto')",
+            (db_race_id,)
+        )
+        conn.commit()
+
     db_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
     name_to_id = {row[1]: row[0] for row in db_drivers}
     driver_names = list(name_to_id.keys())
@@ -2182,8 +2191,9 @@ def load_race_odds(race_id: int, series_id: int = None) -> dict:
         return {}
 
     conn = sqlite3.connect(str(DB_PATH))
+    # Sportsbook priority: bovada (script import) > manual > auto > action_network
     rows = conn.execute('''
-        SELECT d.full_name, o.win_odds
+        SELECT d.full_name, o.win_odds, o.sportsbook
         FROM odds o
         JOIN drivers d ON d.id = o.driver_id
         WHERE o.race_id = ?
@@ -2191,11 +2201,18 @@ def load_race_odds(race_id: int, series_id: int = None) -> dict:
     ''', (db_race_id,)).fetchall()
     conn.close()
 
+    SPORTSBOOK_PRIORITY = {"bovada": 0, "manual": 1, "csv_import": 2,
+                           "sportsbettingdime": 3, "auto": 4, "action_network": 5}
+
     result = {}
-    for name, odds_val in rows:
+    result_priority = {}
+    for name, odds_val, sb in rows:
         if odds_val is not None:
-            ov = int(odds_val) if odds_val == int(odds_val) else odds_val
-            result[name] = f"+{ov}" if ov > 0 else str(ov)
+            prio = SPORTSBOOK_PRIORITY.get(sb, 99)
+            if name not in result or prio < result_priority[name]:
+                ov = int(odds_val) if odds_val == int(odds_val) else odds_val
+                result[name] = f"+{ov}" if ov > 0 else str(ov)
+                result_priority[name] = prio
     return result
 
 
@@ -2217,37 +2234,46 @@ def load_race_prop_odds(race_id: int, series_id: int = None) -> dict:
 
     conn = sqlite3.connect(str(DB_PATH))
     # Gracefully handle missing top3_odds column in older DBs
+    # Include sportsbook for priority-based dedup
     try:
         rows = conn.execute('''
-            SELECT d.full_name, o.top3_odds, o.top5_odds, o.top10_odds
+            SELECT d.full_name, o.top3_odds, o.top5_odds, o.top10_odds, o.sportsbook
             FROM odds o
             JOIN drivers d ON d.id = o.driver_id
             WHERE o.race_id = ?
         ''', (db_race_id,)).fetchall()
-        has_top3 = True
     except Exception:
         rows = conn.execute('''
-            SELECT d.full_name, NULL, o.top5_odds, o.top10_odds
+            SELECT d.full_name, NULL, o.top5_odds, o.top10_odds, o.sportsbook
             FROM odds o
             JOIN drivers d ON d.id = o.driver_id
             WHERE o.race_id = ?
         ''', (db_race_id,)).fetchall()
-        has_top3 = False
     conn.close()
+
+    SPORTSBOOK_PRIORITY = {"bovada": 0, "manual": 1, "csv_import": 2,
+                           "sportsbettingdime": 3, "auto": 4, "action_network": 5}
 
     top3 = {}
     top5 = {}
     top10 = {}
-    for name, t3, t5, t10 in rows:
-        if t3 is not None:
+    top3_prio = {}
+    top5_prio = {}
+    top10_prio = {}
+    for name, t3, t5, t10, sb in rows:
+        prio = SPORTSBOOK_PRIORITY.get(sb, 99)
+        if t3 is not None and (name not in top3 or prio < top3_prio[name]):
             ov = int(t3) if t3 == int(t3) else t3
             top3[name] = ov
-        if t5 is not None:
+            top3_prio[name] = prio
+        if t5 is not None and (name not in top5 or prio < top5_prio[name]):
             ov = int(t5) if t5 == int(t5) else t5
             top5[name] = ov
-        if t10 is not None:
+            top5_prio[name] = prio
+        if t10 is not None and (name not in top10 or prio < top10_prio[name]):
             ov = int(t10) if t10 == int(t10) else t10
             top10[name] = ov
+            top10_prio[name] = prio
     return {"top3": top3, "top5": top5, "top10": top10}
 
 
