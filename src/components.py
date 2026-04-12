@@ -81,6 +81,9 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
     }
 
     display_cols = ["Driver"]
+    if "Laps" in df.columns:
+        df["Laps"] = pd.to_numeric(df["Laps"], errors="coerce").astype("Int64")
+        display_cols.append("Laps")
     avail_rank_cols = []
     for rc, label in rank_cols_map.items():
         if rc in df.columns:

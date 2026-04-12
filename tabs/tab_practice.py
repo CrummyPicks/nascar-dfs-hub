@@ -6,7 +6,7 @@ import streamlit as st
 
 from src.components import render_practice_heatmap
 from src.charts import practice_lap_chart, practice_bar_chart
-from src.data import extract_practice_laps
+from src.data import extract_practice_laps, extract_practice_lap_counts
 from src.utils import format_display_df, safe_fillna
 
 
@@ -17,6 +17,16 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
     if lap_averages_df.empty:
         st.info("Practice data not yet available for this race.")
         return
+
+    # Merge practice lap counts from weekend-feed into lap_averages_df
+    if feed:
+        lap_counts = extract_practice_lap_counts(feed)
+        if lap_counts and "Laps" not in lap_averages_df.columns:
+            from src.utils import fuzzy_match_name
+            lap_averages_df = lap_averages_df.copy()
+            lap_averages_df["Laps"] = lap_averages_df["Driver"].apply(
+                lambda d: lap_counts.get(d) or lap_counts.get(
+                    fuzzy_match_name(d, list(lap_counts.keys())) or "", None))
 
     st.caption(f"{len(lap_averages_df)} drivers  •  Source: NASCAR API lap-averages")
 
@@ -34,7 +44,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         render_practice_heatmap(lap_averages_df, show_heatmap=show_heatmap)
 
     elif prac_mode == "Lap Times":
-        time_cols = ["Driver", "Car", "Overall Avg", "Best Lap",
+        time_cols = ["Driver", "Car", "Laps", "Overall Avg", "Best Lap",
                      "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
         avail = [c for c in time_cols if c in lap_averages_df.columns]
         disp = lap_averages_df[avail].copy()

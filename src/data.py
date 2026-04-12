@@ -213,6 +213,34 @@ def extract_qualifying(feed: dict) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def extract_practice_lap_counts(feed: dict) -> dict:
+    """Extract total laps completed per driver from the practice run in weekend-feed.
+    Returns {driver_name: laps_completed}.
+    """
+    if not feed:
+        return {}
+    for run in reversed(feed.get("weekend_runs", [])):
+        rt = run.get("run_type", 0)
+        rn = str(run.get("run_name", "")).lower()
+        if rt == 1 or "practice" in rn:
+            results = run.get("results", [])
+            if results:
+                counts = {}
+                car_map = _build_car_driver_map(feed)
+                for r in results:
+                    cn = str(r.get("car_number", "")).strip()
+                    driver = r.get("driver_fullname")
+                    if not driver and cn in car_map:
+                        driver = car_map[cn]["driver"]
+                    laps = r.get("laps_completed")
+                    if driver and laps is not None:
+                        driver = _clean_api_name(driver)
+                        counts[driver] = int(laps)
+                if counts:
+                    return counts
+    return {}
+
+
 def extract_practice_laps(feed: dict) -> list:
     """Extract practice lap-by-lap data from weekend_runs for the lap chart.
     Returns list of dicts: [{driver, laps: [{lap_num, lap_time}]}]
