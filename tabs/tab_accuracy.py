@@ -550,8 +550,22 @@ def _generate_race_projections(race, series_id, weights=None):
         if pd.notna(row.get("Start")):
             qual_pos[row["Driver"]] = int(row["Start"])
 
-    # ── 6. Practice — not available for completed races ──
+    # ── 6. Practice — load from NASCAR API (same source as projections tab) ──
     practice_data = {}
+    try:
+        from src.data import fetch_lap_averages
+        yr = _get_race_year(race)
+        lap_avg_df = fetch_lap_averages(series_id, race_id, yr)
+        if not lap_avg_df.empty and "Overall Rank" in lap_avg_df.columns:
+            for _, prow in lap_avg_df.iterrows():
+                pdriver = prow.get("Driver")
+                prank = prow.get("Overall Rank")
+                if pdriver and prank and not pd.isna(prank):
+                    matched = fuzzy_match_name(pdriver, drivers)
+                    if matched:
+                        practice_data[matched] = int(prank)
+    except Exception:
+        pass
 
     # ── 7. Odds Signal ──
     odds_finish = {}
@@ -1608,12 +1622,28 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 except (ValueError, TypeError):
                     continue
 
+        # Load practice data from NASCAR API
+        practice_data = {}
+        try:
+            from src.data import fetch_lap_averages
+            lap_avg_df = fetch_lap_averages(race_sid, race_id, yr)
+            if not lap_avg_df.empty and "Overall Rank" in lap_avg_df.columns:
+                for _, prow in lap_avg_df.iterrows():
+                    pdriver = prow.get("Driver")
+                    prank = prow.get("Overall Rank")
+                    if pdriver and prank and not pd.isna(prank):
+                        matched = fuzzy_match_name(pdriver, drivers)
+                        if matched:
+                            practice_data[matched] = int(prank)
+        except Exception:
+            pass
+
         # Track which signals are available for this race
         has_signals = {
             "track": bool(th_data),
             "track_type": bool(tt_data),
             "qual": bool(start_positions),
-            "practice": False,  # no practice data for completed races
+            "practice": bool(practice_data),
             "odds": bool(odds_finish),
             "team": bool(team_signal),
         }
@@ -1645,6 +1675,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
             "team_adj_data": team_adj_data,
             "mfr_adjustment": mfr_adjustment,
             "cross_th_lookup": cross_th_lookup,
+            "practice_data": practice_data,
             "has_signals": has_signals,
             "race_laps": race_laps,
             "track_type": track_type,
@@ -1959,7 +1990,7 @@ def _display_backtest_results(results_df, context_label):
                     drivers=drivers, field_size=field_size, wn=wn,
                     th_data=rd["th_data"], tt_data=rd["tt_data"],
                     qual_pos=rd["start_positions"],
-                    practice_data={},
+                    practice_data=rd.get("practice_data", {}),
                     odds_finish=rd["odds_finish"],
                     odds_display=rd.get("odds_display", {}),
                     team_signal=rd.get("team_signal", {}),
