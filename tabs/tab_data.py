@@ -15,7 +15,8 @@ from src.utils import (
 )
 from src.charts import (
     dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
-    season_trend_line,
+    season_trend_line, arp_vs_finish_scatter, rating_vs_finish_scatter,
+    finish_distribution_box, fantasy_vs_arp_scatter,
 )
 
 
@@ -34,7 +35,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     if view_mode == "Charts":
         _render_charts_view(completed_races, series_id, selected_year, results_df,
-                            lap_data, fl_counts, is_prerace)
+                            lap_data, fl_counts, is_prerace, track_name)
         return
 
     # --- Determine base driver list ---
@@ -298,7 +299,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
 
 def _render_charts_view(completed_races, series_id, selected_year,
-                        results_df, lap_data, fl_counts, is_prerace):
+                        results_df, lap_data, fl_counts, is_prerace,
+                        track_name=""):
     """Render the Charts view."""
 
     # If postrace, show DFS histogram and start vs finish (full width, stacked)
@@ -320,6 +322,52 @@ def _render_charts_view(completed_races, series_id, selected_year,
     if trend_fig:
         st.divider()
         st.plotly_chart(trend_fig, width="stretch")
+
+    # ── Track history charts (ARP vs Finish, Rating vs Finish, Finish Distribution) ──
+    if track_name:
+        th_rows = query_db_track_history(track_name, series_id)
+        if th_rows:
+            hist_df = pd.DataFrame(th_rows)
+            # Standardize column names for chart functions
+            col_map = {}
+            for c in hist_df.columns:
+                cl = c.lower()
+                if cl in ("driver", "full_name"):
+                    col_map[c] = "Driver"
+                elif cl in ("avg_finish", "avg_finish_pos"):
+                    col_map[c] = "Avg Finish"
+                elif cl in ("avg_run_pos", "avg_running_pos", "avg_running_position"):
+                    col_map[c] = "Avg Run Pos"
+                elif cl in ("avg_rating", "driver_rating", "avg_driver_rating"):
+                    col_map[c] = "Avg Rating"
+            if col_map:
+                hist_df = hist_df.rename(columns=col_map)
+
+            # ARP vs Finish scatter — shows wreck luck
+            if "Avg Run Pos" in hist_df.columns and "Avg Finish" in hist_df.columns:
+                st.divider()
+                fig = arp_vs_finish_scatter(hist_df, track_name)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", key="data_arp_vs_finish")
+
+            # Rating vs Finish scatter
+            if "Avg Rating" in hist_df.columns and "Avg Finish" in hist_df.columns:
+                st.divider()
+                fig = rating_vs_finish_scatter(hist_df, track_name)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", key="data_rating_vs_finish")
+
+        # Avg Fantasy Points vs Avg Running Position
+        st.divider()
+        fig = fantasy_vs_arp_scatter(track_name, series_id)
+        if fig:
+            st.plotly_chart(fig, width="stretch", key="data_fantasy_vs_arp")
+
+        # Finish distribution box plot
+        st.divider()
+        fig = finish_distribution_box(track_name, series_id)
+        if fig:
+            st.plotly_chart(fig, width="stretch", key="data_finish_dist")
 
     # Race lap-by-lap chart (from race lap-times data)
     if not is_prerace and lap_data:

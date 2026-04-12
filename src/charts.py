@@ -527,6 +527,92 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
     return apply_dark_theme(fig)
 
 
+def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
+                            height: int = 450) -> go.Figure:
+    """Avg DK Fantasy Points vs Avg Running Position at a track — shows value."""
+    import sqlite3
+    from src.config import DB_PATH
+    from src.utils import calc_dk_points
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT d.full_name, rr.finish_pos, rr.start_pos,
+                   rr.laps_led, rr.fastest_laps, rr.avg_running_position
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name LIKE ? AND r.series_id = ? AND r.season >= 2022
+              AND rr.finish_pos IS NOT NULL
+        ''', [f"%{track_name}%", series_id]).fetchall()
+        conn.close()
+    except Exception:
+        return None
+
+    if not rows or len(rows) < 5:
+        return None
+
+    # Compute DK points per race-driver, then aggregate
+    from collections import defaultdict
+    driver_pts = defaultdict(list)
+    driver_arp = defaultdict(list)
+    for name, fp, sp, ll, fl, arp in rows:
+        dk = calc_dk_points(fp, sp or fp, ll or 0, fl or 0)
+        driver_pts[name].append(dk)
+        if arp and arp > 0:
+            driver_arp[name].append(arp)
+
+    records = []
+    for name in driver_pts:
+        if len(driver_pts[name]) >= 2 and driver_arp.get(name):
+            records.append({
+                "Driver": name,
+                "Avg DK Pts": round(np.mean(driver_pts[name]), 1),
+                "Avg Run Pos": round(np.mean(driver_arp[name]), 1),
+                "Races": len(driver_pts[name]),
+            })
+
+    if len(records) < 3:
+        return None
+
+    df = pd.DataFrame(records)
+
+    fig = go.Figure(go.Scatter(
+        x=df["Avg Run Pos"], y=df["Avg DK Pts"],
+        mode="markers+text",
+        text=df["Driver"].apply(lambda d: d.split()[-1]),
+        textposition="top center",
+        textfont=dict(size=9, color="#94a3b8"),
+        marker=dict(
+            size=df["Races"].clip(upper=12) + 6,
+            color=df["Avg DK Pts"],
+            colorscale="RdYlGn",
+            showscale=True,
+            colorbar=dict(title="Avg DK"),
+            line=dict(width=1, color="#334155"),
+        ),
+        hovertemplate="%{customdata[0]}<br>Avg Run Pos: %{x:.1f}<br>"
+                      "Avg DK Pts: %{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",
+        customdata=df[["Driver", "Races"]].values,
+    ))
+
+    fig.update_layout(
+        **DARK_LAYOUT, height=height,
+        title=f"Avg Fantasy Points vs Avg Running Position — {track_name}",
+        xaxis_title="Avg Running Position",
+        yaxis_title="Avg DK Points",
+        xaxis=dict(autorange="reversed"),
+    )
+    fig.add_annotation(
+        x=0.02, y=0.02, xref="paper", yref="paper",
+        text="Bubble size = number of races",
+        showarrow=False, font=dict(size=9, color="#64748b"),
+    )
+    return apply_dark_theme(fig)
+
+
 def season_trend_line(series_id: int = 1, season: int = 2026,
                        drivers: list = None, top_n: int = 10,
                        height: int = 400) -> go.Figure:
