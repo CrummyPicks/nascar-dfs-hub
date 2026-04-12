@@ -7,6 +7,15 @@ import plotly.graph_objects as go
 
 from src.utils import short_name_series
 
+_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+def _last_name(full_name: str) -> str:
+    """Extract last name for chart labels, handling suffixes like Jr./Sr."""
+    parts = full_name.split()
+    if len(parts) >= 2 and parts[-1].lower().rstrip(".") in {"jr", "sr", "ii", "iii", "iv"}:
+        return parts[-2]
+    return parts[-1] if parts else full_name
+
 
 DARK_LAYOUT = dict(
     template="plotly_dark",
@@ -455,7 +464,7 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go
         x=clean["DK Salary"], y=clean["Proj Score"],
         mode="markers+text",
         name="",
-        text=clean["Driver"].apply(lambda d: d.split()[-1]),
+        text=clean["Driver"].apply(_last_name),
         textposition="top center",
         textfont=dict(size=8, color="#94a3b8"),
         marker=dict(
@@ -582,7 +591,7 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
     fig = go.Figure(go.Scatter(
         x=df["Avg Run Pos"], y=df["Avg DK Pts"],
         mode="markers+text",
-        text=df["Driver"].apply(lambda d: d.split()[-1]),
+        text=df["Driver"].apply(_last_name),
         textposition="top center",
         textfont=dict(size=9, color="#94a3b8"),
         marker=dict(
