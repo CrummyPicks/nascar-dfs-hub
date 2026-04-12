@@ -581,7 +581,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
         for i, row in enumerate(pool_rows):
             driver = row["Driver"]
-            safe_key = driver.replace(" ", "_").replace(".", "").replace("'", "")
+            safe_key = driver.replace(" ", "_").replace(".", "").replace("'", "").replace("-", "_")
+            # Append index to handle potential name collisions
+            safe_key = f"{safe_key}_{i}"
             is_locked = driver in st.session_state.opt_locked
             is_excluded = driver in st.session_state.opt_excluded
             in_lineup = driver in lineup_drivers
@@ -782,20 +784,11 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.rerun()
 
         if lineup_needs_rebuild:
+            # Clear swap and player pool widget keys so they re-init
+            # from session state values (opt_locked/opt_excluded) on rerun
             for k in list(st.session_state.keys()):
-                if k.startswith("swap_"):
+                if k.startswith(("swap_", "pp_lock_", "pp_excl_")):
                     del st.session_state[k]
-            # Sync player pool checkbox widget state so they reflect
-            # lock/exclude changes made from the lineup on the next rerun
-            for d_data in sorted_lineup:
-                d_name = d_data["Driver"]
-                sk = d_name.replace(" ", "_").replace(".", "").replace("'", "")
-                pp_lock_key = f"pp_lock_{sk}"
-                pp_excl_key = f"pp_excl_{sk}"
-                if pp_lock_key in st.session_state:
-                    st.session_state[pp_lock_key] = d_name in st.session_state.opt_locked
-                if pp_excl_key in st.session_state:
-                    st.session_state[pp_excl_key] = d_name in st.session_state.opt_excluded
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=list(st.session_state.opt_locked),
