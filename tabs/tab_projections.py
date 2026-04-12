@@ -195,13 +195,15 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
 
 
 def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
-                        track_type: str, calibration: dict = None) -> dict:
+                        track_type: str, calibration: dict = None,
+                        odds_display: dict = None) -> dict:
     """Allocate projected laps led across the field.
 
     Uses historical data to determine:
     - How many drivers lead laps (avg_n_leaders from DB)
     - Per-driver cap (avg_top_leader, NOT the extreme max)
     - Power curve from track-type concentration
+    - Odds-gap boost: heavy favorites get higher concentration
     """
     if not driver_scores or race_laps <= 0:
         return {}
@@ -222,8 +224,25 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
     # Power curve from track-type concentration (lower = more spread)
     exponent = cal.get("concentration", TRACK_TYPE_CONCENTRATION.get(track_type, 1.5))
-    # Clamp to reasonable range — allow full historical concentration
-    exponent = max(1.0, min(exponent, 2.5))
+
+    # Odds-gap boost: when the favorite has a massive implied probability lead,
+    # increase concentration so they get a proportionally larger share of laps.
+    # e.g., -115 (53.5%) vs +500 (16.7%) = 3.2x ratio → boost exponent
+    if odds_display:
+        impl_pcts = [v.get("impl_pct", 0) for v in odds_display.values() if v.get("impl_pct")]
+        if len(impl_pcts) >= 2:
+            impl_pcts_sorted = sorted(impl_pcts, reverse=True)
+            top_impl = impl_pcts_sorted[0]
+            second_impl = impl_pcts_sorted[1]
+            if second_impl > 0:
+                odds_ratio = top_impl / second_impl  # how dominant the favorite is
+                # ratio 2.0+ = strong favorite, 3.0+ = heavy favorite
+                if odds_ratio >= 2.0:
+                    boost = min(0.8, (odds_ratio - 2.0) * 0.4)  # +0.4 per ratio point, cap +0.8
+                    exponent = exponent + boost
+
+    # Clamp to reasonable range
+    exponent = max(1.0, min(exponent, 3.5))
 
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
     powered = {d: s ** exponent for d, s in scores.items()}
@@ -259,11 +278,13 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
 
 def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
-                            track_type: str, calibration: dict = None) -> dict:
+                            track_type: str, calibration: dict = None,
+                            odds_display: dict = None) -> dict:
     """Allocate projected fastest laps across the field (zero-sum).
 
     Uses historical data for number of drivers and per-driver cap.
-    Fastest laps are more distributed than laps led.
+    Fastest laps are more distributed than laps led, but still
+    concentrate toward the front-runners.
     """
     if not driver_fl_scores or race_laps <= 0:
         return {}
@@ -272,19 +293,39 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
 
     # Number of drivers with fastest laps: historical average or fallback
-    FALLBACK_FL = {"superspeedway": 25, "road": 15, "intermediate": 18,
+    # Cap at 20 — even if 27 drivers technically post a FL, the top ~15-20
+    # account for the vast majority. Including 27+ just dilutes projections.
+    FALLBACK_FL = {"superspeedway": 20, "road": 15, "intermediate": 18,
                    "intermediate_worn": 16, "short": 14, "short_concrete": 12}
     n_with_fl = int(cal.get("avg_n_fl_leaders",
                             FALLBACK_FL.get(track_type, FALLBACK_FL.get(parent, 15))))
-    n_with_fl = max(5, min(n_with_fl, len(driver_fl_scores)))
+    n_with_fl = max(5, min(n_with_fl, 20, len(driver_fl_scores)))
 
     # Rank drivers by raw FL score, only top N get any fastest laps
     sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_with_fl])
 
-    # Fastest laps use a lower exponent (more distributed than laps led)
+    # Fastest laps exponent: higher than before (1.6 vs 1.3) to concentrate
+    # toward the dominant drivers. Still lower than laps led exponent.
+    fl_exponent = 1.6
+
+    # Odds-gap boost (same logic as laps led)
+    if odds_display:
+        impl_pcts = [v.get("impl_pct", 0) for v in odds_display.values() if v.get("impl_pct")]
+        if len(impl_pcts) >= 2:
+            impl_pcts_sorted = sorted(impl_pcts, reverse=True)
+            top_impl = impl_pcts_sorted[0]
+            second_impl = impl_pcts_sorted[1]
+            if second_impl > 0:
+                odds_ratio = top_impl / second_impl
+                if odds_ratio >= 2.0:
+                    boost = min(0.5, (odds_ratio - 2.0) * 0.25)  # smaller boost than LL
+                    fl_exponent = fl_exponent + boost
+
+    fl_exponent = max(1.2, min(fl_exponent, 2.5))
+
     scores = {d: max(0.01, s) for d, s in top_drivers.items()}
-    powered = {d: s ** 1.3 for d, s in scores.items()}
+    powered = {d: s ** fl_exponent for d, s in scores.items()}
     total = sum(powered.values())
     if total <= 0:
         return {}
@@ -1335,6 +1376,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 total_fw = sum(fl_signal_weights)
                 fl_score = sum(s * w for s, w in zip(fl_signals, fl_signal_weights)) / total_fw
 
+        # Qualifying start position multiplier on dominator score:
+        # Starting up front = more opportunity to lead laps early.
+        # P1-P3: boost up to 1.15x, P4-P10: neutral, P15+: penalty down to 0.80x
+        if qp and qp <= field_size and dom_score > 0:
+            if qp <= 3:
+                start_mult = 1.15 - (qp - 1) * 0.05  # P1=1.15, P2=1.10, P3=1.05
+            elif qp <= 10:
+                start_mult = 1.0
+            else:
+                # Linear decay: P11=0.98, P20=0.80, P30+=0.70
+                start_mult = max(0.70, 1.0 - (qp - 10) * 0.02)
+            dom_score = dom_score * start_mult
+
         dom_raw_scores[d] = dom_score
         fl_raw_scores[d] = fl_score
 
@@ -1361,9 +1415,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     # ── PASS 2: Allocate laps led and fastest laps (zero-sum, DB-calibrated) ──
     allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
-                                       calibration=calibration) if race_laps > 0 else {}
+                                       calibration=calibration,
+                                       odds_display=driver_odds_display) if race_laps > 0 else {}
     allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type,
-                                           calibration=calibration) if race_laps > 0 else {}
+                                           calibration=calibration,
+                                           odds_display=driver_odds_display) if race_laps > 0 else {}
 
     # ── PASS 3: Compute final DK points ─────────────────────────────────────
     rows = []
