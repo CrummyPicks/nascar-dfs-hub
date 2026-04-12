@@ -541,15 +541,17 @@ def _generate_race_projections(race, series_id, weights=None):
             except (ValueError, TypeError):
                 continue
         if len(odds_probs) >= field_size * 0.3:
+            import math
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-            max_prob = ranked[0][1]
-            min_prob = ranked[-1][1]
-            prob_range = max_prob - min_prob
+            log_probs = {name: math.log(prob) for name, prob in ranked}
+            max_lp = max(log_probs.values())
+            min_lp = min(log_probs.values())
+            lp_range = max_lp - min_lp
             for name, prob in ranked:
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    if prob_range > 0:
-                        t = 1 - (prob - min_prob) / prob_range
+                    if lp_range > 0:
+                        t = 1 - (log_probs[name] - min_lp) / lp_range
                         odds_finish[matched] = 1 + (field_size - 1) * t
                     else:
                         odds_finish[matched] = field_size * 0.5
@@ -1637,15 +1639,17 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
             # Only use odds if meaningful coverage
             field_size = len(drivers)
             if len(odds_probs) >= field_size * 0.3:
+                import math
                 ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-                max_prob = ranked[0][1]
-                min_prob = ranked[-1][1]
-                prob_range = max_prob - min_prob
+                log_probs = {name: math.log(prob) for name, prob in ranked}
+                max_lp = max(log_probs.values())
+                min_lp = min(log_probs.values())
+                lp_range = max_lp - min_lp
                 for name, prob in ranked:
                     matched = fuzzy_match_name(name, drivers)
                     if matched:
-                        if prob_range > 0:
-                            t = 1 - (prob - min_prob) / prob_range
+                        if lp_range > 0:
+                            t = 1 - (log_probs[name] - min_lp) / lp_range
                             odds_finish[matched] = 1 + (field_size - 1) * t
                         else:
                             odds_finish[matched] = field_size * 0.5

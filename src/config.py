@@ -195,12 +195,14 @@ TRACK_TYPE_WEIGHT_DEFAULTS = {
 # ----------------------------
 # CROSS-SERIES HIERARCHY
 # ----------------------------
-# Higher-series stats flow DOWN to lower series projections (never up).
-# Cup drivers racing Trucks get their Cup track history factored in.
+# Cross-series track history: supplement current-series data with other series.
+# Cup stays isolated. O'Reilly and Truck share data bidirectionally since
+# drivers frequently move between them (e.g. Caruth's 7 Truck Bristol races
+# are highly relevant when he races O'Reilly at Bristol).
 CROSS_SERIES_HIERARCHY = {
-    1: [],        # Cup: no higher series
-    2: [1],       # O'Reilly: supplement with Cup
-    3: [1, 2],    # Truck: supplement with Cup + O'Reilly
+    1: [],        # Cup: no cross-series
+    2: [1, 3],    # O'Reilly: supplement with Cup and Truck
+    3: [1, 2],    # Truck: supplement with Cup and O'Reilly
 }
 
 # ----------------------------

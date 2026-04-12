@@ -1092,21 +1092,22 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         # Only use odds if we have data for a meaningful fraction of the field
         if len(odds_probs) >= field_size * 0.3:
-            # Convert implied probability to a finish position that preserves
-            # the magnitude of probability gaps. A -100 favorite (50%) is
-            # massively separated from a +500 (16.7%), not just rank 1 vs 2.
-            # Method: normalize probs so the weakest driver maps to field_size
-            # and the strongest maps to 1, with proportional spacing between.
+            # Convert implied probability to finish position using LOG scale.
+            # Linear probability compresses midfield when a heavy favorite exists
+            # (e.g. -100 = 53% leaves everyone else in 26-38 range).
+            # Log scale preserves the favorite's advantage while differentiating
+            # the rest of the field meaningfully.
+            import math
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-            max_prob = ranked[0][1]
-            min_prob = ranked[-1][1]
-            prob_range = max_prob - min_prob
+            log_probs = {name: math.log(prob) for name, prob in ranked}
+            max_lp = max(log_probs.values())
+            min_lp = min(log_probs.values())
+            lp_range = max_lp - min_lp
             for name, prob in ranked:
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    if prob_range > 0:
-                        # Higher prob → lower (better) finish position
-                        t = 1 - (prob - min_prob) / prob_range  # 0=best, 1=worst
+                    if lp_range > 0:
+                        t = 1 - (log_probs[name] - min_lp) / lp_range  # 0=best, 1=worst
                         odds_finish[matched] = 1 + (field_size - 1) * t
                     else:
                         odds_finish[matched] = mid_field
