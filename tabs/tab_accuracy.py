@@ -790,13 +790,39 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     comp.index = comp.index + 1
     comp.index.name = "Rank"
 
-    # Accuracy metrics
-    mae_dk = comp["DK Error"].abs().mean()
-    mae_finish = comp["Finish Error"].abs().mean()
-    mae_dk_finish = comp["DK Finish Error"].abs().mean()
-    corr_dk = comp["Proj DK"].corr(comp["Actual DK"])
-    corr_finish = comp["Proj Finish"].corr(comp["Actual Finish"])
-    rank_corr = comp["Proj DK Finish"].corr(comp["Actual DK Finish"])
+    # Driver exclusion selector
+    all_drivers = comp["Driver"].tolist()
+    exc_col1, exc_col2 = st.columns([4, 1])
+    with exc_col1:
+        excluded_drivers = st.multiselect(
+            "Exclude drivers from metrics",
+            options=all_drivers,
+            default=st.session_state.get("acc_excluded_drivers", []),
+            key="acc_exclude_select",
+            placeholder="Select drivers to remove from calculations...",
+        )
+    with exc_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Reset", key="acc_reset_exclude"):
+            st.session_state["acc_excluded_drivers"] = []
+            st.rerun()
+
+    st.session_state["acc_excluded_drivers"] = excluded_drivers
+
+    # Filter comparison dataframe
+    if excluded_drivers:
+        comp_filtered = comp[~comp["Driver"].isin(excluded_drivers)].copy()
+        st.caption(f"Excluding {len(excluded_drivers)} driver(s): {', '.join(excluded_drivers)}")
+    else:
+        comp_filtered = comp
+
+    # Accuracy metrics (computed on filtered set)
+    mae_dk = comp_filtered["DK Error"].abs().mean()
+    mae_finish = comp_filtered["Finish Error"].abs().mean()
+    mae_dk_finish = comp_filtered["DK Finish Error"].abs().mean()
+    corr_dk = comp_filtered["Proj DK"].corr(comp_filtered["Actual DK"])
+    corr_finish = comp_filtered["Proj Finish"].corr(comp_filtered["Actual Finish"])
+    rank_corr = comp_filtered["Proj DK Finish"].corr(comp_filtered["Actual DK Finish"])
 
     m_cols = st.columns(6)
     m_cols[0].metric("DK Pts MAE", f"{mae_dk:.1f}")
@@ -830,23 +856,23 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     st.dataframe(safe_fillna(format_display_df(comp)), width="stretch",
                  hide_index=False, height=500)
 
-    # Scatter: Projected vs Actual DK Points
+    # Scatter: Projected vs Actual DK Points (uses filtered data)
     import plotly.graph_objects as go
     from src.charts import DARK_LAYOUT, apply_dark_theme
 
     fig = go.Figure()
-    min_val = min(comp["Proj DK"].min(), comp["Actual DK"].min()) - 5
-    max_val = max(comp["Proj DK"].max(), comp["Actual DK"].max()) + 5
+    min_val = min(comp_filtered["Proj DK"].min(), comp_filtered["Actual DK"].min()) - 5
+    max_val = max(comp_filtered["Proj DK"].max(), comp_filtered["Actual DK"].max()) + 5
     fig.add_trace(go.Scatter(
         x=[min_val, max_val], y=[min_val, max_val],
         mode="lines", line=dict(color="#444", dash="dash", width=1),
         showlegend=False,
     ))
-    colors = np.where(comp["DK Error"] > 0, "#ef4444", "#22c55e")
+    colors = np.where(comp_filtered["DK Error"] > 0, "#ef4444", "#22c55e")
     fig.add_trace(go.Scatter(
-        x=comp["Actual DK"], y=comp["Proj DK"],
+        x=comp_filtered["Actual DK"], y=comp_filtered["Proj DK"],
         mode="markers+text",
-        text=short_name_series(comp["Driver"].tolist()),
+        text=short_name_series(comp_filtered["Driver"].tolist()),
         textposition="top right",
         textfont=dict(size=8, color="#8892a4"),
         marker=dict(size=9, color=colors, opacity=0.8),
@@ -855,7 +881,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             "Projected: %{y:.1f}<br>Actual: %{x:.1f}<br>"
             "Error: %{customdata[1]:+.1f}<extra></extra>"
         ),
-        customdata=np.column_stack([comp["Driver"], comp["DK Error"]]),
+        customdata=np.column_stack([comp_filtered["Driver"], comp_filtered["DK Error"]]),
         showlegend=False,
     ))
     fig.update_layout(**DARK_LAYOUT, height=500,

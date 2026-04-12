@@ -723,8 +723,32 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                                         label_visibility="collapsed")
                 if new_lock and not is_locked:
                     st.session_state.opt_locked.add(driver)
+                    st.session_state.opt_excluded.discard(driver)
+                    # Re-apply overrides and rebuild lineup to sync with player pool
+                    for drv, pts in st.session_state.opt_overrides.items():
+                        mask = pool["Driver"] == drv
+                        if mask.any():
+                            pool.loc[mask, "Proj Score"] = pts
+                            sal = pool.loc[mask, "DK Salary"].values[0]
+                            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
+                    st.session_state.opt_lineup = _build_optimal_lineup(
+                        pool, salary_cap, roster_size,
+                        locked=list(st.session_state.opt_locked),
+                        excluded=st.session_state.opt_excluded)
+                    st.rerun()
                 elif not new_lock and is_locked:
                     st.session_state.opt_locked.discard(driver)
+                    for drv, pts in st.session_state.opt_overrides.items():
+                        mask = pool["Driver"] == drv
+                        if mask.any():
+                            pool.loc[mask, "Proj Score"] = pts
+                            sal = pool.loc[mask, "DK Salary"].values[0]
+                            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
+                    st.session_state.opt_lineup = _build_optimal_lineup(
+                        pool, salary_cap, roster_size,
+                        locked=list(st.session_state.opt_locked),
+                        excluded=st.session_state.opt_excluded)
+                    st.rerun()
 
             # Exclude (remove from lineup and add to excluded set)
             with row_cols[1]:
@@ -735,6 +759,13 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     for k in list(st.session_state.keys()):
                         if k.startswith("swap_"):
                             del st.session_state[k]
+                    # Re-apply overrides before rebuilding
+                    for drv, pts in st.session_state.opt_overrides.items():
+                        mask = pool["Driver"] == drv
+                        if mask.any():
+                            pool.loc[mask, "Proj Score"] = pts
+                            sal = pool.loc[mask, "DK Salary"].values[0]
+                            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
                     st.session_state.opt_lineup = _build_optimal_lineup(
                         pool, salary_cap, roster_size,
                         locked=list(st.session_state.opt_locked),
