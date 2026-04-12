@@ -17,6 +17,58 @@ def section_header(title: str, subtitle: str = ""):
     </div>""", unsafe_allow_html=True)
 
 
+def build_projection_column_config(df, max_proj_dk=None):
+    """Build st.column_config for the projections table."""
+    config = {}
+    if max_proj_dk is None:
+        max_proj_dk = df["Proj DK"].max() if "Proj DK" in df.columns else 100
+
+    if "DK Salary" in df.columns:
+        config["DK Salary"] = st.column_config.NumberColumn(
+            "DK Salary", format="$%d")
+    if "Proj DK" in df.columns:
+        config["Proj DK"] = st.column_config.ProgressColumn(
+            "Proj DK", min_value=0, max_value=float(max_proj_dk * 1.1),
+            format="%.1f")
+    if "Value" in df.columns:
+        config["Value"] = st.column_config.NumberColumn("Value", format="%.2f")
+    if "Proj Finish" in df.columns:
+        config["Proj Finish"] = st.column_config.NumberColumn("Proj Finish", format="%.0f")
+    for col in ["Win Odds", "Est. Odds"]:
+        if col in df.columns:
+            config[col] = st.column_config.NumberColumn(col, format="%+d")
+    for col in ["Impl %", "Est. Impl %"]:
+        if col in df.columns:
+            config[col] = st.column_config.NumberColumn(col, format="%.1f%%")
+    for col in ["Finish Pts", "Diff Pts", "Led Pts", "FL Pts"]:
+        if col in df.columns:
+            config[col] = st.column_config.NumberColumn(col, format="%.1f")
+    for col in ["Avg DK", "Best DK", "Worst DK"]:
+        if col in df.columns:
+            config[col] = st.column_config.NumberColumn(col, format="%.1f")
+    for col in ["Proj Laps Led", "Proj Fast Laps"]:
+        if col in df.columns:
+            config[col] = st.column_config.NumberColumn(col, format="%d")
+    # Signal columns
+    for col in ["Sig Odds", "Sig Track", "Sig TType", "Sig Prac", "Sig Qual",
+                 "Sig Team", "Team Adj", "Mfr Adj"]:
+        if col in df.columns:
+            config[col] = st.column_config.NumberColumn(col, format="%.1f")
+    return config
+
+
+def build_optimizer_column_config(df):
+    """Build st.column_config for optimizer pool/lineup tables."""
+    config = {}
+    if "DK Salary" in df.columns:
+        config["DK Salary"] = st.column_config.NumberColumn("Salary", format="$%d")
+    if "Proj Score" in df.columns:
+        config["Proj Score"] = st.column_config.NumberColumn("Proj", format="%.1f")
+    if "Value" in df.columns:
+        config["Value"] = st.column_config.NumberColumn("Value", format="%.2f")
+    return config
+
+
 def _rank_color(val, max_rank=40):
     """Return background color for a rank value (1=green, high=red)."""
     if pd.isna(val) or val == "-":

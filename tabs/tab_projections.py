@@ -1594,8 +1594,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             else:
                 st.warning("Could not save projections")
 
-    disp = format_display_df(proj[avail].copy())
-    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550)
+    from src.components import build_projection_column_config
+    disp = proj[avail].copy()
+    col_config = build_projection_column_config(disp)
+    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550,
+                 column_config=col_config)
 
     # Chart — all drivers, stacked bar with component breakdown on hover
     import plotly.graph_objects as go
