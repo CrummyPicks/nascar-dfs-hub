@@ -542,10 +542,17 @@ def _generate_race_projections(race, series_id, weights=None):
                 continue
         if len(odds_probs) >= field_size * 0.3:
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-            for rank, (name, prob) in enumerate(ranked, 1):
+            max_prob = ranked[0][1]
+            min_prob = ranked[-1][1]
+            prob_range = max_prob - min_prob
+            for name, prob in ranked:
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    odds_finish[matched] = rank * (field_size / len(ranked))
+                    if prob_range > 0:
+                        t = 1 - (prob - min_prob) / prob_range
+                        odds_finish[matched] = 1 + (field_size - 1) * t
+                    else:
+                        odds_finish[matched] = field_size * 0.5
 
     race_laps = race.get("scheduled_laps", 0)
     try:
@@ -560,6 +567,7 @@ def _generate_race_projections(race, series_id, weights=None):
         start_positions, odds_finish, dnf_data,
         race_laps=race_laps, track_type=track_type,
         track_name=track_name, series_id=series_id,
+        odds_probs=odds_probs if odds_finish else {},
     )
 
     return proj_dk, actuals, {
@@ -574,7 +582,8 @@ def _generate_race_projections(race, series_id, weights=None):
 def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                            start_positions, odds_finish, dnf_data,
                            race_laps=0, track_type="intermediate",
-                           track_name="", series_id=None):
+                           track_name="", series_id=None,
+                           odds_probs=None, detailed=False):
     """Run the full projection model for a single race.
 
     Synchronized with the live projection engine in tab_projections.py:
@@ -583,9 +592,19 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
     - Finish pts + diff pts + laps led + fastest laps
     Returns dict of {driver: proj_dk_points}
     """
+    if odds_probs is None:
+        odds_probs = {}
     from tabs.tab_projections import _get_track_dominator_calibration
     calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
     ll_ref = calibration.get("avg_top_leader", race_laps * 0.35)
+
+    # Build driver→impl_pct mapping for dominator scoring
+    driver_impl_pct = {}
+    if odds_probs:
+        for name, prob in odds_probs.items():
+            matched = fuzzy_match_name(name, drivers)
+            if matched:
+                driver_impl_pct[matched] = prob * 100  # as percentage
 
     mid_field = field_size * 0.5
     MIN_RACES_FULL_TRUST = 5
@@ -713,7 +732,9 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         driver_raw_scores[d] = raw_finish
 
         # ── Dominator score (laps led potential) — weight-aware ──
+        # Synced with projections tab: track LL, track type LL, qual, odds (impl prob), practice
         th = th_data.get(d)
+        tt = tt_data.get(d)
         sp = start_positions.get(d)
         od = odds_finish.get(d)
 
@@ -722,6 +743,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
             dom_signals = []
             dom_w = []
 
+            # Track history laps led
             if th and th.get("laps_led_per_race", 0) > 0:
                 ll_norm = min(100, (th["laps_led_per_race"] / max(ll_ref, 1)) * 100)
                 dom_signals.append(ll_norm)
@@ -729,15 +751,43 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                 dom_signals.append(5.0)
             dom_w.append(wn.get("track", 0.20))
 
+            # Track type laps led
+            if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
+                tt_ll = tt["laps_led_per_race"]
+                tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
+                dom_signals.append(tt_ll_norm)
+            else:
+                dom_signals.append(5.0)
+            dom_w.append(wn.get("track_type", 0.15))
+
+            # Qualifying
             if sp and sp <= field_size and wn.get("qual", 0) > 0:
                 qual_dom = max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 100
                 dom_signals.append(qual_dom)
                 dom_w.append(wn.get("qual", 0.15))
 
+            # Odds: use implied probability if available
             if od and wn.get("odds", 0) > 0:
-                odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
+                impl = driver_impl_pct.get(d)
+                if impl:
+                    max_impl = max(driver_impl_pct.values()) if driver_impl_pct else 1
+                    odds_dom = min(100, (impl / max(max_impl, 1)) * 100)
+                else:
+                    odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
                 dom_signals.append(odds_dom)
                 dom_w.append(wn.get("odds", 0.15))
+
+            # Practice proxy from speed_score
+            speed_source = th if (th and th.get("speed_score", 0) > 0) else (
+                tt if (tt and isinstance(tt, dict) and tt.get("speed_score", 0) > 0) else None)
+            if speed_source and wn.get("practice", 0) > 0:
+                all_speeds = [t.get("speed_score", 0) for t in th_data.values()]
+                all_speeds += [t.get("speed_score", 0) for t in tt_data.values() if isinstance(t, dict)]
+                max_speed = max(all_speeds) if all_speeds else 1
+                if max_speed > 0:
+                    prac_dom = (speed_source["speed_score"] / max_speed) * 100
+                    dom_signals.append(prac_dom)
+                    dom_w.append(wn.get("practice", 0.10))
 
             if dom_signals:
                 total_dw = sum(dom_w)
@@ -746,9 +796,20 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                 else:
                     dom_score = max(0, (field_size - raw_finish) / field_size) * 5
 
+        # Qualifying start position multiplier on dominator score
+        if sp and sp <= field_size and dom_score > 0:
+            if sp <= 3:
+                start_mult = 1.15 - (sp - 1) * 0.05
+            elif sp <= 10:
+                start_mult = 1.0
+            else:
+                start_mult = max(0.70, 1.0 - (sp - 10) * 0.02)
+            dom_score = dom_score * start_mult
+
         dom_raw_scores[d] = dom_score
 
         # ── Fastest laps score — weight-aware (0-100 scale) ──
+        # Synced with projections tab: dom carryover, qual, practice, odds (impl prob), finish
         fl_score = 0.0
         if race_laps > 0:
             fl_signals = []
@@ -763,8 +824,24 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
                 fl_signals.append(qual_fl)
                 fl_w.append(wn.get("qual", 0.15))
 
+            # Practice proxy for FL
+            if speed_source and wn.get("practice", 0) > 0:
+                all_speeds = [t.get("speed_score", 0) for t in th_data.values()]
+                all_speeds += [t.get("speed_score", 0) for t in tt_data.values() if isinstance(t, dict)]
+                max_speed = max(all_speeds) if all_speeds else 1
+                if max_speed > 0:
+                    prac_fl = (speed_source["speed_score"] / max_speed) * 100
+                    fl_signals.append(prac_fl)
+                    fl_w.append(wn.get("practice", 0.10))
+
+            # Odds: use implied probability for FL too
             if od and wn.get("odds", 0) > 0:
-                odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
+                impl = driver_impl_pct.get(d)
+                if impl:
+                    max_impl = max(driver_impl_pct.values()) if driver_impl_pct else 1
+                    odds_fl = min(100, (impl / max(max_impl, 1)) * 100)
+                else:
+                    odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
                 fl_signals.append(odds_fl)
                 fl_w.append(wn.get("odds", 0.15))
 
@@ -800,6 +877,7 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
     # ── Compute full DK points: finish + diff + laps led + fastest laps ──
     proj_dk = {}
+    proj_detail = {}
     for d in drivers:
         proj_finish = driver_proj_finish[d]
         pf_int = round(proj_finish)
@@ -809,11 +887,19 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
         start = sp if sp else pf_int
         diff_pts = int(start - pf_int)
 
-        led_pts = round(allocated_ll.get(d, 0)) * 0.25
-        fl_pts = round(allocated_fl.get(d, 0)) * 0.45
+        p_ll = round(allocated_ll.get(d, 0))
+        p_fl = round(allocated_fl.get(d, 0))
+        led_pts = p_ll * 0.25
+        fl_pts = p_fl * 0.45
 
         proj_dk[d] = finish_pts + diff_pts + led_pts + fl_pts
+        proj_detail[d] = {
+            "proj_finish": proj_finish, "start": start,
+            "laps_led": p_ll, "fast_laps": p_fl,
+        }
 
+    if detailed:
+        return proj_dk, proj_detail
     return proj_dk
 
 
@@ -1552,10 +1638,17 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
             field_size = len(drivers)
             if len(odds_probs) >= field_size * 0.3:
                 ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-                for rank, (name, prob) in enumerate(ranked, 1):
+                max_prob = ranked[0][1]
+                min_prob = ranked[-1][1]
+                prob_range = max_prob - min_prob
+                for name, prob in ranked:
                     matched = fuzzy_match_name(name, drivers)
                     if matched:
-                        odds_finish[matched] = rank * (field_size / len(ranked))
+                        if prob_range > 0:
+                            t = 1 - (prob - min_prob) / prob_range
+                            odds_finish[matched] = 1 + (field_size - 1) * t
+                        else:
+                            odds_finish[matched] = field_size * 0.5
 
         # Track which signals are available for this race
         has_signals = {
@@ -1588,6 +1681,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
             "tt_data": tt_data,
             "start_positions": start_positions,
             "odds_finish": odds_finish,
+            "odds_probs": odds_probs if odds_finish else {},
             "has_signals": has_signals,
             "race_laps": race_laps,
             "track_type": track_type,
@@ -1663,6 +1757,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 track_type=rd.get("track_type", "intermediate"),
                 track_name=rd.get("track_name", ""),
                 series_id=rd.get("series_id"),
+                odds_probs=rd.get("odds_probs", {}),
             )
 
             # Compute errors using pre-indexed actual_dk dict
@@ -1885,8 +1980,8 @@ def _display_backtest_results(results_df, context_label):
                     continue
                 wn = {k: v / eff_total for k, v in effective.items()}
 
-                # Run the full projection with laps led + fastest laps
-                proj_dk_totals = _project_race_backtest(
+                # Run projection with detailed output
+                proj_dk_totals, proj_details = _project_race_backtest(
                     drivers, field_size, wn,
                     rd["th_data"], rd["tt_data"],
                     rd["start_positions"], rd["odds_finish"],
@@ -1895,138 +1990,19 @@ def _display_backtest_results(results_df, context_label):
                     track_type=rd.get("track_type", "intermediate"),
                     track_name=rd.get("track_name", ""),
                     series_id=rd.get("series_id"),
+                    odds_probs=rd.get("odds_probs", {}),
+                    detailed=True,
                 )
 
-                # Re-derive per-driver details for display
-                # (Re-run core logic to get finish/LL/FL breakdowns)
-                raw_scores = {}
-                dom_scores = {}
-                fl_scores_dict = {}
+                # Build output rows from detailed projection data
                 for d in drivers:
-                    th = rd["th_data"].get(d)
-                    tt = rd["tt_data"].get(d)
-                    sp = rd["start_positions"].get(d)
-                    od = rd["odds_finish"].get(d)
+                    det = proj_details.get(d, {})
+                    pf = det.get("proj_finish", 20)
+                    start = det.get("start", round(pf))
+                    p_ll = det.get("laps_led", 0)
+                    p_fl = det.get("fast_laps", 0)
+                    proj_total = proj_dk_totals.get(d, 0)
 
-                    finish_signals = []
-                    signal_weights = []
-                    if th and wn.get("track", 0) > 0:
-                        finish_signals.append(th["avg_finish"])
-                        signal_weights.append(wn["track"])
-                    # Track type removed from model
-                    # Qualifying as finish signal (15% fixed)
-                    mid_field = field_size * 0.5
-                    if sp and sp <= field_size:
-                        qual_finish = sp * 0.80 + mid_field * 0.20
-                        finish_signals.append(qual_finish)
-                        signal_weights.append(0.15)
-                    if th and th.get("speed_score", 0) > 0 and wn.get("practice", 0) > 0:
-                        max_spd = max((t.get("speed_score", 0) for t in rd["th_data"].values()), default=1)
-                        if max_spd > 0:
-                            finish_signals.append(max(1, field_size * (1 - th["speed_score"] / max_spd * 0.8)))
-                            signal_weights.append(wn["practice"])
-                    if od and wn.get("odds", 0) > 0:
-                        finish_signals.append(od)
-                        signal_weights.append(wn["odds"])
-                    if finish_signals:
-                        raw_scores[d] = sum(f * w for f, w in zip(finish_signals, signal_weights)) / sum(signal_weights)
-                    else:
-                        raw_scores[d] = field_size * 0.65
-
-                    # Dom score — uses projection weights
-                    dom_s = []
-                    dom_dw = []
-                    if th and th.get("laps_led_per_race", 0) > 0:
-                        dom_s.append(th["laps_led_per_race"]); dom_dw.append(wn.get("track", 0.20))
-                    if sp and sp <= field_size:
-                        dom_s.append(max(0, (field_size + 1 - sp) / field_size) ** 1.5 * 30)
-                        dom_dw.append(0.15)
-                    if od and wn.get("odds", 0) > 0:
-                        dom_s.append(max(0, (field_size + 1 - od) / field_size) ** 1.3 * 35)
-                        dom_dw.append(wn.get("odds", 0.15))
-                    dom_scores[d] = sum(s * w for s, w in zip(dom_s, dom_dw)) / sum(dom_dw) if dom_s else 0
-
-                    # FL score — uses projection weights
-                    fl_s_list = []
-                    fl_w_list = []
-                    if dom_scores[d] > 0:
-                        fl_s_list.append(dom_scores[d] * 0.5); fl_w_list.append(0.25)
-                    if sp and sp <= field_size:
-                        fl_s_list.append(max(0, (field_size + 1 - sp) / field_size) * 15)
-                        fl_w_list.append(wn.get("qual", 0.15))
-                    if od and wn.get("odds", 0) > 0:
-                        fl_s_list.append(max(0, (field_size + 1 - od) / field_size) * 12)
-                        fl_w_list.append(wn.get("odds", 0.15))
-                    fl_s_list.append(max(0, (field_size - raw_scores.get(d, 20)) / field_size) * 10)
-                    fl_w_list.append(0.10)
-                    fl_scores_dict[d] = sum(s * w for s, w in zip(fl_s_list, fl_w_list)) / sum(fl_w_list) if fl_s_list else 0
-
-                # Rank-order finish spreading
-                sorted_d = sorted(raw_scores.items(), key=lambda x: x[1])
-                n = len(sorted_d)
-                proj_finishes = {}
-                for rank_idx, (d, rs) in enumerate(sorted_d):
-                    if n > 1:
-                        t = rank_idx / (n - 1)
-                        proj_finishes[d] = max(1, min(field_size, 1 + (field_size - 1) * (t ** 0.85)))
-                    else:
-                        proj_finishes[d] = field_size * 0.5
-
-                # Allocate LL/FL using same logic as backtest
-                race_laps = rd.get("race_laps", 0)
-                tt_key = rd.get("track_type", "intermediate")
-                parent = TRACK_TYPE_PARENT.get(tt_key, tt_key)
-                LEADER_FRAC = {
-                    "superspeedway": 0.60, "road": 0.22, "short": 0.18,
-                    "short_concrete": 0.16, "intermediate": 0.22, "intermediate_worn": 0.20,
-                }
-                CONC = {
-                    "superspeedway": 0.6, "road": 1.0, "short": 2.0,
-                    "short_concrete": 2.2, "intermediate": 1.5, "intermediate_worn": 1.6,
-                }
-                ll_conc = CONC.get(tt_key, CONC.get(parent, 1.5))
-
-                allocated_ll = {}
-                if race_laps > 0 and dom_scores:
-                    ll_frac = LEADER_FRAC.get(tt_key, LEADER_FRAC.get(parent, 0.22))
-                    n_leaders = max(3, int(field_size * ll_frac))
-                    top_dom = sorted(dom_scores.items(), key=lambda x: x[1], reverse=True)[:n_leaders]
-                    ll_s = {d: max(0.01, s) ** ll_conc for d, s in top_dom}
-                    ll_t = sum(ll_s.values())
-                    if ll_t > 0:
-                        allocated_ll = {d: (s / ll_t) * race_laps for d, s in ll_s.items()}
-
-                FL_FRAC = {
-                    "superspeedway": 0.85, "road": 0.55, "short": 0.55,
-                    "short_concrete": 0.50, "intermediate": 0.65, "intermediate_worn": 0.60,
-                }
-                fl_conc = max(0.5, ll_conc * 0.7)
-                allocated_fl = {}
-                if race_laps > 0 and fl_scores_dict:
-                    fl_frac = FL_FRAC.get(tt_key, FL_FRAC.get(parent, 0.55))
-                    n_fl = max(5, int(field_size * fl_frac))
-                    top_fl = sorted(fl_scores_dict.items(), key=lambda x: x[1], reverse=True)[:n_fl]
-                    fl_s = {d: max(0.01, s) ** fl_conc for d, s in top_fl}
-                    fl_t = sum(fl_s.values())
-                    if fl_t > 0:
-                        allocated_fl = {d: (s / fl_t) * race_laps for d, s in fl_s.items()}
-
-                # Build output rows
-                for d in drivers:
-                    pf = proj_finishes.get(d, 20)
-                    sp = rd["start_positions"].get(d)
-                    start = sp if sp else round(pf)
-                    p_ll = allocated_ll.get(d, 0)
-                    p_fl = allocated_fl.get(d, 0)
-
-                    pf_int = round(pf)
-                    finish_pts = DK_FINISH_POINTS.get(max(1, min(40, pf_int)), 0)
-                    diff_pts = int(start - pf_int)
-                    led_pts = p_ll * 0.25
-                    fl_pts = p_fl * 0.45
-                    proj_total = finish_pts + diff_pts + led_pts + fl_pts
-
-                    # Actual results
                     act_row = results[results["Driver"] == d]
                     actual_dk = act_row["DK Pts"].values[0] if len(act_row) > 0 else None
                     actual_finish = act_row["Finish Position"].values[0] if len(act_row) > 0 else None
