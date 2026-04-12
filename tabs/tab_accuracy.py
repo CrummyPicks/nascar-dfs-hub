@@ -20,7 +20,7 @@ from src.data import (
 )
 from src.utils import (
     calc_dk_points, safe_fillna, format_display_df, short_name_series,
-    fuzzy_match_name, fuzzy_get, build_norm_lookup, fuzzy_merge,
+    fuzzy_match_name, fuzzy_get, build_norm_lookup,
 )
 from tabs.tab_projections import _query_races_to_subtract, _subtract_races_from_scraped
 
@@ -949,111 +949,57 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     actual_race = race_map[selected_label]
     race_id = actual_race.get("race_id")
 
-    # Check for saved projections
-    saved_races = load_saved_race_list(series_id)
-    has_saved = False
-    if not saved_races.empty:
-        has_saved = race_id in saved_races["race_id"].values
-
-    # Weight source selector
-    weight_source = "Default Weights"
-    if has_saved:
-        weight_source = st.radio("Projection Source",
-                                  ["Default Weights", "Saved Projections"],
-                                  horizontal=True, key="acc_weight_src")
-
     with st.spinner("Generating projections and loading results..."):
-        if weight_source == "Saved Projections" and has_saved:
-            # Use saved projections
-            proj_df = load_saved_projections(series_id=series_id, race_id=race_id)
-            actuals = _load_actual_results(actual_race, series_id)
-            if proj_df.empty or actuals.empty:
-                st.warning("Could not load saved projections or actual results.")
-                return
+        # Always run live projection engine to stay in sync with projections tab
+        proj_dk, proj_detail, actuals, meta = _generate_race_projections(
+            actual_race, series_id
+        )
+        if proj_dk is None or actuals is None:
+            st.warning("Could not generate projections — race results may not be available.")
+            return
 
-            # Normalize driver names for matching between saved projections and actuals
-            proj_for_merge = proj_df.rename(columns={"driver": "Driver"})
-            actuals_cols = actuals[["Driver", "Finish Position", "Start", "Laps Led",
-                                    "Fastest Laps", "DK Pts"]]
-            merged = fuzzy_merge(proj_for_merge, actuals_cols, on="Driver", how="inner")
-            if merged.empty:
-                st.warning("Could not match projected drivers to actual results.")
-                return
-
-            comp = pd.DataFrame({
-                "Driver": merged["Driver"],
-                "Start": merged["Start"],
-                "Proj DK": merged["proj_dk"].round(1),
-                "Actual DK": merged["DK Pts"].round(1),
-                "DK Error": (merged["proj_dk"] - merged["DK Pts"]).round(1),
-                "Proj Finish": merged["proj_finish"].round(1),
-                "Actual Finish": merged["Finish Position"],
-                "Finish Error": (merged["proj_finish"] - merged["Finish Position"]).round(1),
-                "Proj LL": merged.get("proj_laps_led", pd.Series(0, index=merged.index)).fillna(0).astype(int),
-                "Actual LL": merged["Laps Led"].fillna(0).astype(int),
-                "Proj FL": merged.get("proj_fast_laps", pd.Series(0, index=merged.index)).fillna(0).astype(int),
-                "Actual FL": merged["Fastest Laps"].fillna(0).astype(int),
+        rows = []
+        for _, row in actuals.iterrows():
+            d = row["Driver"]
+            proj = proj_dk.get(d, 0)
+            actual_dk = row["DK Pts"]
+            actual_finish = row["Finish Position"]
+            start_pos = row.get("Start")
+            det = proj_detail.get(d, {}) if proj_detail else {}
+            proj_finish = det.get("proj_finish") if det else None
+            if proj_finish is None:
+                sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
+                proj_finish = next((i+1 for i, (n, _) in enumerate(sorted_proj) if n == d),
+                                   len(sorted_proj))
+            rows.append({
+                "Driver": d,
+                "Start": start_pos,
+                "Proj DK": round(proj, 1),
+                "Actual DK": round(actual_dk, 1),
+                "DK Error": round(proj - actual_dk, 1),
+                "Proj Finish": proj_finish,
+                "Actual Finish": actual_finish,
+                "Finish Error": round(proj_finish - actual_finish, 1),
+                "Proj LL": det.get("laps_led", 0),
+                "Actual LL": int(row.get("Laps Led", 0) or 0),
+                "Proj FL": det.get("fast_laps", 0),
+                "Actual FL": int(row.get("Fastest Laps", 0) or 0),
             })
+        comp = pd.DataFrame(rows)
 
-            w_row = proj_df.iloc[0]
-            w_parts = []
-            for lbl, key in [("Track", "w_track"), ("Track Type", "w_track_type"),
-                              ("Practice", "w_practice"), ("Odds", "w_odds")]:
-                v = w_row.get(key, 0)
-                if v and v > 0:
-                    w_parts.append(f"{lbl} {v:.0%}")
-            weights_str = " | ".join(w_parts) if w_parts else "Default"
-        else:
-            # Auto-generate projections using track-type-specific defaults
-            proj_dk, proj_detail, actuals, meta = _generate_race_projections(
-                actual_race, series_id
-            )
-            if proj_dk is None or actuals is None:
-                st.warning("Could not generate projections — race results may not be available.")
-                return
+        track_name_acc = actual_race.get("track_name", "")
+        track_type_acc = TRACK_TYPE_MAP.get(track_name_acc, "intermediate")
+        w = _get_default_weights(track_type_acc)
+        w_parts = []
+        for lbl, key in [("Odds", "odds"), ("Track", "track"), ("Track Type", "track_type"),
+                          ("Practice", "practice"), ("Team", "team"), ("Qual", "qual")]:
+            v = w.get(key, 0)
+            if v > 0:
+                w_parts.append(f"{lbl} {v:.0%}")
+        weights_str = " | ".join(w_parts) if w_parts else "Default"
 
-            rows = []
-            for _, row in actuals.iterrows():
-                d = row["Driver"]
-                proj = proj_dk.get(d, 0)
-                actual_dk = row["DK Pts"]
-                actual_finish = row["Finish Position"]
-                start_pos = row.get("Start")
-                det = proj_detail.get(d, {}) if proj_detail else {}
-                proj_finish = det.get("proj_finish") if det else None
-                if proj_finish is None:
-                    sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
-                    proj_finish = next((i+1 for i, (n, _) in enumerate(sorted_proj) if n == d),
-                                       len(sorted_proj))
-                rows.append({
-                    "Driver": d,
-                    "Start": start_pos,
-                    "Proj DK": round(proj, 1),
-                    "Actual DK": round(actual_dk, 1),
-                    "DK Error": round(proj - actual_dk, 1),
-                    "Proj Finish": round(proj_finish, 1),
-                    "Actual Finish": actual_finish,
-                    "Finish Error": round(proj_finish - actual_finish, 1),
-                    "Proj LL": det.get("laps_led", 0),
-                    "Actual LL": int(row.get("Laps Led", 0) or 0),
-                    "Proj FL": det.get("fast_laps", 0),
-                    "Actual FL": int(row.get("Fastest Laps", 0) or 0),
-                })
-            comp = pd.DataFrame(rows)
-
-            track_name_acc = actual_race.get("track_name", "")
-            track_type_acc = TRACK_TYPE_MAP.get(track_name_acc, "intermediate")
-            w = _get_default_weights(track_type_acc)
-            w_parts = []
-            for lbl, key in [("Odds", "odds"), ("Track", "track"), ("Track Type", "track_type"),
-                              ("Practice", "practice"), ("Team", "team"), ("Qual", "qual")]:
-                v = w.get(key, 0)
-                if v > 0:
-                    w_parts.append(f"{lbl} {v:.0%}")
-            weights_str = " | ".join(w_parts) if w_parts else "Default"
-
-            if meta and not meta.get("has_odds"):
-                st.caption("⚠️ No odds data available for this race — odds signal excluded")
+        if meta and not meta.get("has_odds"):
+            st.caption("⚠️ No odds data available for this race — odds signal excluded")
 
     comp = comp.sort_values("Actual DK", ascending=False).reset_index(drop=True)
     comp.index = comp.index + 1
