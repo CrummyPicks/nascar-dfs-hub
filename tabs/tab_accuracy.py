@@ -504,7 +504,7 @@ def _generate_race_projections(race, series_id, weights=None):
 
     actuals = _load_actual_results(race, series_id)
     if actuals.empty:
-        return None, None, None
+        return None, None, None, None
 
     drivers = actuals["Driver"].unique().tolist()
     field_size = len(drivers)
@@ -564,15 +564,16 @@ def _generate_race_projections(race, series_id, weights=None):
 
     dnf_data = query_driver_career_dnf(series_id, before_date=race_date)
 
-    proj_dk = _project_race_backtest(
+    proj_dk, proj_detail = _project_race_backtest(
         drivers, field_size, weights, th_data, tt_data,
         start_positions, odds_finish, dnf_data,
         race_laps=race_laps, track_type=track_type,
         track_name=track_name, series_id=series_id,
         odds_probs=odds_probs if odds_finish else {},
+        detailed=True,
     )
 
-    return proj_dk, actuals, {
+    return proj_dk, proj_detail, actuals, {
         "has_odds": bool(odds_finish),
         "has_track": bool(th_data),
         "has_qual": bool(start_positions),
@@ -994,6 +995,10 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 "Proj Finish": merged["proj_finish"].round(1),
                 "Actual Finish": merged["Finish Position"],
                 "Finish Error": (merged["proj_finish"] - merged["Finish Position"]).round(1),
+                "Proj LL": merged.get("proj_laps_led", pd.Series(0, index=merged.index)).fillna(0).astype(int),
+                "Actual LL": merged["Laps Led"].fillna(0).astype(int),
+                "Proj FL": merged.get("proj_fast_laps", pd.Series(0, index=merged.index)).fillna(0).astype(int),
+                "Actual FL": merged["Fastest Laps"].fillna(0).astype(int),
             })
 
             w_row = proj_df.iloc[0]
@@ -1006,7 +1011,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             weights_str = " | ".join(w_parts) if w_parts else "Default"
         else:
             # Auto-generate projections using track-type-specific defaults
-            proj_dk, actuals, meta = _generate_race_projections(
+            proj_dk, proj_detail, actuals, meta = _generate_race_projections(
                 actual_race, series_id
             )
             if proj_dk is None or actuals is None:
@@ -1020,19 +1025,25 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 actual_dk = row["DK Pts"]
                 actual_finish = row["Finish Position"]
                 start_pos = row.get("Start")
-                # Estimate projected finish from rank order of proj_dk
-                sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
-                proj_finish = next((i+1 for i, (n, _) in enumerate(sorted_proj) if n == d),
-                                   len(sorted_proj))
+                det = proj_detail.get(d, {}) if proj_detail else {}
+                proj_finish = det.get("proj_finish") if det else None
+                if proj_finish is None:
+                    sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
+                    proj_finish = next((i+1 for i, (n, _) in enumerate(sorted_proj) if n == d),
+                                       len(sorted_proj))
                 rows.append({
                     "Driver": d,
                     "Start": start_pos,
                     "Proj DK": round(proj, 1),
                     "Actual DK": round(actual_dk, 1),
                     "DK Error": round(proj - actual_dk, 1),
-                    "Proj Finish": proj_finish,
+                    "Proj Finish": round(proj_finish, 1),
                     "Actual Finish": actual_finish,
                     "Finish Error": round(proj_finish - actual_finish, 1),
+                    "Proj LL": det.get("laps_led", 0),
+                    "Actual LL": int(row.get("Laps Led", 0) or 0),
+                    "Proj FL": det.get("fast_laps", 0),
+                    "Actual FL": int(row.get("Fastest Laps", 0) or 0),
                 })
             comp = pd.DataFrame(rows)
 
@@ -1196,7 +1207,7 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         race_id = race.get("race_id")
         track_name = race.get("track_name", "")
 
-        proj_dk, actuals, meta = _generate_race_projections(race, series_id)
+        proj_dk, _detail, actuals, meta = _generate_race_projections(race, series_id)
         if proj_dk is None or actuals is None:
             continue
 
