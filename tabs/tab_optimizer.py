@@ -709,9 +709,15 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 st.rerun()
 
         # Lineup table with swap controls
+        # Use driver name in keys (not index) so keys stay stable across reruns
         sorted_lineup = sorted(lineup, key=lambda x: x["Proj Score"], reverse=True)
+        lineup_needs_rebuild = False
+        lineup_needs_swap = None  # (old_driver, new_driver_data)
+
         for slot_idx, driver_data in enumerate(sorted_lineup):
             driver = driver_data["Driver"]
+            # Sanitize driver name for use as Streamlit widget key
+            safe_key = driver.replace(" ", "_").replace(".", "").replace("'", "")
             is_locked = driver in st.session_state.opt_locked
 
             row_cols = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 2.2])
@@ -719,58 +725,22 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             # Lock toggle
             with row_cols[0]:
                 new_lock = st.checkbox("L", value=is_locked,
-                                        key=f"lu_lock_{slot_idx}",
+                                        key=f"lu_lock_{safe_key}",
                                         label_visibility="collapsed")
                 if new_lock and not is_locked:
                     st.session_state.opt_locked.add(driver)
                     st.session_state.opt_excluded.discard(driver)
-                    # Re-apply overrides and rebuild lineup to sync with player pool
-                    for drv, pts in st.session_state.opt_overrides.items():
-                        mask = pool["Driver"] == drv
-                        if mask.any():
-                            pool.loc[mask, "Proj Score"] = pts
-                            sal = pool.loc[mask, "DK Salary"].values[0]
-                            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
-                    st.session_state.opt_lineup = _build_optimal_lineup(
-                        pool, salary_cap, roster_size,
-                        locked=list(st.session_state.opt_locked),
-                        excluded=st.session_state.opt_excluded)
-                    st.rerun()
+                    lineup_needs_rebuild = True
                 elif not new_lock and is_locked:
                     st.session_state.opt_locked.discard(driver)
-                    for drv, pts in st.session_state.opt_overrides.items():
-                        mask = pool["Driver"] == drv
-                        if mask.any():
-                            pool.loc[mask, "Proj Score"] = pts
-                            sal = pool.loc[mask, "DK Salary"].values[0]
-                            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
-                    st.session_state.opt_lineup = _build_optimal_lineup(
-                        pool, salary_cap, roster_size,
-                        locked=list(st.session_state.opt_locked),
-                        excluded=st.session_state.opt_excluded)
-                    st.rerun()
+                    lineup_needs_rebuild = True
 
             # Exclude (remove from lineup and add to excluded set)
             with row_cols[1]:
-                if st.button("X", key=f"lu_excl_{slot_idx}"):
+                if st.button("X", key=f"lu_excl_{safe_key}"):
                     st.session_state.opt_excluded.add(driver)
                     st.session_state.opt_locked.discard(driver)
-                    # Clear swap keys so dropdowns reset
-                    for k in list(st.session_state.keys()):
-                        if k.startswith("swap_"):
-                            del st.session_state[k]
-                    # Re-apply overrides before rebuilding
-                    for drv, pts in st.session_state.opt_overrides.items():
-                        mask = pool["Driver"] == drv
-                        if mask.any():
-                            pool.loc[mask, "Proj Score"] = pts
-                            sal = pool.loc[mask, "DK Salary"].values[0]
-                            pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
-                    st.session_state.opt_lineup = _build_optimal_lineup(
-                        pool, salary_cap, roster_size,
-                        locked=list(st.session_state.opt_locked),
-                        excluded=st.session_state.opt_excluded)
-                    st.rerun()
+                    lineup_needs_rebuild = True
 
             # Driver info
             row_cols[2].markdown(f"**{driver}**" if is_locked else driver)
@@ -787,7 +757,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         f"{r['Driver']} (${r['DK Salary']:,} | {r['Proj Score']:.1f})"
                         for _, r in swap_candidates.head(10).iterrows()
                     ]
-                    swap_key = f"swap_{slot_idx}"
+                    swap_key = f"swap_{safe_key}"
                     swap_pick = st.selectbox(
                         "swap", swap_options, key=swap_key,
                         label_visibility="collapsed")
@@ -795,18 +765,30 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         swap_name = swap_pick.split(" ($")[0]
                         new_driver = swap_candidates[
                             swap_candidates["Driver"] == swap_name].iloc[0].to_dict()
-                        # Replace in lineup
-                        new_lineup = [d for d in st.session_state.opt_lineup
-                                      if d["Driver"] != driver]
-                        new_lineup.append(new_driver)
-                        st.session_state.opt_lineup = new_lineup
-                        # Remove lock from swapped-out driver
-                        st.session_state.opt_locked.discard(driver)
-                        # Clear ALL swap keys so dropdowns reset to "Swap..."
-                        for k in list(st.session_state.keys()):
-                            if k.startswith("swap_"):
-                                del st.session_state[k]
-                        st.rerun()
+                        lineup_needs_swap = (driver, new_driver)
+
+        # Process all lineup changes AFTER rendering all widgets
+        if lineup_needs_swap:
+            old_driver, new_driver_data = lineup_needs_swap
+            new_lineup = [d for d in st.session_state.opt_lineup
+                          if d["Driver"] != old_driver]
+            new_lineup.append(new_driver_data)
+            st.session_state.opt_lineup = new_lineup
+            st.session_state.opt_locked.discard(old_driver)
+            for k in list(st.session_state.keys()):
+                if k.startswith("swap_"):
+                    del st.session_state[k]
+            st.rerun()
+
+        if lineup_needs_rebuild:
+            for k in list(st.session_state.keys()):
+                if k.startswith("swap_"):
+                    del st.session_state[k]
+            st.session_state.opt_lineup = _build_optimal_lineup(
+                pool, salary_cap, roster_size,
+                locked=list(st.session_state.opt_locked),
+                excluded=st.session_state.opt_excluded)
+            st.rerun()
 
     else:
         st.warning("Could not build a valid lineup within the salary cap.")
