@@ -858,18 +858,13 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
 
         fl_raw_scores[d] = fl_score
 
-    # ── Rank-order finish spreading ──
+    # ── Rank-order finish assignment ──
+    # Direct integer positions: rank 1 = finish 1st, rank 2 = finish 2nd, etc.
     sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
-    n = len(sorted_drivers)
 
     driver_proj_finish = {}
-    for rank_idx, (d, raw_score) in enumerate(sorted_drivers):
-        if n > 1:
-            t = rank_idx / (n - 1)
-            proj_finish = 1 + (field_size - 1) * (t ** 0.85)
-        else:
-            proj_finish = field_size * 0.5
-        driver_proj_finish[d] = max(1, min(field_size, proj_finish))
+    for rank_idx, (d, _raw_score) in enumerate(sorted_drivers):
+        driver_proj_finish[d] = rank_idx + 1
 
     # ── Allocate laps led and fastest laps (shared logic with projections tab) ──
     from tabs.tab_projections import _allocate_laps_led, _allocate_fastest_laps
@@ -883,12 +878,11 @@ def _project_race_backtest(drivers, field_size, wn, th_data, tt_data,
     proj_detail = {}
     for d in drivers:
         proj_finish = driver_proj_finish[d]
-        pf_int = round(proj_finish)
-        finish_pts = DK_FINISH_POINTS.get(max(1, min(40, pf_int)), 0)
+        finish_pts = DK_FINISH_POINTS.get(max(1, min(40, proj_finish)), 0)
 
         sp = start_positions.get(d)
-        start = sp if sp else pf_int
-        diff_pts = int(start - pf_int)
+        start = sp if sp else proj_finish
+        diff_pts = start - proj_finish
 
         p_ll = round(allocated_ll.get(d, 0))
         p_fl = round(allocated_fl.get(d, 0))

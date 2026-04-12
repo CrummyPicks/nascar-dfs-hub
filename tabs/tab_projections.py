@@ -1472,26 +1472,15 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         dom_raw_scores[d] = dom_score
         fl_raw_scores[d] = fl_score
 
-    # ── RANK-ORDER FINISH SPREADING ──────────────────────────────────────────
-    # The raw scores cluster everyone around 8-15 because we're averaging
-    # averages. Instead, rank-order drivers by raw score and map each rank
-    # to a realistic projected finish position that spans 1 → field_size.
-    #
-    # We use a slightly concave mapping so the top drivers separate more
-    # (difference between 1st and 5th is bigger than between 25th and 30th).
+    # ── RANK-ORDER FINISH ASSIGNMENT ─────────────────────────────────────────
+    # Assign each driver a unique integer finish position based on their
+    # raw score ranking.  DK scores discrete positions (1st, 2nd, …) so
+    # projections should be integers — no fractional positions.
     sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
-    n = len(sorted_drivers)
 
     driver_proj_finish = {}
-    for rank_idx, (d, raw_score) in enumerate(sorted_drivers):
-        if n > 1:
-            t = rank_idx / (n - 1)  # 0.0 (best) to 1.0 (worst)
-            # Power curve: top drivers spread out, back of field compresses
-            proj_finish = 1 + (field_size - 1) * (t ** 0.85)
-        else:
-            proj_finish = field_size * 0.5
-
-        driver_proj_finish[d] = round(max(1, min(field_size, proj_finish)))
+    for rank_idx, (d, _raw_score) in enumerate(sorted_drivers):
+        driver_proj_finish[d] = rank_idx + 1  # 1-indexed
 
     # ── PASS 2: Allocate laps led and fastest laps (zero-sum, DB-calibrated) ──
     allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
@@ -1524,11 +1513,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             start_pos = round(odds_start)
         else:
             start_pos = round(field_size * 0.5)
-        proj_finish_int = round(proj_finish)  # DK uses integer positions
-
         # DK scoring components (all based on integer positions)
-        finish_pts = _expected_finish_from_avg(proj_finish_int)
-        raw_diff = int(start_pos - proj_finish_int)  # DK: ±1 per position, always integer
+        finish_pts = _expected_finish_from_avg(proj_finish)
+        raw_diff = start_pos - proj_finish  # DK: ±1 per position
 
         diff_pts = raw_diff
         led_pts = round(proj_laps_led) * 0.25
