@@ -1145,382 +1145,40 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # ── DNF risk data (career crash/mechanical rates) ──────────────────────
     dnf_data = query_driver_career_dnf(series_id, before_date=race_date if not is_prerace else None)
 
-    # ── PROJECT EACH DRIVER — Two-pass normalized signal approach ─────────────
-    # Pass 1: Collect raw signal values for each driver independently.
-    # Pass 2: Rank-normalize each signal across all drivers to 1→field_size,
-    #          then weighted-average the normalized values.
-    # This ensures every signal has equal influence per weight point regardless
-    # of its natural scale (e.g. odds 1-37 vs team 15-22).
+    # ── Run shared projection engine ──────────────────────────────────────────
+    # Both the Projections tab and Accuracy tab call this same function to
+    # guarantee identical math.  Data loading above is tab-specific, but the
+    # signal processing, normalization, dominator scoring, finish assignment,
+    # and DK point computation all live in compute_projections().
+    from src.projections import compute_projections
 
-    mid_field = field_size * 0.5
-    MIN_RACES_FULL_TRUST = 5
+    proj_rows, _proj_detail, driver_signal_details = compute_projections(
+        drivers=drivers,
+        field_size=field_size,
+        wn=wn,
+        th_data=th_data,
+        tt_data=tt_data,
+        qual_pos=qual_pos,
+        practice_data=prac_rank,
+        odds_finish=odds_finish,
+        odds_display=driver_odds_display,
+        team_signal=team_signal,
+        mfr_adjustment=mfr_adjustment,
+        team_adj_data=team_adj_data,
+        dnf_data=dnf_data,
+        race_laps=race_laps,
+        track_name=track_name,
+        track_type=track_type,
+        series_id=series_id,
+        calibration=calibration,
+        cross_th_lookup=cross_th_lookup,
+        return_signal_details=True,
+    )
 
-    # Pass 1: Gather raw signal values per driver
-    raw_signals = {}  # d -> {"track": val, "ttype": val, ...}
-    signal_weight_map = {}  # d -> {"track": weight, ...}
-    sig_extras = {}  # d -> {"Team Adj": val, ...} non-signal display info
-
-    for d in drivers:
-        th = th_data.get(d)
-        tt = tt_data.get(d)
-        qp = qual_pos.get(d)
-        pr = prac_rank.get(d)
-        od = odds_finish.get(d)
-
-        sigs = {}
-        sig_w = {}
-        extras = {}
-
-        if th:
-            races = th.get("races", 1)
-            cross = cross_th_lookup.get(d)
-            cross_races = cross["races"] if cross and cross.get("races") else 0
-            effective_races = races + cross_races * 0.5
-            trust = min(1.0, effective_races / MIN_RACES_FULL_TRUST)
-            if th.get("_cross_series_only"):
-                trust *= 0.8
-
-            arp = th.get("avg_running_pos")
-            af = th["avg_finish"]
-            base_finish = arp * 0.65 + af * 0.35 if arp is not None else af
-
-            t_adj = team_adj_data.get(d)
-            if t_adj and t_adj.get("team_adj", 0) != 0:
-                base_finish = base_finish + t_adj["team_adj"]
-                extras["Team Adj"] = round(t_adj["team_adj"], 1)
-
-            regressed = base_finish * trust + mid_field * (1 - trust)
-            sigs["track"] = regressed
-            sig_w["track"] = wn["track"]
-
-        # Track type — absorb track weight if no track history
-        tt_weight = wn.get("track_type", 0)
-        if not th and tt and wn.get("track", 0) > 0:
-            tt_weight = wn.get("track_type", 0) + wn.get("track", 0)
-
-        if tt and tt_weight > 0:
-            tt_races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 3
-            tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
-            if isinstance(tt, dict) and tt.get("_cross_series_only"):
-                tt_trust *= 0.8
-            tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
-            tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
-            tt_avg = tt_arp * 0.65 + tt_af * 0.35 if tt_arp is not None else tt_af
-            tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
-            sigs["ttype"] = tt_regressed
-            sig_w["ttype"] = tt_weight
-
-        if qp and qp <= field_size and wn.get("qual", 0) > 0:
-            has_history = bool(th or tt)
-            qual_finish = qp * 0.80 + mid_field * 0.20 if has_history else qp * 0.40 + mid_field * 0.60
-            sigs["qual"] = qual_finish
-            sig_w["qual"] = wn["qual"]
-
-        tm = team_signal.get(d)
-        if tm is not None and wn.get("team", 0) > 0:
-            sigs["team"] = tm
-            sig_w["team"] = wn["team"]
-
-        if pr:
-            prac_finish = pr * 0.70 + mid_field * 0.30
-            sigs["prac"] = prac_finish
-            sig_w["prac"] = wn["practice"]
-
-        if od and wn.get("odds", 0) > 0:
-            has_history = bool(th or tt)
-            odds_val = od if has_history else od * 0.60 + mid_field * 0.40
-            sigs["odds"] = odds_val
-            sig_w["odds"] = wn["odds"]
-
-        raw_signals[d] = sigs
-        signal_weight_map[d] = sig_w
-        sig_extras[d] = extras
-
-    # Pass 2: Normalize each signal to a 1→field_size scale.
-    # Different signals need different normalization strategies:
-    #   - "odds": min-max scale preserving the natural probability gaps
-    #             (a -100 favorite is 13x more likely than +2500, not just rank 1 vs 10)
-    #   - "track", "ttype": min-max scale (natural finish position range, ~5-28)
-    #   - "team": rank-normalize (very compressed range ~15-22, need to stretch)
-    #   - "qual", "prac": already on a natural 1-field_size scale, pass through
-    signal_names = set()
-    for sigs in raw_signals.values():
-        signal_names.update(sigs.keys())
-
-    # Signals that should preserve proportional gaps (min-max scaling)
-    MINMAX_SIGNALS = {"odds", "track", "ttype"}
-    # Signals that need rank-stretching (compressed natural range)
-    RANK_SIGNALS = {"team"}
-    # Signals already on position scale (minimal transform)
-    PASSTHROUGH_SIGNALS = {"qual", "prac"}
-
-    normalized_signals = {d: {} for d in drivers}
-    for sig_name in signal_names:
-        sig_vals = [(d, raw_signals[d][sig_name]) for d in drivers if sig_name in raw_signals[d]]
-        if not sig_vals:
-            continue
-
-        if sig_name in MINMAX_SIGNALS:
-            # Min-max: preserve proportional gaps, scale to 1→field_size
-            vals_only = [v for _, v in sig_vals]
-            raw_min = min(vals_only)
-            raw_max = max(vals_only)
-            raw_range = raw_max - raw_min
-            for d, val in sig_vals:
-                if raw_range > 0:
-                    t = (val - raw_min) / raw_range  # 0 (best) to 1 (worst)
-                    normalized_signals[d][sig_name] = 1 + (field_size - 1) * t
-                else:
-                    normalized_signals[d][sig_name] = mid_field
-
-        elif sig_name in RANK_SIGNALS:
-            # Rank: stretch compressed range to full 1→field_size
-            sig_vals.sort(key=lambda x: x[1])
-            n_with_sig = len(sig_vals)
-            for rank_idx, (d, _) in enumerate(sig_vals):
-                if n_with_sig > 1:
-                    normalized_signals[d][sig_name] = 1 + (field_size - 1) * (rank_idx / (n_with_sig - 1))
-                else:
-                    normalized_signals[d][sig_name] = mid_field
-
-        else:
-            # Passthrough: qual and prac are already on ~1-field_size scale
-            # Just clamp to valid range
-            for d, val in sig_vals:
-                normalized_signals[d][sig_name] = max(1, min(field_size, val))
-
-    # Pass 3: Weighted average of normalized signals + adjustments
-    driver_raw_scores = {}
-    dom_raw_scores = {}
-    fl_raw_scores = {}
-    driver_signal_details = {}
-
-    SIG_DISPLAY = {"track": "Track", "ttype": "TType", "qual": "Qual",
-                   "team": "Team", "prac": "Prac", "odds": "Odds"}
-
-    for d in drivers:
-        norm = normalized_signals[d]
-        weights = signal_weight_map[d]
-        sig_detail = dict(sig_extras.get(d, {}))
-
-        finish_signals = []
-        signal_weights = []
-        for sig_name in norm:
-            finish_signals.append(norm[sig_name])
-            signal_weights.append(weights.get(sig_name, 0))
-            sig_detail[SIG_DISPLAY.get(sig_name, sig_name)] = round(norm[sig_name], 1)
-
-        if finish_signals:
-            total_w = sum(signal_weights)
-            raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
-        else:
-            raw_finish = field_size * 0.75
-
-        # Manufacturer adjustment (track-type specific, +/- 1.5 pos cap)
-        mfr_adj = mfr_adjustment.get(d, 0)
-        raw_finish = raw_finish + mfr_adj
-        if mfr_adj != 0:
-            sig_detail["Mfr"] = round(mfr_adj, 1)
-
-        # DNF risk adjustment
-        dnf = dnf_data.get(d)
-        if not dnf:
-            dnf_matched = fuzzy_match_name(d, list(dnf_data.keys())) if dnf_data else None
-            dnf = dnf_data.get(dnf_matched) if dnf_matched else None
-        if dnf and dnf["races"] >= 10:
-            crash_rate = dnf["crash_rate"]
-            speed = dnf["speed_score"]
-            max_speed_all = max((v["speed_score"] for v in dnf_data.values()), default=1)
-            speed_factor = speed / max(max_speed_all, 1)
-            penalty_weight = max(0.05, 0.3 - speed_factor * 0.2)
-            mech_rate = dnf["dnf_rate"] - crash_rate
-            risk_penalty = crash_rate * penalty_weight + mech_rate * (penalty_weight * 0.3)
-            raw_finish = raw_finish + risk_penalty * 10
-
-        driver_raw_scores[d] = raw_finish
-        driver_signal_details[d] = sig_detail
-
-        # Re-fetch per-driver data for dominator scoring
-        th = th_data.get(d)
-        tt = tt_data.get(d)
-        qp = qual_pos.get(d)
-        pr = prac_rank.get(d)
-        od = odds_finish.get(d)
-
-        # --- Build raw dominator score (laps led potential) — weight-aware ---
-        # All signals normalized to 0-100 scale so they contribute proportionally.
-        # Track history LL uses avg_top_leader as 100-point reference (not half the race).
-        # Drivers WITHOUT track LL history get a low default (not skipped) so having
-        # actual laps-led history is always an advantage.
-        dom_score = 0.0
-        if race_laps > 0:
-            dom_signals = []
-            dom_weights_list = []
-
-            # Reference for LL normalization: avg laps led by the race leader
-            ll_ref = calibration.get("avg_top_leader", race_laps * 0.35)
-
-            # Track history laps led: normalize against avg top leader
-            if th and th["races"] >= 1 and th["laps_led"] > 0:
-                ll_per_race = th["laps_led"] / th["races"]
-                ll_norm = min(100, (ll_per_race / max(ll_ref, 1)) * 100)
-                dom_signals.append(ll_norm)
-            else:
-                # No track LL history: low default so missing data penalizes, not rewards
-                dom_signals.append(5.0)
-            dom_weights_list.append(wn.get("track", 0.20))
-
-            # Track type laps led: same normalization
-            if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
-                tt_ll = tt["laps_led_per_race"]
-                tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
-                dom_signals.append(tt_ll_norm)
-            else:
-                dom_signals.append(5.0)
-            dom_weights_list.append(wn.get("track_type", 0.15))
-
-            # Qualifying: pole = 100, last = 0, with power curve for top positions
-            if qp and qp <= field_size and wn.get("qual", 0) > 0:
-                qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 100
-                dom_signals.append(qual_dom)
-                dom_weights_list.append(wn.get("qual", 0.15))
-
-            # Odds: use implied win probability for dom signal (not rank)
-            # This preserves the massive gap between a -100 favorite (50%)
-            # and a +500 (16.7%) — rank-based formula compresses this to ~3%
-            if od and wn.get("odds", 0) > 0:
-                odds_info = driver_odds_display.get(d)
-                if odds_info and odds_info.get("impl_pct"):
-                    max_impl = max((v.get("impl_pct", 0) for v in driver_odds_display.values()), default=1)
-                    odds_dom = min(100, (odds_info["impl_pct"] / max(max_impl, 1)) * 100)
-                else:
-                    odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
-                dom_signals.append(odds_dom)
-                dom_weights_list.append(wn.get("odds", 0.15))
-
-            # Practice: fastest = 100, slowest = 0
-            if pr:
-                max_p_val = max(practice_data.values()) if practice_data else field_size
-                prac_dom = max(0, (max_p_val + 1 - pr) / max_p_val) * 100
-                dom_signals.append(prac_dom)
-                dom_weights_list.append(wn.get("practice", 0.10))
-
-            if dom_signals:
-                total_dw = sum(dom_weights_list)
-                dom_score = sum(s * w for s, w in zip(dom_signals, dom_weights_list)) / total_dw
-            else:
-                dom_score = max(0, (field_size - raw_finish) / field_size) * 5
-
-        # --- Build raw fastest laps score — weight-aware ---
-        # All signals on 0-100 scale (same as dominator)
-        fl_score = 0.0
-        if race_laps > 0:
-            fl_signals = []
-            fl_signal_weights = []
-
-            # Dominator score carries over (already 0-100)
-            if dom_score > 0:
-                fl_signals.append(dom_score * 0.5)
-                fl_signal_weights.append(0.25)
-
-            # Qualifying: front runners post more fastest laps
-            if qp and qp <= field_size and wn.get("qual", 0) > 0:
-                qual_fl = max(0, (field_size + 1 - qp) / field_size) * 100
-                fl_signals.append(qual_fl)
-                fl_signal_weights.append(wn.get("qual", 0.15))
-
-            # Practice speed
-            if pr:
-                max_p_val = max(practice_data.values()) if practice_data else field_size
-                prac_fl = max(0, (max_p_val + 1 - pr) / max_p_val) * 100
-                fl_signals.append(prac_fl)
-                fl_signal_weights.append(wn.get("practice", 0.10))
-
-            # Odds: use implied probability for FL too
-            if od and wn.get("odds", 0) > 0:
-                odds_info = driver_odds_display.get(d)
-                if odds_info and odds_info.get("impl_pct"):
-                    max_impl = max((v.get("impl_pct", 0) for v in driver_odds_display.values()), default=1)
-                    odds_fl = min(100, (odds_info["impl_pct"] / max(max_impl, 1)) * 100)
-                else:
-                    odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
-                fl_signals.append(odds_fl)
-                fl_signal_weights.append(wn.get("odds", 0.15))
-
-            # Projected finish (already computed above)
-            finish_fl = max(0, (field_size - raw_finish) / field_size) * 100
-            fl_signals.append(finish_fl)
-            fl_signal_weights.append(0.10)
-
-            if fl_signals:
-                total_fw = sum(fl_signal_weights)
-                fl_score = sum(s * w for s, w in zip(fl_signals, fl_signal_weights)) / total_fw
-
-        # Qualifying start position multiplier on dominator score:
-        # Starting up front = more opportunity to lead laps early.
-        # P1-P3: boost up to 1.15x, P4-P10: neutral, P15+: penalty down to 0.80x
-        if qp and qp <= field_size and dom_score > 0:
-            if qp <= 3:
-                start_mult = 1.15 - (qp - 1) * 0.05  # P1=1.15, P2=1.10, P3=1.05
-            elif qp <= 10:
-                start_mult = 1.0
-            else:
-                # Linear decay: P11=0.98, P20=0.80, P30+=0.70
-                start_mult = max(0.70, 1.0 - (qp - 10) * 0.02)
-            dom_score = dom_score * start_mult
-
-        dom_raw_scores[d] = dom_score
-        fl_raw_scores[d] = fl_score
-
-    # ── RANK-ORDER FINISH ASSIGNMENT ─────────────────────────────────────────
-    # Assign each driver a unique integer finish position based on their
-    # raw score ranking.  DK scores discrete positions (1st, 2nd, …) so
-    # projections should be integers — no fractional positions.
-    sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
-
-    driver_proj_finish = {}
-    for rank_idx, (d, _raw_score) in enumerate(sorted_drivers):
-        driver_proj_finish[d] = rank_idx + 1  # 1-indexed
-
-    # ── PASS 2: Allocate laps led and fastest laps (zero-sum, DB-calibrated) ──
-    allocated_ll = _allocate_laps_led(dom_raw_scores, race_laps, track_name, track_type,
-                                       calibration=calibration,
-                                       odds_display=driver_odds_display) if race_laps > 0 else {}
-    allocated_fl = _allocate_fastest_laps(fl_raw_scores, race_laps, track_type,
-                                           calibration=calibration,
-                                           odds_display=driver_odds_display) if race_laps > 0 else {}
-
-    # ── PASS 3: Compute final DK points ─────────────────────────────────────
+    # ── Build display rows from projection results ──────────────────────────
     rows = []
-    for d in drivers:
-        proj_finish = driver_proj_finish[d]
-        proj_laps_led = allocated_ll.get(d, 0)
-        proj_fastest = allocated_fl.get(d, 0)
-
-        # Start position fallback: qualifying → track avg start → track type avg start → odds rank → mid-field
-        th_for_start = th_data.get(d)
-        tt_for_start = tt_data.get(d)
-        historical_avg_start = th_for_start.get("avg_start") if th_for_start else None
-        tt_avg_start = tt_for_start.get("avg_start") if isinstance(tt_for_start, dict) else None
-        odds_start = odds_finish.get(d)  # odds-implied position as start proxy
-        if qual_pos.get(d):
-            start_pos = qual_pos[d]
-        elif historical_avg_start:
-            start_pos = round(historical_avg_start)
-        elif tt_avg_start:
-            start_pos = round(tt_avg_start)
-        elif odds_start:
-            start_pos = round(odds_start)
-        else:
-            start_pos = round(field_size * 0.5)
-        # DK scoring components (all based on integer positions)
-        finish_pts = _expected_finish_from_avg(proj_finish)
-        raw_diff = start_pos - proj_finish  # DK: ±1 per position
-
-        diff_pts = raw_diff
-        led_pts = round(proj_laps_led) * 0.25
-        fl_pts = round(proj_fastest) * 0.45
-        proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
+    for pr in proj_rows:
+        d = pr["driver"]
 
         # Historical DK points at this track (actual avg/best/worst)
         dk_hist = dk_history.get(d)
@@ -1534,26 +1192,25 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
         odds_info = driver_odds_display.get(d, {})
         odds_val = odds_info.get("odds_str", None)
-        # odds_str is now numeric from round_odds()
         odds_numeric = odds_val if isinstance(odds_val, (int, float)) else None
 
         sig = driver_signal_details.get(d, {})
         rows.append({
             "Driver": d,
-            "Proj DK": proj_dk,
-            "Proj Finish": proj_finish,
+            "Proj DK": pr["proj_dk"],
+            "Proj Finish": pr["proj_finish"],
             "Win Odds": odds_numeric,
             "Impl %": odds_info.get("impl_pct", None),
-            "Finish Pts": round(finish_pts, 1),
-            "Diff Pts": round(diff_pts, 1),
-            "Led Pts": round(led_pts, 1),
-            "FL Pts": round(fl_pts, 1),
-            "Proj Laps Led": round(proj_laps_led),
-            "Proj Fast Laps": round(proj_fastest),
+            "Finish Pts": round(pr["finish_pts"], 1),
+            "Diff Pts": round(pr["diff_pts"], 1),
+            "Led Pts": round(pr["led_pts"], 1),
+            "FL Pts": round(pr["fl_pts"], 1),
+            "Proj Laps Led": pr["laps_led"],
+            "Proj Fast Laps": pr["fast_laps"],
             "Avg DK": avg_dk_track,
             "Best DK": best_dk_track,
             "Worst DK": worst_dk_track,
-            "Start": start_pos,
+            "Start": pr["start"],
             "Sig Odds": sig.get("Odds"),
             "Sig Track": sig.get("Track"),
             "Sig TType": sig.get("TType"),

@@ -22,12 +22,17 @@ def compute_projections(
     mfr_adjustment, team_adj_data, dnf_data,
     race_laps, track_name, track_type, series_id,
     calibration, cross_th_lookup=None,
+    return_signal_details=False,
 ):
     """Run the full projection engine.
 
     Returns (proj_rows, proj_detail) where:
       proj_rows: list of dicts with per-driver projection data
       proj_detail: {driver: {proj_finish, start, laps_led, fast_laps}}
+
+    If return_signal_details=True, returns (proj_rows, proj_detail, signal_details)
+    where signal_details = {driver: {"Track": val, "Odds": val, ...}} with
+    normalized signal values and adjustment info for display.
     """
     from tabs.tab_projections import (
         _allocate_laps_led, _allocate_fastest_laps,
@@ -43,6 +48,10 @@ def compute_projections(
     # ── Pass 1: Gather raw signal values per driver ──
     raw_signals = {}
     signal_weight_map = {}
+    sig_extras = {}  # per-driver display extras (Team Adj, etc.)
+
+    SIG_DISPLAY = {"track": "Track", "ttype": "TType", "qual": "Qual",
+                   "team": "Team", "prac": "Prac", "odds": "Odds"}
 
     for d in drivers:
         th = th_data.get(d)
@@ -53,6 +62,7 @@ def compute_projections(
 
         sigs = {}
         sig_w = {}
+        extras = {}
 
         # Track history signal
         if th and wn.get("track", 0) > 0:
@@ -71,6 +81,7 @@ def compute_projections(
             t_adj = team_adj_data.get(d) if team_adj_data else None
             if t_adj and t_adj.get("team_adj", 0) != 0:
                 base_finish = base_finish + t_adj["team_adj"]
+                extras["Team Adj"] = round(t_adj["team_adj"], 1)
 
             regressed = base_finish * trust + mid_field * (1 - trust)
             sigs["track"] = regressed
@@ -121,6 +132,7 @@ def compute_projections(
 
         raw_signals[d] = sigs
         signal_weight_map[d] = sig_w
+        sig_extras[d] = extras
 
     # ── Pass 2: Normalize each signal to 1→field_size ──
     signal_names = set()
@@ -163,18 +175,21 @@ def compute_projections(
     driver_raw_scores = {}
     dom_raw_scores = {}
     fl_raw_scores = {}
+    driver_signal_details = {}
 
     ll_ref = calibration.get("avg_top_leader", race_laps * 0.35) if calibration else race_laps * 0.35
 
     for d in drivers:
         norm = normalized_signals[d]
         weights = signal_weight_map[d]
+        sig_detail = dict(sig_extras.get(d, {}))
 
         finish_signals = []
         signal_weights = []
         for sig_name in norm:
             finish_signals.append(norm[sig_name])
             signal_weights.append(weights.get(sig_name, 0))
+            sig_detail[SIG_DISPLAY.get(sig_name, sig_name)] = round(norm[sig_name], 1)
 
         if finish_signals and sum(signal_weights) > 0:
             total_w = sum(signal_weights)
@@ -185,6 +200,8 @@ def compute_projections(
         # Manufacturer adjustment
         mfr_adj = mfr_adjustment.get(d, 0) if mfr_adjustment else 0
         raw_finish = raw_finish + mfr_adj
+        if mfr_adj != 0:
+            sig_detail["Mfr"] = round(mfr_adj, 1)
 
         # DNF risk adjustment
         dnf = dnf_data.get(d) if dnf_data else None
@@ -202,6 +219,7 @@ def compute_projections(
             raw_finish = raw_finish + risk_penalty * 10
 
         driver_raw_scores[d] = raw_finish
+        driver_signal_details[d] = sig_detail
 
         # ── Dominator scoring ──
         th = th_data.get(d)
@@ -383,4 +401,6 @@ def compute_projections(
             "fast_laps": round(proj_fastest),
         }
 
+    if return_signal_details:
+        return proj_rows, proj_detail, driver_signal_details
     return proj_rows, proj_detail
