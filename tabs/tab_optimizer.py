@@ -581,6 +581,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
         for i, row in enumerate(pool_rows):
             driver = row["Driver"]
+            safe_key = driver.replace(" ", "_").replace(".", "").replace("'", "")
             is_locked = driver in st.session_state.opt_locked
             is_excluded = driver in st.session_state.opt_excluded
             in_lineup = driver in lineup_drivers
@@ -589,7 +590,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             r = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.7])
 
             with r[0]:
-                new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{i}",
+                new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{safe_key}",
                                         label_visibility="collapsed")
                 if new_lock != is_locked:
                     if new_lock:
@@ -600,7 +601,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     needs_rerun = True
 
             with r[1]:
-                new_excl = st.checkbox("X", value=is_excluded, key=f"pp_excl_{i}",
+                new_excl = st.checkbox("X", value=is_excluded, key=f"pp_excl_{safe_key}",
                                         label_visibility="collapsed")
                 if new_excl != is_excluded:
                     if new_excl:
@@ -621,7 +622,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 override_val = st.number_input(
                     "ov", min_value=0.0, max_value=300.0,
                     value=float(st.session_state.opt_overrides.get(driver, 0)),
-                    step=1.0, key=f"pp_ov_{i}",
+                    step=1.0, key=f"pp_ov_{safe_key}",
                     label_visibility="collapsed",
                     format="%.0f",
                 )
@@ -784,6 +785,17 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             for k in list(st.session_state.keys()):
                 if k.startswith("swap_"):
                     del st.session_state[k]
+            # Sync player pool checkbox widget state so they reflect
+            # lock/exclude changes made from the lineup on the next rerun
+            for d_data in sorted_lineup:
+                d_name = d_data["Driver"]
+                sk = d_name.replace(" ", "_").replace(".", "").replace("'", "")
+                pp_lock_key = f"pp_lock_{sk}"
+                pp_excl_key = f"pp_excl_{sk}"
+                if pp_lock_key in st.session_state:
+                    st.session_state[pp_lock_key] = d_name in st.session_state.opt_locked
+                if pp_excl_key in st.session_state:
+                    st.session_state[pp_excl_key] = d_name in st.session_state.opt_excluded
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=list(st.session_state.opt_locked),
