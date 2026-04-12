@@ -34,6 +34,13 @@ TRACK_TYPE_MAP = {
     "Grand Prix of St. Petersburg": "road",
     "San Diego Street Course": "road",
     "Portland International Raceway": "road",
+    "Charlotte Motor Speedway Road Course": "road",
+    "Indianapolis Motor Speedway Road Course": "road",
+    "Chicago Street Race": "road",
+    "Mid-Ohio Sports Car Course": "road",
+    "Road America": "road",
+    "Lime Rock Park": "road",
+    "Aut\u00f3dromo Hermanos Rodr\u00edguez": "road",
     # Short tracks (< 1 mile ovals)
     "Phoenix Raceway": "short",
     "Martinsville Speedway": "short",
@@ -43,6 +50,11 @@ TRACK_TYPE_MAP = {
     "Rockingham Speedway": "short",
     "Bowman Gray Stadium": "short",
     "New Hampshire Motor Speedway": "short",
+    "Lucas Oil Indianapolis Raceway Park": "short",
+    "Milwaukee Mile Speedway": "short",
+    "The Milwaukee Mile": "short",
+    "Knoxville Raceway": "short",
+    "Bristol Motor Speedway Dirt": "short",
     # Short concrete — high-banked concrete surface (Bristol/Dover)
     "Bristol Motor Speedway": "short_concrete",
     "Dover Motor Speedway": "short_concrete",
@@ -56,6 +68,7 @@ TRACK_TYPE_MAP = {
     "Chicagoland Speedway": "intermediate",
     "Michigan International Speedway": "intermediate",
     "Pocono Raceway": "intermediate",
+    "Auto Club Speedway": "intermediate",
     # Intermediate worn — high tire wear/abrasive surface
     "Darlington Raceway": "intermediate_worn",
     "Homestead-Miami Speedway": "intermediate_worn",
@@ -165,16 +178,17 @@ DEFAULT_PROJECTION_WEIGHTS = {
 
 # Track-type-specific default weights (single source of truth for all tabs).
 # Values are raw integers that get normalized to 100%.
-# Superspeedways: chaotic → odds matter most, qualifying huge for drafting diff pts.
-# Short tracks: specialists → track history matters most, team matters.
-# Short concrete (Bristol/Dover): aggressive lapping, high-banked concrete.
-# Road courses: setup-dependent → practice matters most.
-# Intermediate: balanced.
+# Tuned from 2025-2026 backtesting correlation analysis:
+#   Superspeedways: chaotic — odds dominate, qual/TH nearly uncorrelated with finish.
+#   Short tracks: qual most predictive (r=0.47), track history strongest (r=0.36).
+#   Short concrete (Bristol/Dover): moderate qual/TH, high position churn.
+#   Road courses: qual strong (r=0.45), track-type specialists matter, practice key.
+#   Intermediate: balanced signals.
 TRACK_TYPE_WEIGHT_DEFAULTS = {
-    "superspeedway":  {"odds": 35, "track": 15, "ttype": 15, "prac": 5,  "team": 10, "qual": 20},
-    "short":          {"odds": 30, "track": 25, "ttype": 10, "prac": 15, "team": 10, "qual": 10},
-    "short_concrete": {"odds": 30, "track": 25, "ttype": 5,  "prac": 15, "team": 10, "qual": 15},
-    "road":           {"odds": 25, "track": 20, "ttype": 15, "prac": 25, "team": 10, "qual": 5},
+    "superspeedway":  {"odds": 45, "track": 15, "ttype": 20, "prac": 5,  "team": 10, "qual": 5},
+    "short":          {"odds": 25, "track": 25, "ttype": 10, "prac": 10, "team": 10, "qual": 20},
+    "short_concrete": {"odds": 30, "track": 25, "ttype": 5,  "prac": 10, "team": 10, "qual": 20},
+    "road":           {"odds": 25, "track": 15, "ttype": 15, "prac": 20, "team": 10, "qual": 15},
     "intermediate":   {"odds": 30, "track": 20, "ttype": 15, "prac": 10, "team": 10, "qual": 15},
 }
 

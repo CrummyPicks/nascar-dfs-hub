@@ -326,7 +326,7 @@ def _render_charts_view(completed_races, series_id, selected_year,
     # ── Track history charts (ARP vs Finish, Rating vs Finish, Finish Distribution) ──
     if track_name:
         th_rows = query_db_track_history(track_name, series_id)
-        if th_rows:
+        if not th_rows.empty:
             hist_df = pd.DataFrame(th_rows)
             # Standardize column names for chart functions
             col_map = {}

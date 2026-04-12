@@ -435,17 +435,23 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         info_cols[1].metric("Max Laps Led Pts", f"{race_laps * 0.25:.1f}")
         info_cols[2].metric("Max Fastest Lap Pts", f"{race_laps * 0.45:.1f}")
         info_cols[3].metric("Dominator Ceiling", f"{dom_ceiling:.1f}")
-        st.caption(
+        st.markdown(
+            f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
             f"Laps led = 0.25 pts/lap | Fastest laps = 0.45 pts/lap | "
-            f"Place diff = ±1.0 pts/pos | {race_laps} total laps | "
+            f"Place diff = \u00b11.0 pts/pos | {race_laps} total laps | "
             f"Avg {avg_leaders:.0f} leaders, avg leader leads {avg_top:.0f} laps "
-            f"(max: {hist_max_ll})"
+            f"(max: {hist_max_ll})</p>",
+            unsafe_allow_html=True,
         )
 
     # Weight info — display BEFORE projections table, using the SAME wn dict
     active = [(k, v) for k, v in wn.items() if v > 0]
     weight_str = " | ".join(f"{k.replace('_', ' ').title()} {v:.0%}" for k, v in active)
-    st.caption(f"Weights: {weight_str}")
+    st.markdown(
+        f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
+        f"Weights: {weight_str}</p>",
+        unsafe_allow_html=True,
+    )
 
     # Build projections
     _build_dfs_projections(
@@ -1044,13 +1050,6 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 adj = max(-1.5, min(1.5, delta * 0.5))
                 mfr_adjustment[d] = adj
 
-    # ── 2e. Lapping Profile (short/short_concrete place diff adjustment) ───
-    lapping_profile = {}
-    parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
-    if parent_type in ("short", "short_concrete"):
-        from src.data import query_lapping_profile
-        lapping_profile = query_lapping_profile(track_type, series_id)
-
     # ── 3. Qualifying Signal ─────────────────────────────────────────────────
     qual_pos = {}
     if not qualifying_df.empty and "Qualifying Position" in qualifying_df.columns:
@@ -1458,53 +1457,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         finish_pts = _expected_finish_from_avg(proj_finish_int)
         raw_diff = int(start_pos - proj_finish_int)  # DK: ±1 per position, always integer
 
-        # Lapping-adjusted place differential for short tracks
         diff_pts = raw_diff
-        if lapping_profile and proj_finish_int > 0:
-            # Use the WORSE of start and projected finish for bucket selection.
-            # A fast car starting P35 but projected P8 shouldn't be penalized —
-            # they're expected to race at the front. A slow car starting P35
-            # and projected P33 IS a true backmarker.
-            bucket_pos = max(start_pos, proj_finish_int)
-
-            if bucket_pos <= 10:
-                # Frontrunners: no adjustment — these cars don't get lapped
-                pass
-            elif bucket_pos <= 20:
-                bucket = lapping_profile.get("p11_20", {})
-                pct_lapped = bucket.get("pct_lapped", 0)
-                if pct_lapped > 30:
-                    # High lapping rate — cap upside, these drivers are often stuck a lap down
-                    max_gain = max(2, int(8 - pct_lapped * 0.06))  # 69% → max +3, 40% → max +5
-                    if diff_pts > max_gain:
-                        diff_pts = max_gain
-                    # Floor negative at -3 (lapped cars behind protect them)
-                    if diff_pts < -3:
-                        diff_pts = -3
-            elif bucket_pos <= 30:
-                bucket = lapping_profile.get("p21_30", {})
-                pct_lapped = bucket.get("pct_lapped", 0)
-                avg_down = bucket.get("avg_laps_down", 0)
-                if pct_lapped > 50:
-                    # Heavily lapped — very limited upside, mild downside protection
-                    max_gain = max(1, int(5 - avg_down * 0.3))  # 8.9 down → max +2
-                    if diff_pts > max_gain:
-                        diff_pts = max_gain
-                    # Their downside is also limited — lapped cars behind them
-                    if diff_pts < -2:
-                        diff_pts = -2
-            else:
-                # P31+ backmarkers — almost always lapped, limited but not zero movement
-                bucket = lapping_profile.get("p31_plus", {})
-                pct_lapped = bucket.get("pct_lapped", 0)
-                if pct_lapped > 80:
-                    # Scale cap by how deep in the field: P31→+6, P35→+4, P40→+2
-                    max_gain = max(2, 10 - int(bucket_pos * 0.2))
-                    if diff_pts > max_gain:
-                        diff_pts = max_gain
-                    # Floor at -3 — wrecks/mechanicals can still drop them
-                    if diff_pts < -3:
-                        diff_pts = -3
         led_pts = round(proj_laps_led) * 0.25
         fl_pts = round(proj_fastest) * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
