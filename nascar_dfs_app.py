@@ -143,11 +143,27 @@ h1, h2, h3, h4, h5 { text-decoration: none !important; border-bottom: none !impo
 /* ── Captions ── */
 .stCaption, [data-testid="stCaptionContainer"] { color: #475569 !important; }
 
+/* ── Radio buttons ── */
+div[data-testid="stRadio"] > div { gap: 0.3rem; }
+div[data-testid="stRadio"] label {
+    background: #111827; border: 1px solid #1e293b; border-radius: 8px;
+    padding: 4px 12px; font-size: 0.8rem; transition: all 0.15s ease;
+}
+div[data-testid="stRadio"] label:has(input:checked) {
+    border-color: #0ea5e9; color: #e2e8f0; background: #0ea5e910;
+}
+
 /* ── Checkboxes ── */
 [data-testid="stCheckbox"] label span { font-size: 0.82rem; }
 
 /* ── Number inputs ── */
 [data-testid="stNumberInput"] input { border-radius: 6px; }
+
+/* ── Multiselect ── */
+[data-testid="stMultiSelect"] span[data-baseweb="tag"] {
+    background: #1e293b !important; border: 1px solid #334155 !important;
+    border-radius: 6px !important;
+}
 
 /* ── Mobile ── */
 @media (max-width: 768px) {

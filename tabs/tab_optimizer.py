@@ -514,7 +514,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     proj_source = engine_label
 
     # ─── PLAYER POOL WITH LOCK/EXCLUDE/OVERRIDES ──────────────────────────
-    st.markdown("---")
+    st.divider()
     n_locked = len(st.session_state.opt_locked)
     n_excluded = len(st.session_state.opt_excluded)
     n_overrides = len(st.session_state.opt_overrides)
@@ -666,7 +666,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.plotly_chart(sal_fig, use_container_width=True)
 
     # ─── OPTIMAL LINEUP PANEL ───────────────────────────────────────────────
-    st.markdown("---")
+    st.divider()
 
     # Auto-build optimal lineup if none exists yet
     locked = list(st.session_state.opt_locked)
@@ -781,7 +781,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.warning("Could not build a valid lineup within the salary cap.")
 
     # ─── MULTI-LINEUP GENERATION ────────────────────────────────────────────
-    st.markdown("---")
+    st.divider()
     st.markdown("**Multi-Lineup Generator**")
 
     ml_cols = st.columns([1, 1, 2])
@@ -854,7 +854,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 st.dataframe(lu_df, use_container_width=True, hide_index=True)
 
         # Export
-        st.markdown("---")
+        st.divider()
         exp_cols = st.columns(2)
         with exp_cols[0]:
             dk_rows = []
@@ -885,7 +885,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                                "text/csv", key="opt_export_detail")
 
     # ─── SALARY TIERS (always visible) ──────────────────────────────────────
-    st.markdown("---")
+    st.divider()
     st.markdown("**Salary Tiers**")
     tiers = pool.copy()
     tiers["Tier"] = pd.cut(tiers["DK Salary"],

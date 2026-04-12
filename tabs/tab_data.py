@@ -318,13 +318,13 @@ def _render_charts_view(completed_races, series_id, selected_year,
     # Season trend line
     trend_fig = season_trend_line(series_id, selected_year)
     if trend_fig:
-        st.markdown("---")
+        st.divider()
         st.plotly_chart(trend_fig, width="stretch")
 
     # Race lap-by-lap chart (from race lap-times data)
     if not is_prerace and lap_data:
         import numpy as np
-        st.markdown("---")
+        st.divider()
         st.caption("Race lap-by-lap times")
 
         # Build driver list from lap data
@@ -361,7 +361,7 @@ def _render_charts_view(completed_races, series_id, selected_year,
 
     # Single race scatter — Avg Running Pos vs DK Points for THIS race
     if not is_prerace and not results_df.empty and lap_data:
-        st.markdown("---")
+        st.divider()
         avg_run_data = compute_avg_running_position(lap_data)
         race_res = results_df.copy()
         race_res["Fastest Laps"] = race_res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")

@@ -1796,7 +1796,7 @@ def _display_backtest_results(results_df, context_label):
                        key="acc_opt_export")
 
     # ── Drill-down: select a weight combo to see driver-level detail ──
-    st.markdown("---")
+    st.divider()
     st.markdown("**Drill Into Weight Combo**")
     st.caption("Select a weight combination to see projected vs actual driver details")
 
@@ -2107,7 +2107,7 @@ def _display_backtest_results(results_df, context_label):
                                    key="acc_drill_export")
 
     # Clear saved projections button (separate from export)
-    st.markdown("---")
+    st.divider()
     if st.button("Clear Saved Projections", key="acc_clear_proj",
                   type="secondary",
                   help="Delete all saved projection data from the database"):
