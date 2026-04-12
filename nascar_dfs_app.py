@@ -565,13 +565,13 @@ if not is_prerace and race_id and odds_source != "manual":
         odds_source = ""
 
 # Persist odds to DB for the currently selected race
-if is_admin and odds_data and race_id:
-    should_save_odds = (is_prerace and odds_source in ("action_network", "bovada", "salary_estimate")) or \
+if odds_data and race_id:
+    should_save_odds = (is_prerace and odds_source in ("auto", "salary_estimate")) or \
                        odds_source == "manual"
     if should_save_odds:
         prop_odds = fetch_nascar_prop_odds(series_id)
         save_odds_to_db(odds_data, race_id,
-                        sportsbook="bovada" if odds_source == "manual" else odds_source,
+                        sportsbook="manual" if odds_source == "manual" else "auto",
                         top3_data=prop_odds.get("top3"),
                         top5_data=prop_odds.get("top5"),
                         top10_data=prop_odds.get("top10"),
@@ -618,12 +618,11 @@ else:
 # Sync salaries to DB:
 #   CSV upload → always sync (explicit intent for this race)
 #   Auto-fetch → only sync for prerace (auto-fetch is for the upcoming race, not historical)
-if is_admin:
-    if dk_file and not dk_df.empty:
-        sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
+if dk_file and not dk_df.empty:
+    sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
 
-    if fd_file and not fd_df.empty:
-        sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
+if fd_file and not fd_df.empty:
+    sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
 
 
 # ============================================================
