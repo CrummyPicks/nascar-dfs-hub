@@ -1039,7 +1039,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     # Error distribution
     fig3 = go.Figure()
     fig3.add_trace(go.Histogram(x=comp["DK Error"], nbinsx=20,
-                                marker_color="#4a7dfc", opacity=0.8))
+                                marker_color="#0ea5e9", opacity=0.8))
     fig3.add_vline(x=0, line_dash="dash", line_color="#888")
     fig3.update_layout(**DARK_LAYOUT, height=300,
                        title="DK Points Error Distribution (Projected - Actual)",
@@ -2089,7 +2089,7 @@ def _display_backtest_results(results_df, context_label):
                     corr = valid["Proj DK"].corr(valid["Actual DK"])
                     fig.add_trace(go.Scatter(
                         x=trend_x, y=trend_y,
-                        mode="lines", line=dict(color="#4a7dfc", width=2),
+                        mode="lines", line=dict(color="#0ea5e9", width=2),
                         name=f"Trend (r={corr:.3f})",
                     ))
 

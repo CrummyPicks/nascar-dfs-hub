@@ -586,7 +586,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
                 x=plot_df["Avg Finish"], y=plot_df["Avg DK"],
                 mode="markers+text", text=plot_df["Car"],
                 textposition="top right", textfont=dict(size=9, color="#8892a4"),
-                marker=dict(size=10, color="#4a7dfc", opacity=0.8),
+                marker=dict(size=10, color="#0ea5e9", opacity=0.8),
                 hovertemplate="<b>%{customdata[0]}</b><br>Avg Finish: %{x:.1f}<br>Avg DK: %{y:.1f}",
                 customdata=plot_df[["Driver"]].values,
             ))
@@ -697,8 +697,8 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
         fig_dk.add_trace(go.Scatter(
             x=m["Date"], y=m["DK Pts"],
             mode="lines+markers",
-            marker=dict(size=8, color="#4a7dfc"),
-            line=dict(color="#4a7dfc", width=2),
+            marker=dict(size=8, color="#0ea5e9"),
+            line=dict(color="#0ea5e9", width=2),
             hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>DK Pts: %{y:.1f}<extra></extra>",
             customdata=m[["Race", "Track"]].values,
         ))
@@ -708,7 +708,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
             fig_dk.add_trace(go.Scatter(
                 x=m["Date"], y=rolling,
                 mode="lines", name="3-Race Avg",
-                line=dict(color="#ff9f43", width=2, dash="dash"),
+                line=dict(color="#fb923c", width=2, dash="dash"),
             ))
         fig_dk.update_layout(**DARK_LAYOUT, height=350,
                              title=f"{driver_pick} — DK Points Trend",
@@ -723,8 +723,8 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
         fig_fin.add_trace(go.Scatter(
             x=m["Date"], y=m["Finish"],
             mode="lines+markers",
-            marker=dict(size=8, color="#36b37e"),
-            line=dict(color="#36b37e", width=2),
+            marker=dict(size=8, color="#4ade80"),
+            line=dict(color="#4ade80", width=2),
             hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>Finish: %{y}<extra></extra>",
             customdata=m[["Race", "Track"]].values,
         ))
@@ -822,7 +822,7 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=merged["Race"], y=merged[f"{driver_a} DK Pts"],
-            name=driver_a, marker_color="#3b82f6"))
+            name=driver_a, marker_color="#0ea5e9"))
         fig.add_trace(go.Bar(
             x=merged["Race"], y=merged[f"{driver_b} DK Pts"],
             name=driver_b, marker_color="#ef4444"))
@@ -835,7 +835,7 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
             x=merged["Race"], y=merged[f"{driver_a} Finish"],
-            mode="lines+markers", name=driver_a, marker_color="#3b82f6"))
+            mode="lines+markers", name=driver_a, marker_color="#0ea5e9"))
         fig2.add_trace(go.Scatter(
             x=merged["Race"], y=merged[f"{driver_b} Finish"],
             mode="lines+markers", name=driver_b, marker_color="#ef4444"))

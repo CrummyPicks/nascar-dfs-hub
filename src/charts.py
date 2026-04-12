@@ -12,8 +12,12 @@ DARK_LAYOUT = dict(
     template="plotly_dark",
     margin=dict(l=30, r=20, t=40, b=30),
     paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(22,27,38,0.9)",
-    font=dict(color="#c9d1d9"),
+    plot_bgcolor="rgba(15,23,42,0.95)",
+    font=dict(color="#e2e8f0", family="system-ui, -apple-system, sans-serif"),
+    xaxis=dict(gridcolor="#1e293b", zerolinecolor="#334155"),
+    yaxis=dict(gridcolor="#1e293b", zerolinecolor="#334155"),
+    colorway=["#0ea5e9", "#38bdf8", "#7dd3fc", "#22d3ee", "#2dd4bf",
+              "#4ade80", "#a78bfa", "#f472b6", "#fb923c", "#facc15"],
 )
 
 

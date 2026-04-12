@@ -1608,9 +1608,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Build stacked horizontal bar with DK scoring components
     # Positive components stack right, negative Diff Pts stacks left
     pos_components = {
-        "Finish Pts": "#4a7dfc",
-        "Led Pts": "#ff9f43",
-        "FL Pts": "#f5365c",
+        "Finish Pts": "#0ea5e9",
+        "Led Pts": "#fb923c",
+        "FL Pts": "#f472b6",
     }
 
     from src.utils import short_name_series
@@ -1625,7 +1625,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             x=chart_df["Diff Pts"].clip(lower=0),
             name="Diff Pts (+)",
             orientation="h",
-            marker_color="#36b37e",
+            marker_color="#4ade80",
             hovertemplate="%{y}<br>Diff Pts: +%{x:.1f}<extra></extra>",
         ))
 
@@ -1651,7 +1651,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             x=chart_df["Diff Pts"].clip(upper=0),
             name="Diff Pts (-)",
             orientation="h",
-            marker_color="#e74c3c",
+            marker_color="#ef4444",
             hovertemplate="%{y}<br>Diff Pts: %{x:.1f}<extra></extra>",
         ))
 
@@ -1683,19 +1683,18 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         showlegend=False,
     ))
 
+    from src.charts import DARK_LAYOUT
     n_drivers = len(chart_df)
     fig.update_layout(
+        **DARK_LAYOUT,
         barmode="relative",
         title="All Drivers — Projected DK Points Breakdown",
         xaxis_title="Projected DK Points",
         yaxis_title="",
         height=max(400, n_drivers * 22),
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(size=11, color="#c9d1d9"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=10, r=10, t=40, b=30),
-        yaxis=dict(tickfont=dict(size=10)),
+        yaxis=dict(tickfont=dict(size=10), gridcolor="#1e293b"),
+        xaxis=dict(gridcolor="#1e293b"),
     )
     st.plotly_chart(fig, width="stretch")
