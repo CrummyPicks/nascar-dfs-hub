@@ -171,14 +171,25 @@ div[data-testid="stRadio"] label:has(input:checked) {
     .stTabs [data-baseweb="tab"] { padding: 5px 10px; font-size: 0.7rem; }
     div[data-testid="stMetric"] { padding: 6px 8px; }
     div[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size: 0.9rem; }
+    div[data-testid="stMetric"] label { font-size: 0.6rem !important; }
     h1 { font-size: 1.1rem !important; }
     .nascar-header { padding: 0.5rem 0.8rem !important; }
     .nascar-header h1 { font-size: 1.1rem !important; }
     .nascar-header p { font-size: 0.7rem !important; }
+    div[data-testid="stExpander"] summary { font-size: 0.78rem; }
+    div[data-testid="stExpander"] { margin-bottom: 0.3rem; }
+    div[data-testid="stRadio"] label { padding: 3px 8px; font-size: 0.72rem; }
+    [data-testid="stDataFrame"] { font-size: 0.75rem; }
+    .stButton > button { font-size: 0.72rem; padding: 4px 10px; }
+    .stDownloadButton > button { font-size: 0.72rem; }
+    [data-testid="stNumberInput"] label { font-size: 0.72rem !important; }
 }
 @media (max-width: 480px) {
-    .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap; }
+    .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap; gap: 1px; }
     .stTabs [data-baseweb="tab"] { padding: 4px 7px; font-size: 0.65rem; }
+    div[data-testid="stRadio"] > div { flex-wrap: wrap; }
+    div[data-testid="stMetric"] { padding: 4px 6px; }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size: 0.8rem; }
 }
 </style>""", unsafe_allow_html=True)
 
