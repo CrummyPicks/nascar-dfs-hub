@@ -732,6 +732,14 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             st.warning("Could not generate projections — race results may not be available.")
             return
 
+        # Pre-compute DK points finish rankings (1 = highest projected/actual DK pts)
+        sorted_proj_dk = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
+        proj_dk_finish_map = {name: rank + 1 for rank, (name, _) in enumerate(sorted_proj_dk)}
+
+        actual_dk_pairs = [(row["Driver"], row["DK Pts"]) for _, row in actuals.iterrows()]
+        sorted_actual_dk = sorted(actual_dk_pairs, key=lambda x: x[1], reverse=True)
+        actual_dk_finish_map = {name: rank + 1 for rank, (name, _) in enumerate(sorted_actual_dk)}
+
         rows = []
         for _, row in actuals.iterrows():
             d = row["Driver"]
@@ -742,15 +750,18 @@ def _render_race_comparison(completed_races, series_id, selected_year):
             det = proj_detail.get(d, {}) if proj_detail else {}
             proj_finish = det.get("proj_finish") if det else None
             if proj_finish is None:
-                sorted_proj = sorted(proj_dk.items(), key=lambda x: x[1], reverse=True)
-                proj_finish = next((i+1 for i, (n, _) in enumerate(sorted_proj) if n == d),
-                                   len(sorted_proj))
+                proj_finish = proj_dk_finish_map.get(d, len(sorted_proj_dk))
+            proj_dk_fin = proj_dk_finish_map.get(d, len(sorted_proj_dk))
+            actual_dk_fin = actual_dk_finish_map.get(d, len(sorted_actual_dk))
             rows.append({
                 "Driver": d,
                 "Start": start_pos,
                 "Proj DK": round(proj, 1),
                 "Actual DK": round(actual_dk, 1),
                 "DK Error": round(proj - actual_dk, 1),
+                "Proj DK Finish": proj_dk_fin,
+                "Actual DK Finish": actual_dk_fin,
+                "DK Finish Error": proj_dk_fin - actual_dk_fin,
                 "Proj Finish": proj_finish,
                 "Actual Finish": actual_finish,
                 "Finish Error": round(proj_finish - actual_finish, 1),
@@ -782,17 +793,18 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     # Accuracy metrics
     mae_dk = comp["DK Error"].abs().mean()
     mae_finish = comp["Finish Error"].abs().mean()
+    mae_dk_finish = comp["DK Finish Error"].abs().mean()
     corr_dk = comp["Proj DK"].corr(comp["Actual DK"])
     corr_finish = comp["Proj Finish"].corr(comp["Actual Finish"])
-    rank_corr = comp["Proj DK"].rank(ascending=False).corr(
-        comp["Actual DK"].rank(ascending=False))
+    rank_corr = comp["Proj DK Finish"].corr(comp["Actual DK Finish"])
 
-    m_cols = st.columns(5)
+    m_cols = st.columns(6)
     m_cols[0].metric("DK Pts MAE", f"{mae_dk:.1f}")
-    m_cols[1].metric("Finish MAE", f"{mae_finish:.1f}")
-    m_cols[2].metric("DK Pts Correlation", f"{corr_dk:.3f}")
-    m_cols[3].metric("Finish Correlation", f"{corr_finish:.3f}")
-    m_cols[4].metric("Rank Correlation", f"{rank_corr:.3f}")
+    m_cols[1].metric("DK Finish MAE", f"{mae_dk_finish:.1f}")
+    m_cols[2].metric("Finish MAE", f"{mae_finish:.1f}")
+    m_cols[3].metric("DK Pts Correlation", f"{corr_dk:.3f}")
+    m_cols[4].metric("Finish Correlation", f"{corr_finish:.3f}")
+    m_cols[5].metric("DK Finish Rank Corr", f"{rank_corr:.3f}")
 
     st.caption(
         "**MAE** = Mean Absolute Error (lower is better) | "
