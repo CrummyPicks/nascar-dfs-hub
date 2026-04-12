@@ -813,19 +813,19 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     )
     st.caption(f"Weights: {weights_str}")
 
-    st.info(
-        "**Target Ranges**\n\n"
-        "| Metric | Elite | Good | Needs Work |\n"
-        "|--------|-------|------|------------|\n"
-        "| **DK Pts MAE** | < 15 | 15 - 25 | > 25 |\n"
-        "| **DK Finish MAE** | < 5 | 5 - 10 | > 10 |\n"
-        "| **Finish MAE** | < 5 | 5 - 10 | > 10 |\n"
-        "| **DK Pts Correlation** | > 0.70 | 0.45 - 0.70 | < 0.45 |\n"
-        "| **Finish Correlation** | > 0.55 | 0.30 - 0.55 | < 0.30 |\n"
-        "| **DK Finish Rank Corr** | > 0.70 | 0.45 - 0.70 | < 0.45 |\n\n"
-        "NASCAR has high variance — even sharp models will have off races. "
-        "Consistent **Good** range across multiple races is a strong sign."
-    )
+    with st.expander("Target Ranges"):
+        st.markdown(
+            "| Metric | Elite | Good | Needs Work |\n"
+            "|--------|-------|------|------------|\n"
+            "| **DK Pts MAE** | < 15 | 15 - 25 | > 25 |\n"
+            "| **DK Finish MAE** | < 5 | 5 - 10 | > 10 |\n"
+            "| **Finish MAE** | < 5 | 5 - 10 | > 10 |\n"
+            "| **DK Pts Correlation** | > 0.70 | 0.45 - 0.70 | < 0.45 |\n"
+            "| **Finish Correlation** | > 0.55 | 0.30 - 0.55 | < 0.30 |\n"
+            "| **DK Finish Rank Corr** | > 0.70 | 0.45 - 0.70 | < 0.45 |\n\n"
+            "NASCAR has high variance — even sharp models will have off races. "
+            "Consistent **Good** range across multiple races is a strong sign."
+        )
 
     st.dataframe(safe_fillna(format_display_df(comp)), width="stretch",
                  hide_index=False, height=500)
