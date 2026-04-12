@@ -119,6 +119,13 @@ div[data-testid="stExpander"] summary:hover { color: #e2e8f0; }
 [data-baseweb="input"] [data-baseweb="base-input"] { border-color: #1e293b !important; border-radius: 8px; }
 [data-baseweb="input"]:focus-within [data-baseweb="base-input"] { border-color: #0ea5e9 !important; }
 [data-baseweb="select"] > div { border-color: #1e293b !important; border-radius: 8px !important; }
+
+/* ── Text areas ── */
+[data-baseweb="textarea"] textarea {
+    border: 1px solid #1e293b !important; border-radius: 8px !important;
+    background: #0f172a !important;
+}
+[data-baseweb="textarea"]:focus-within textarea { border-color: #0ea5e9 !important; }
 div[data-baseweb="select"] ul { max-height: 300px !important; overflow-y: auto !important; }
 div[data-baseweb="popover"] { max-height: 350px !important; overflow-y: auto !important; }
 div[data-baseweb="popover"] > div { border-radius: 10px !important; border: 1px solid #1e293b !important; }

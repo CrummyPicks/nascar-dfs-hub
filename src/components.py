@@ -8,13 +8,12 @@ import streamlit as st
 def section_header(title: str, subtitle: str = ""):
     """Render a styled section header for tab pages."""
     sub_html = f'<span style="color:#475569; font-size:0.78rem; margin-left:0.6rem;">{subtitle}</span>' if subtitle else ""
-    st.markdown(f"""<div style='
-        padding: 0.4rem 0; margin-bottom: 0.5rem;
-        border-bottom: 1px solid #1e293b;
-    '>
-        <span style='color:#e2e8f0; font-size:1.15rem; font-weight:700; letter-spacing:0.3px;'>{title}</span>
-        {sub_html}
-    </div>""", unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="padding:0.4rem 0;margin-bottom:0.5rem;border-bottom:1px solid #1e293b;">'
+        f'<span style="color:#e2e8f0;font-size:1.15rem;font-weight:700;letter-spacing:0.3px;">{title}</span>'
+        f'{sub_html}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def build_projection_column_config(df, max_proj_dk=None):
