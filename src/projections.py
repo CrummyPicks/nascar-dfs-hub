@@ -179,10 +179,27 @@ def compute_projections(
 
     ll_ref = calibration.get("avg_top_leader", race_laps * 0.35) if calibration else race_laps * 0.35
 
+    QUAL_DAMPEN_CAP = 8  # max positions qual can improve over other signals
+
     for d in drivers:
         norm = normalized_signals[d]
         weights = signal_weight_map[d]
         sig_detail = dict(sig_extras.get(d, {}))
+
+        # Dampen qualifying signal when it's an outlier vs other signals.
+        # If qual projects 15+ positions better than the average of all
+        # other signals, it's likely a one-off good lap, not race pace.
+        if "qual" in norm and len(norm) >= 3:
+            other_sigs = [(norm[s], weights.get(s, 0))
+                          for s in norm if s != "qual"]
+            other_total_w = sum(w for _, w in other_sigs)
+            if other_total_w > 0:
+                other_avg = sum(v * w for v, w in other_sigs) / other_total_w
+                qual_val = norm["qual"]
+                gap = other_avg - qual_val  # positive = qual is better (lower)
+                if gap > QUAL_DAMPEN_CAP:
+                    dampened = other_avg - QUAL_DAMPEN_CAP
+                    norm["qual"] = max(1, dampened)
 
         finish_signals = []
         signal_weights = []
