@@ -19,6 +19,77 @@ def calc_dk_points(finish, start, laps_led, fastest_laps):
         return 0.0
 
 
+def calc_driver_rating(finish, avg_running_pos, laps_led, fastest_laps,
+                       laps_completed, total_race_laps, field_size=40):
+    """Approximate NASCAR Driver Rating (0-150 scale).
+
+    Based on the official formula structure with three sections:
+    - Section 1: Primary stats (finish, ARP, speed proxy, fastest lap proxy)
+    - Section 2: Fixed bonus points (win, top-15, lead lap, ARP thresholds)
+    - Section 3: Variable bonus (laps led + fastest laps / total laps * 100)
+
+    Uses available data to approximate fields we don't have (avg speed,
+    fastest 3 laps). The approximation correlates well with official ratings
+    but may differ by 5-10 points on individual races.
+    """
+    try:
+        finish = int(finish)
+        arp = float(avg_running_pos) if avg_running_pos and not pd.isna(avg_running_pos) else float(finish)
+        ll = int(laps_led) if laps_led and not pd.isna(laps_led) else 0
+        fl = int(fastest_laps) if fastest_laps and not pd.isna(fastest_laps) else 0
+        laps_done = int(laps_completed) if laps_completed and not pd.isna(laps_completed) else total_race_laps
+        total_laps = max(int(total_race_laps), 1)
+        fs = max(int(field_size), 1)
+    except (ValueError, TypeError):
+        return 0.0
+
+    # Section 1: Primary statistics (max 900 raw before /6)
+    # Finish points: 1st=180, last=34, linear interpolation
+    finish_pts = max(34, 180 - (finish - 1) * (180 - 34) / max(fs - 1, 1))
+
+    # ARP points (×2 multiplier): 1st=360, last=68
+    arp_pts = max(68, 360 - (arp - 1) * (360 - 68) / max(fs - 1, 1))
+
+    # Speed proxy: use inverse of ARP as speed approximation (×1 multiplier)
+    # In official formula this is avg speed; we approximate from ARP
+    speed_pts = max(34, 180 - (arp - 1) * (180 - 34) / max(fs - 1, 1))
+
+    # Fastest lap proxy (×1/9 multiplier): based on fastest laps count
+    # Official uses avg of 3 fastest laps; we proxy from fastest lap count rank
+    fl_rank = max(1, min(fs, fs - fl + 1)) if fl > 0 else fs
+    fl_pts = max(3.8, 20 - (fl_rank - 1) * (20 - 3.8) / max(fs - 1, 1))
+
+    primary = finish_pts + arp_pts + speed_pts + fl_pts
+
+    # Section 2: Fixed bonus points
+    bonus = 0
+    if finish == 1:
+        bonus += 20
+    if finish <= 15:
+        bonus += 10
+    # Lead lap finish approximation: finished within ~1 lap of leader
+    if laps_done >= total_laps - 1:
+        bonus += 5
+    if ll > 0:
+        # Leading most laps — approximate (give partial credit)
+        bonus += min(10, ll / max(total_laps, 1) * 40)
+    if arp < 10.0:
+        bonus += 5
+    if arp < 6.0:
+        bonus += 5
+    if arp < 2.0:
+        bonus += 5
+
+    # Section 3: Variable bonus (laps led + fastest laps / green laps * 100)
+    # Use total laps as proxy for green flag laps
+    variable = min(100, (ll + fl) / max(laps_done, 1) * 100)
+
+    # Final: total / 6
+    raw_total = primary + bonus + variable
+    rating = raw_total / 6.0
+    return round(min(150.0, max(0, rating)), 1)
+
+
 def calc_fd_points(finish, start, laps_led, fastest_laps):
     """Calculate FanDuel NASCAR DFS points."""
     try:

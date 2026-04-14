@@ -753,6 +753,9 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 proj_finish = proj_dk_finish_map.get(d, len(sorted_proj_dk))
             proj_dk_fin = proj_dk_finish_map.get(d, len(sorted_proj_dk))
             actual_dk_fin = actual_dk_finish_map.get(d, len(sorted_actual_dk))
+            status = row.get("Status", "Running")
+            is_dnf = bool(status and "running" not in str(status).lower()
+                          and str(status).strip() != "")
             rows.append({
                 "Driver": d,
                 "Start": start_pos,
@@ -769,6 +772,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
                 "Actual LL": int(row.get("Laps Led", 0) or 0),
                 "Proj FL": det.get("fast_laps", 0),
                 "Actual FL": int(row.get("Fastest Laps", 0) or 0),
+                "DNF": is_dnf,
             })
         comp = pd.DataFrame(rows)
 
@@ -883,6 +887,38 @@ def _render_race_comparison(completed_races, series_id, selected_year):
         "**Rank Correlation** = Spearman rank correlation of projected vs actual DK points"
     )
     st.caption(f"Weights: {weights_str}")
+
+    # DNF-excluded metrics
+    n_dnf = comp_filtered["DNF"].sum() if "DNF" in comp_filtered.columns else 0
+    if n_dnf > 0:
+        comp_no_dnf = comp_filtered[~comp_filtered["DNF"]].copy()
+        if len(comp_no_dnf) >= 3:
+            mae_dk_nd = comp_no_dnf["DK Error"].abs().mean()
+            mae_finish_nd = comp_no_dnf["Finish Error"].abs().mean()
+            mae_dk_finish_nd = comp_no_dnf["DK Finish Error"].abs().mean()
+            corr_dk_nd = comp_no_dnf["Proj DK"].corr(comp_no_dnf["Actual DK"])
+            corr_finish_nd = comp_no_dnf["Proj Finish"].corr(comp_no_dnf["Actual Finish"])
+            rank_corr_nd = comp_no_dnf["Proj DK Finish"].corr(comp_no_dnf["Actual DK Finish"])
+
+            metrics_nd = [
+                ("DK Pts MAE", f"{mae_dk_nd:.1f}", _metric_color(mae_dk_nd, 15, 25, True)),
+                ("DK Finish MAE", f"{mae_dk_finish_nd:.1f}", _metric_color(mae_dk_finish_nd, 5, 10, True)),
+                ("Finish MAE", f"{mae_finish_nd:.1f}", _metric_color(mae_finish_nd, 5, 10, True)),
+                ("DK Pts Correlation", f"{corr_dk_nd:.3f}", _metric_color(corr_dk_nd, 0.70, 0.45, False)),
+                ("Finish Correlation", f"{corr_finish_nd:.3f}", _metric_color(corr_finish_nd, 0.55, 0.30, False)),
+                ("DK Finish Rank Corr", f"{rank_corr_nd:.3f}", _metric_color(rank_corr_nd, 0.70, 0.45, False)),
+            ]
+
+            st.markdown(f"**Excluding DNFs** ({n_dnf} drivers removed)")
+            nd_cols = st.columns(6)
+            for col, (label, value, color) in zip(nd_cols, metrics_nd):
+                col.markdown(
+                    f'<div style="background:{color}22; border:2px solid {color}; '
+                    f'border-radius:8px; padding:12px 16px; text-align:center;">'
+                    f'<span style="color:#8892a4; font-size:0.75rem; text-transform:uppercase;">{label}</span><br>'
+                    f'<span style="color:{color}; font-size:1.5rem; font-weight:700;">{value}</span></div>',
+                    unsafe_allow_html=True,
+                )
 
     with st.expander("Target Ranges"):
         st.markdown(

@@ -71,8 +71,43 @@ def fetch_lap_times(series_id: int, race_id: int, year: int = 2026) -> Optional[
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def _parse_lap_avg_session(session: dict) -> pd.DataFrame:
+    """Parse a single lap-averages session into a DataFrame."""
+    items = session.get("Items", [])
+    if not items:
+        return pd.DataFrame()
+    rows = []
+    for item in items:
+        driver_name = _clean_api_name(item.get("FullName") or item.get("Driver") or "")
+        row = {
+            "Driver": driver_name,
+            "Car": str(item.get("Number", "")).strip(),
+            "Manufacturer": item.get("Manufacturer", ""),
+            "Sponsor": item.get("Sponsor", ""),
+            "Overall Avg": item.get("OverAllAvg"),
+            "Overall Rank": item.get("OverAllAvgRank"),
+            "Best Lap": item.get("BestLapTime"),
+            "1 Lap Rank": item.get("BestLapRank"),
+        }
+        for n in [5, 10, 15, 20, 25, 30]:
+            val = item.get(f"Con{n}Lap")
+            row[f"{n} Lap"] = val if (val or 999) < 900 else None
+            row[f"{n} Lap Rank"] = item.get(f"Con{n}LapRank")
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    for rc in [c for c in df.columns if "Rank" in c]:
+        df[rc] = int_col(df[rc])
+    if "Overall Rank" in df.columns:
+        df = df.sort_values("Overall Rank", na_position="last").reset_index(drop=True)
+    return df
+
+
 def fetch_lap_averages(series_id: int, race_id: int, year: int = 2026) -> pd.DataFrame:
-    """Fetch practice lap averages (Overall, 5/10/15/20/25/30 lap consecutive averages)."""
+    """Fetch practice lap averages (Overall, 5/10/15/20/25/30 lap consecutive averages).
+
+    Returns data from the last practice session (combined/overall view).
+    """
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-averages.json", timeout=15)
         if r.status_code != 200:
@@ -80,38 +115,41 @@ def fetch_lap_averages(series_id: int, race_id: int, year: int = 2026) -> pd.Dat
         data = r.json()
         if not data or not isinstance(data, list):
             return pd.DataFrame()
-        session = data[-1]  # Last practice session
-        items = session.get("Items", [])
-        if not items:
-            return pd.DataFrame()
-        rows = []
-        for item in items:
-            driver_name = _clean_api_name(item.get("FullName") or item.get("Driver") or "")
-            row = {
-                "Driver": driver_name,
-                "Car": str(item.get("Number", "")).strip(),
-                "Manufacturer": item.get("Manufacturer", ""),
-                "Sponsor": item.get("Sponsor", ""),
-                "Overall Avg": item.get("OverAllAvg"),
-                "Overall Rank": item.get("OverAllAvgRank"),
-                "Best Lap": item.get("BestLapTime"),
-                "1 Lap Rank": item.get("BestLapRank"),
-            }
-            for n in [5, 10, 15, 20, 25, 30]:
-                val = item.get(f"Con{n}Lap")
-                row[f"{n} Lap"] = val if (val or 999) < 900 else None
-                row[f"{n} Lap Rank"] = item.get(f"Con{n}LapRank")
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-        # Convert rank columns to integers
-        for rc in [c for c in df.columns if "Rank" in c]:
-            df[rc] = int_col(df[rc])
-        if "Overall Rank" in df.columns:
-            df = df.sort_values("Overall Rank", na_position="last").reset_index(drop=True)
-        return df
+        return _parse_lap_avg_session(data[-1])
     except Exception:
         return pd.DataFrame()
+
+
+def fetch_all_practice_sessions(series_id: int, race_id: int, year: int = 2026) -> list:
+    """Fetch ALL practice sessions from lap-averages endpoint.
+
+    Returns list of (session_label, DataFrame) tuples.
+    Session labels are like "Group 1", "Group 2", etc.
+    """
+    try:
+        r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-averages.json", timeout=15)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        if not data or not isinstance(data, list):
+            return []
+
+        sessions = []
+        for i, session in enumerate(data):
+            df = _parse_lap_avg_session(session)
+            if df.empty:
+                continue
+            # Try to get session name from the data; fall back to numbered label
+            label = session.get("SessionName") or session.get("RunName") or ""
+            if not label:
+                if len(data) == 1:
+                    label = "Practice"
+                else:
+                    label = f"Group {i + 1}"
+            sessions.append((label, df))
+        return sessions
+    except Exception:
+        return []
 
 
 # ============================================================

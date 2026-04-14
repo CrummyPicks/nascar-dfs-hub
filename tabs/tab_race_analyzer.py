@@ -11,7 +11,7 @@ from src.data import (
     extract_race_results, compute_fastest_laps, compute_avg_running_position,
     filter_point_races, query_salaries, load_arp_from_db,
 )
-from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df, fuzzy_merge, fuzzy_get, build_norm_lookup
+from src.utils import calc_dk_points, calc_fd_points, calc_driver_rating, safe_fillna, format_display_df, fuzzy_merge, fuzzy_get, build_norm_lookup
 from src.components import render_driver_race_log
 from src.charts import race_scatter
 
@@ -194,11 +194,12 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
         results = fuzzy_merge(results, sal_df, on="Driver", how="left")
 
     field_size = len(results)
+    total_race_laps = results["Laps"].max() if "Laps" in results.columns else 200
     results["Rating"] = results.apply(
-        lambda r: round(
-            max(0, (field_size - r["Finish Position"]) / field_size * 100 +
-                r["Laps Led"] * 0.1 + r["Fastest Laps"] * 0.5 +
-                (r["Start"] - r["Finish Position"]) * 0.8), 1), axis=1)
+        lambda r: calc_driver_rating(
+            r["Finish Position"], r.get("Avg Run"), r["Laps Led"],
+            r["Fastest Laps"], r.get("Laps", total_race_laps),
+            total_race_laps, field_size), axis=1)
 
     # Search
     search = st.text_input("Search", "", placeholder="Filter drivers...",
@@ -279,14 +280,20 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
             sal_norm = build_norm_lookup(sal_map)
         fl_norm = build_norm_lookup(fl)
         arp_norm = build_norm_lookup(avg_run)
+        field_size = len(results)
+        total_race_laps = results["Laps"].max() if "Laps" in results.columns else 200
         for _, row in results.iterrows():
             driver = row["Driver"]
             fp = row["Finish Position"]
             start = row["Start"]
             ll = row["Laps Led"]
             fl_count = fuzzy_get(driver, fl, fl_norm) or 0
+            arp_val = fuzzy_get(driver, avg_run, arp_norm)
             dk = calc_dk_points(fp, start, ll, fl_count)
             fd = calc_fd_points(fp, start, ll, fl_count)
+            rating = calc_driver_rating(
+                fp, arp_val, ll, fl_count,
+                row.get("Laps", total_race_laps), total_race_laps, field_size)
             all_rows.append({
                 "Driver": driver,
                 "Car": str(row.get("Car", "")),
@@ -298,9 +305,10 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
                 "Start": start,
                 "Laps Led": ll,
                 "Fastest Laps": fl_count,
-                "Avg Run": fuzzy_get(driver, avg_run, arp_norm),
+                "Avg Run": arp_val,
                 "DK Pts": dk,
                 "FD Pts": fd,
+                "Rating": rating,
                 "DK Salary": fuzzy_get(driver, sal_map, sal_norm),
                 "Status": row.get("Status", ""),
             })
@@ -344,6 +352,13 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
 
     agg = season_df.groupby(["Driver", "Car"]).agg(**agg_dict).reset_index()
     agg.columns = col_names
+
+    # Average per-race driver rating
+    if "Rating" in season_df.columns and season_df["Rating"].notna().any():
+        rating_agg = season_df.dropna(subset=["Rating"]).groupby("Driver").agg(
+            **{"Avg Rating": ("Rating", "mean")}
+        ).round(1)
+        agg = agg.merge(rating_agg, on="Driver", how="left")
 
     for col in ["Avg Finish", "Avg Start", "Avg DK", "Avg FD"]:
         agg[col] = agg[col].round(1)
@@ -520,16 +535,12 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
         ).round(1)
         agg = agg.merge(avg_run_agg, on="Driver", how="left")
 
-    # Compute driver rating per-driver
-    field_avg = len(season_df["Driver"].unique())
-    agg["Rating"] = agg.apply(
-        lambda r: round(
-            max(0, (40 - r["Avg Finish"]) / 39 * 60 +
-                r["Laps Led"] / max(r["Races"], 1) * 0.3 +
-                r["Fast Laps"] / max(r["Races"], 1) * 0.5 +
-                (r["Avg Start"] - r["Avg Finish"]) * 1.5 +
-                r["Wins"] / max(r["Races"], 1) * 20 +
-                r["T5"] / max(r["Races"], 1) * 8), 1), axis=1)
+    # Average per-race driver rating
+    if "Rating" in season_df.columns and season_df["Rating"].notna().any():
+        rating_agg = season_df.dropna(subset=["Rating"]).groupby("Driver").agg(
+            **{"Avg Rating": ("Rating", "mean")}
+        ).round(1)
+        agg = agg.merge(rating_agg, on="Driver", how="left")
 
     # Add avg salary if available
     if "DK Salary" in season_df.columns and season_df["DK Salary"].notna().any():
@@ -567,10 +578,11 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
 
     # Avg Running Pos vs Rating scatter chart
     if "Avg Run" in agg.columns and agg["Avg Run"].notna().any():
-        scatter_data = agg.dropna(subset=["Avg Run"])[["Driver", "Car", "Avg Run", "Rating"]].copy()
+        rating_col = "Avg Rating" if "Avg Rating" in agg.columns else "Rating"
+        scatter_data = agg.dropna(subset=["Avg Run"])[["Driver", "Car", "Avg Run", rating_col]].copy()
         scatter_data = scatter_data.rename(columns={
             "Avg Run": "Avg Running Pos",
-            "Rating": "Avg Driver Rating",
+            rating_col: "Avg Driver Rating",
         })
         from src.charts import season_scatter
         fig = season_scatter(scatter_data)
@@ -658,7 +670,9 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
     m2_cols[1].metric("Best Finish", int(m["Finish"].min()) if not m.empty else "—")
     m2_cols[2].metric("Total Laps Led", int(m["Laps Led"].sum()))
     m2_cols[3].metric("Total Fast Laps", int(m["Fastest Laps"].sum()))
-    if "DK Salary" in m.columns and m["DK Salary"].notna().any():
+    if "Rating" in m.columns and m["Rating"].notna().any():
+        m2_cols[4].metric("Avg Rating", f"{m['Rating'].mean():.1f}")
+    elif "DK Salary" in m.columns and m["DK Salary"].notna().any():
         m2_cols[4].metric("Avg Salary", f"${m['DK Salary'].mean():,.0f}")
     if m["DK Pts"].notna().any():
         m2_cols[5].metric("Best DK", f"{m['DK Pts'].max():.1f}")
@@ -683,7 +697,7 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
     # ── Race Log Table ─────────────────────────────────────────────────────
     st.markdown(f"#### {driver_pick} — Race Log")
     show_cols = ["Date", "Race", "Track", "Start", "Finish", "Laps Led",
-                 "Fastest Laps", "DK Pts", "FD Pts", "Status"]
+                 "Fastest Laps", "DK Pts", "FD Pts", "Rating", "Status"]
     if "DK Salary" in m.columns:
         show_cols.insert(6, "DK Salary")
     avail = [c for c in show_cols if c in m.columns]

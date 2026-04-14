@@ -1,5 +1,6 @@
 """Tab 3: Track History."""
 
+import pandas as pd
 import streamlit as st
 
 from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
@@ -7,7 +8,7 @@ from src.data import (
     query_track_type_stats, query_season_stats, query_db_track_history,
 )
 from src.charts import track_history_bar, rating_vs_finish_scatter, arp_vs_finish_scatter, finish_distribution_box
-from src.utils import format_display_df, safe_fillna
+from src.utils import format_display_df, safe_fillna, calc_driver_rating
 from src.components import section_header
 
 
@@ -59,6 +60,23 @@ def _tracks_for_type(track_type: str) -> list:
     return sorted(t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type)
 
 
+def _add_avg_rating(df):
+    """Add Avg Rating column to a track history DataFrame using aggregate stats."""
+    if df.empty:
+        return df
+    df = df.copy()
+    field_size = 40  # Standard Cup field size
+    df["Avg Rating"] = df.apply(
+        lambda r: calc_driver_rating(
+            r.get("Avg Finish", 20),
+            r.get("Avg Run Pos") if pd.notna(r.get("Avg Run Pos")) else None,
+            r.get("Laps Led", 0) / max(r.get("Races", 1), 1),
+            r.get("Fast Laps", 0) / max(r.get("Races", 1), 1) if "Fast Laps" in r.index else 0,
+            200,  # approx laps per race
+            200, field_size), axis=1)
+    return df
+
+
 def render(*, track_name, track_type, series_id):
     """Render the Track History tab."""
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
@@ -101,6 +119,7 @@ def render(*, track_name, track_type, series_id):
         with st.spinner(f"Loading history at {track_name}..."):
             hist_df = query_db_track_history(track_name, series_id, min_season=2022)
         if not hist_df.empty:
+            hist_df = _add_avg_rating(hist_df)
             st.caption(f"Next Gen era (2022+) — {track_name} — Source: database")
             display = format_display_df(hist_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
@@ -135,6 +154,7 @@ def render(*, track_name, track_type, series_id):
             st.caption(f"Includes: {', '.join(type_tracks)}")
         tt_df = query_track_type_stats(track_type)
         if not tt_df.empty:
+            tt_df = _add_avg_rating(tt_df)
             display = format_display_df(tt_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
@@ -143,6 +163,7 @@ def render(*, track_name, track_type, series_id):
                 st.caption(f"No data for subtype '{display_type}' — showing parent type '{parent_type.title()}'")
                 parent_df = query_track_type_stats(parent_type)
                 if not parent_df.empty:
+                    parent_df = _add_avg_rating(parent_df)
                     display = format_display_df(parent_df)
                     st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
                 else:
@@ -155,6 +176,7 @@ def render(*, track_name, track_type, series_id):
         season_df = query_season_stats(track_name=track_name, season=2026,
                                        series_id=series_id)
         if not season_df.empty:
+            season_df = _add_avg_rating(season_df)
             display = format_display_df(season_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
@@ -203,6 +225,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
                         agg_dict[col] = "sum"
                 agg = combined.groupby("Driver").agg(agg_dict).reset_index()
                 agg = agg.sort_values("Avg Finish", na_position="last")
+                agg = _add_avg_rating(agg)
                 display = format_display_df(agg)
                 st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
             else:
@@ -217,6 +240,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
             st.caption(f"**{_format_type_label(track_type_filter)}**: {', '.join(desc_tracks)}")
         tt_df = query_track_type_stats(track_type_filter)
         if not tt_df.empty:
+            tt_df = _add_avg_rating(tt_df)
             display = format_display_df(tt_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:
@@ -228,6 +252,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
         # Use track type query to filter season data to this type AND 2026 only
         season_df = query_track_type_stats(track_type_filter, season=2026)
         if not season_df.empty:
+            season_df = _add_avg_rating(season_df)
             display = format_display_df(season_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
         else:

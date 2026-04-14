@@ -6,7 +6,10 @@ import streamlit as st
 
 from src.components import render_practice_heatmap, section_header
 from src.charts import practice_lap_chart, practice_bar_chart
-from src.data import extract_practice_laps, extract_practice_lap_counts
+from src.data import (
+    extract_practice_laps, extract_practice_lap_counts,
+    fetch_all_practice_sessions,
+)
 from src.utils import format_display_df, safe_fillna
 
 
@@ -18,6 +21,9 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         st.info("Practice data not yet available for this race.")
         return
 
+    # Fetch all practice sessions for group filtering
+    all_sessions = fetch_all_practice_sessions(series_id, race_id, selected_year)
+
     # Merge practice lap counts from weekend-feed into lap_averages_df
     if feed:
         lap_counts = extract_practice_lap_counts(feed)
@@ -28,7 +34,26 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                 lambda d: lap_counts.get(d) or lap_counts.get(
                     fuzzy_match_name(d, list(lap_counts.keys())) or "", None))
 
-    st.caption(f"{len(lap_averages_df)} drivers  •  Source: NASCAR API lap-averages")
+    # Session/group filter
+    active_df = lap_averages_df
+    if len(all_sessions) > 1:
+        session_labels = ["All (Combined)"] + [label for label, _ in all_sessions]
+        selected_session = st.selectbox(
+            "Practice Group", session_labels,
+            key="prac_session_filter",
+            help="Filter by practice group to compare drivers within the same session")
+        if selected_session != "All (Combined)":
+            for label, sdf in all_sessions:
+                if label == selected_session:
+                    active_df = sdf
+                    break
+            # Re-rank within the selected group
+            if "Overall Rank" in active_df.columns:
+                active_df = active_df.copy()
+                active_df["Overall Rank"] = range(1, len(active_df) + 1)
+
+    st.caption(f"{len(active_df)} drivers  •  Source: NASCAR API lap-averages"
+               + (f"  •  Session: {selected_session}" if len(all_sessions) > 1 and selected_session != "All (Combined)" else ""))
 
     # Check if practice lap-by-lap data exists before offering Lap Chart option
     practice_laps = extract_practice_laps(feed) if feed else []
@@ -41,25 +66,25 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
 
     if prac_mode == "Rankings (Heatmap)":
         show_heatmap = st.checkbox("Show heatmap colors", value=True, key="heatmap_toggle")
-        render_practice_heatmap(lap_averages_df, show_heatmap=show_heatmap)
+        render_practice_heatmap(active_df, show_heatmap=show_heatmap)
 
     elif prac_mode == "Lap Times":
         time_cols = ["Driver", "Car", "Laps", "Overall Avg", "Best Lap",
                      "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
-        avail = [c for c in time_cols if c in lap_averages_df.columns]
-        disp = lap_averages_df[avail].copy()
+        avail = [c for c in time_cols if c in active_df.columns]
+        disp = active_df[avail].copy()
         disp = format_display_df(disp)
         st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
 
     elif prac_mode == "Lap Chart":
-        _render_lap_chart_with_data(practice_laps, lap_averages_df)
+        _render_lap_chart_with_data(practice_laps, active_df)
 
     # Bar chart (always show below for non-chart views)
-    if not lap_averages_df.empty and prac_mode != "Lap Chart":
+    if not active_df.empty and prac_mode != "Lap Chart":
         # Interval selector for bar chart
         interval_options = ["Overall Avg"]
         for col in ["Best Lap", "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap"]:
-            if col in lap_averages_df.columns and lap_averages_df[col].notna().sum() > 3:
+            if col in active_df.columns and active_df[col].notna().sum() > 3:
                 interval_options.append(col)
 
         bar_cols = st.columns([2, 4])
@@ -67,12 +92,12 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
             bar_interval = st.selectbox("Lap interval", interval_options,
                                         key="prac_bar_interval", label_visibility="collapsed")
 
-        fig = practice_bar_chart(lap_averages_df, metric_col=bar_interval)
+        fig = practice_bar_chart(active_df, metric_col=bar_interval)
         if fig:
             st.plotly_chart(fig, width="stretch")
 
     # Export
-    csv = lap_averages_df.to_csv(index=False).encode("utf-8")
+    csv = active_df.to_csv(index=False).encode("utf-8")
     st.download_button("Export Practice CSV", csv,
                        f"{race_name.replace(' ', '_')}_practice.csv", "text/csv")
 
