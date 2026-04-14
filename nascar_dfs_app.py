@@ -360,8 +360,8 @@ with st.expander("Settings & Data Upload", expanded=False):
     ref_cols = st.columns([1, 1, 4])
     with ref_cols[0]:
         if st.button("Auto-Fetch Odds", key="refresh_all_btn", type="primary",
-                     help="Attempts to scrape live win/top5/top10 odds from sportsbook APIs. "
-                          "May not always be available — paste manually if it fails."):
+                     help="Fetches win/top5/top10 odds from Action Network (Cup only). "
+                          "May not always be available — paste manually or import via script."):
             _fetch_all_nascar_odds.clear()
             fresh_odds = fetch_nascar_odds(series_id)
             if fresh_odds:
