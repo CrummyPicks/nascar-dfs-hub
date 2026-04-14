@@ -2650,3 +2650,149 @@ def query_lapping_profile(track_type: str, series_id: int = 1,
                 "n": len(vals),
             }
     return result
+
+
+# ---------------------------------------------------------------------------
+# Season Standings (computed from weekend-feed race results)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_season_standings(series_id: int, year: int = 2026) -> dict:
+    """Fetch season standings by aggregating results from all completed races.
+
+    Returns dict with keys: "driver", "manufacturer", "owner", each a DataFrame.
+    Uses points_earned from the API (includes stage points in total).
+    """
+    races = fetch_race_list(series_id, year)
+    if not races:
+        return {"driver": pd.DataFrame(), "manufacturer": pd.DataFrame(), "owner": pd.DataFrame()}
+
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Filter to completed points races (race_type_id == 1, date <= today)
+    points_races = [
+        r for r in races
+        if r.get("race_type_id") == 1
+        and (r.get("race_date") or r.get("date_scheduled", ""))[:10] <= today
+    ]
+
+    driver_rows = []
+    mfr_agg = defaultdict(lambda: {"points": 0, "wins": 0, "races": 0})
+    owner_agg = defaultdict(lambda: {"points": 0, "wins": 0, "top5": 0, "top10": 0,
+                                      "races": 0, "car_number": "", "driver": ""})
+
+    for race in points_races:
+        rid = race["race_id"]
+        feed = fetch_weekend_feed(series_id, rid, year)
+        if not feed:
+            continue
+        race_list = feed.get("weekend_race", [])
+        if not race_list:
+            continue
+        race_data = race_list[0]
+        results = race_data.get("results", [])
+        race_name = race_data.get("race_name", "")
+        track_name = race_data.get("track_name", "")
+
+        # Stage results for this race
+        stage_results = race_data.get("stage_results", [])
+        # Build driver → stage points map
+        driver_stage_pts = defaultdict(int)
+        for stage in stage_results:
+            for sr in stage.get("results", []):
+                name = _clean_api_name(sr.get("driver_fullname", ""))
+                driver_stage_pts[name] += sr.get("stage_points", 0)
+
+        for r in results:
+            fp = r.get("finishing_position", 0) or 0
+            if fp == 0:
+                continue
+            driver = _clean_api_name(r.get("driver_fullname", ""))
+            pts = r.get("points_earned", 0) or 0
+            playoff_pts = r.get("playoff_points_earned", 0) or 0
+            stage_pts = driver_stage_pts.get(driver, 0)
+            mfr = r.get("car_make", "")
+            team = r.get("team_name", "")
+            owner = r.get("owner_fullname", "")
+            car = r.get("car_number", "")
+
+            driver_rows.append({
+                "Driver": driver,
+                "Race": race_name,
+                "Track": track_name,
+                "Finish": fp,
+                "Start": r.get("starting_position", 0) or 0,
+                "Points": pts,
+                "Stage Pts": stage_pts,
+                "Playoff Pts": playoff_pts,
+                "Laps Led": r.get("laps_led", 0) or 0,
+                "Status": r.get("finishing_status", "Running"),
+                "Car": car,
+                "Team": team,
+                "Manufacturer": mfr,
+            })
+
+            # Manufacturer aggregate
+            mfr_agg[mfr]["points"] += pts
+            mfr_agg[mfr]["races"] += 1
+            if fp == 1:
+                mfr_agg[mfr]["wins"] += 1
+
+            # Owner aggregate
+            owner_key = f"{owner} (#{car})" if car else owner
+            owner_agg[owner_key]["points"] += pts
+            owner_agg[owner_key]["wins"] += (1 if fp == 1 else 0)
+            owner_agg[owner_key]["top5"] += (1 if fp <= 5 else 0)
+            owner_agg[owner_key]["top10"] += (1 if fp <= 10 else 0)
+            owner_agg[owner_key]["races"] += 1
+            owner_agg[owner_key]["car_number"] = car
+            owner_agg[owner_key]["driver"] = driver
+
+    # --- Build driver standings DataFrame ---
+    if driver_rows:
+        all_df = pd.DataFrame(driver_rows)
+        driver_standings = all_df.groupby("Driver").agg(
+            Points=("Points", "sum"),
+            Wins=("Finish", lambda x: (x == 1).sum()),
+            **{"Top 5": ("Finish", lambda x: (x <= 5).sum())},
+            **{"Top 10": ("Finish", lambda x: (x <= 10).sum())},
+            **{"Stage Pts": ("Stage Pts", "sum")},
+            **{"Playoff Pts": ("Playoff Pts", "sum")},
+            **{"Avg Finish": ("Finish", "mean")},
+            **{"Laps Led": ("Laps Led", "sum")},
+            Races=("Finish", "count"),
+            **{"Best Finish": ("Finish", "min")},
+        ).reset_index()
+        driver_standings = driver_standings.sort_values("Points", ascending=False).reset_index(drop=True)
+        driver_standings.insert(0, "Rank", range(1, len(driver_standings) + 1))
+        driver_standings["Avg Finish"] = driver_standings["Avg Finish"].round(1)
+    else:
+        driver_standings = pd.DataFrame()
+
+    # --- Manufacturer standings ---
+    if mfr_agg:
+        mfr_rows = [{"Manufacturer": m, "Points": d["points"], "Wins": d["wins"],
+                      "Races": d["races"]} for m, d in mfr_agg.items()]
+        mfr_standings = pd.DataFrame(mfr_rows).sort_values("Points", ascending=False).reset_index(drop=True)
+        mfr_standings.insert(0, "Rank", range(1, len(mfr_standings) + 1))
+    else:
+        mfr_standings = pd.DataFrame()
+
+    # --- Owner standings ---
+    if owner_agg:
+        owner_rows = [{"Owner": o, "Car": d["car_number"], "Driver": d["driver"],
+                        "Points": d["points"], "Wins": d["wins"],
+                        "Top 5": d["top5"], "Top 10": d["top10"],
+                        "Races": d["races"]} for o, d in owner_agg.items()]
+        owner_standings = pd.DataFrame(owner_rows).sort_values("Points", ascending=False).reset_index(drop=True)
+        owner_standings.insert(0, "Rank", range(1, len(owner_standings) + 1))
+    else:
+        owner_standings = pd.DataFrame()
+
+    return {
+        "driver": driver_standings,
+        "manufacturer": mfr_standings,
+        "owner": owner_standings,
+        "races": pd.DataFrame(driver_rows) if driver_rows else pd.DataFrame(),
+    }
