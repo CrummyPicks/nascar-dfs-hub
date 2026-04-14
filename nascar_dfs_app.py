@@ -594,6 +594,26 @@ if not is_prerace and lap_data and race_id:
 qualifying_df = extract_qualifying(feed) if feed else pd.DataFrame()
 entry_list_df = extract_entry_list(feed) if feed else pd.DataFrame()
 
+# Remap odds keys to match entry list driver names (handles Suárez/Suarez, Jr./Jr, etc.)
+if odds_data and not entry_list_df.empty:
+    from src.utils import normalize_driver_name, fuzzy_match_name
+    entry_drivers = entry_list_df["Driver"].tolist()
+    _norm_entry = {normalize_driver_name(d): d for d in entry_drivers}
+    remapped = {}
+    for odds_name, odds_val in odds_data.items():
+        if odds_name in entry_drivers:
+            remapped[odds_name] = odds_val
+            continue
+        # Try normalized match
+        norm_key = normalize_driver_name(odds_name)
+        if norm_key in _norm_entry:
+            remapped[_norm_entry[norm_key]] = odds_val
+        else:
+            # Fuzzy fallback
+            matched = fuzzy_match_name(odds_name, entry_drivers)
+            remapped[matched if matched else odds_name] = odds_val
+    odds_data = remapped
+
 # Auto-pull practice data from lap averages
 if not lap_averages_df.empty and "Overall Rank" in lap_averages_df.columns and not practice_data:
     for _, row in lap_averages_df.iterrows():
