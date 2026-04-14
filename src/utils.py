@@ -340,11 +340,14 @@ def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
                 except (TypeError, ValueError):
                     pass  # Skip if conversion fails
         elif col_name in one_dec_patterns:
-            result[col] = pd.to_numeric(result[col], errors="coerce").round(1)
+            if dtype_str not in ("object", "str", "string", "StringDtype"):
+                result[col] = pd.to_numeric(result[col], errors="coerce").round(1)
         elif col_name in two_dec_patterns:
-            result[col] = pd.to_numeric(result[col], errors="coerce").round(2)
+            if dtype_str not in ("object", "str", "string", "StringDtype"):
+                result[col] = pd.to_numeric(result[col], errors="coerce").round(2)
         elif col_name in three_dec_patterns:
-            result[col] = pd.to_numeric(result[col], errors="coerce").round(3)
+            if dtype_str not in ("object", "str", "string", "StringDtype"):
+                result[col] = pd.to_numeric(result[col], errors="coerce").round(3)
 
     return result
 
