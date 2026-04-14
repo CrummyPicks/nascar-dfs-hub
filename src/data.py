@@ -2682,6 +2682,9 @@ def fetch_season_standings(series_id: int, year: int = 2026) -> dict:
     owner_agg = defaultdict(lambda: {"points": 0, "wins": 0, "top5": 0, "top10": 0,
                                       "races": 0, "car_number": "", "driver": ""})
 
+    # Pre-build race_id → track_name map from race list (reliable fallback)
+    track_map = {r["race_id"]: r.get("track_name", "") for r in races}
+
     for race in points_races:
         rid = race["race_id"]
         feed = fetch_weekend_feed(series_id, rid, year)
@@ -2693,7 +2696,7 @@ def fetch_season_standings(series_id: int, year: int = 2026) -> dict:
         race_data = race_list[0]
         results = race_data.get("results", [])
         race_name = race_data.get("race_name", "")
-        track_name = race_data.get("track_name", "")
+        track_name = race_data.get("track_name") or track_map.get(rid, "")
 
         # Stage results for this race
         stage_results = race_data.get("stage_results", [])
