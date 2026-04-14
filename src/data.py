@@ -2657,7 +2657,7 @@ def query_lapping_profile(track_type: str, series_id: int = 1,
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_season_standings(series_id: int, year: int = 2026) -> dict:
+def fetch_season_standings(series_id: int, year: int = 2026, _v: int = 2) -> dict:
     """Fetch season standings by aggregating results from all completed races.
 
     Returns dict with keys: "driver", "manufacturer", "owner", each a DataFrame.
