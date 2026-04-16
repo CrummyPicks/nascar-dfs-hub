@@ -544,6 +544,16 @@ with st.expander("Settings & Data Upload", expanded=False):
     # Store odds source for downstream tabs to label correctly
     st.session_state["odds_source"] = odds_source
 
+    # Show odds source info so user knows where odds came from
+    if odds_data:
+        _src_label = {"saved": "DB (imported)", "auto": "Action Network (auto)",
+                      "manual": "Manual paste", "salary_estimate": "Salary estimate"}.get(odds_source, odds_source)
+        st.markdown(
+            f'<p style="color:#94a3b8;font-size:0.78rem;margin:0.1rem 0;">'
+            f'Using {len(odds_data)} odds from: {_src_label}</p>',
+            unsafe_allow_html=True,
+        )
+
 
 
 # ============================================================
