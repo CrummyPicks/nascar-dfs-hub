@@ -12,6 +12,7 @@ import argparse
 import glob
 import os
 import re
+import subprocess
 import sys
 import sqlite3
 from datetime import datetime, timedelta
@@ -442,39 +443,112 @@ def main():
         if more != "y":
             break
 
-    if not imported:
-        print("\n  Nothing imported. Exiting.")
+    # Check if nascar.db has uncommitted changes (even if nothing new was imported this run)
+    db_dirty = False
+    try:
+        result = subprocess.run(["git", "diff", "--name-only", "nascar.db"],
+                                capture_output=True, text=True, cwd=os.path.dirname(__file__))
+        if "nascar.db" in result.stdout:
+            db_dirty = True
+        # Also check staged
+        result2 = subprocess.run(["git", "diff", "--cached", "--name-only", "nascar.db"],
+                                 capture_output=True, text=True, cwd=os.path.dirname(__file__))
+        if "nascar.db" in result2.stdout:
+            db_dirty = True
+    except Exception:
+        db_dirty = bool(imported)  # fallback: assume dirty if we imported anything
+
+    if not imported and not db_dirty:
+        print("\n  Nothing imported and no pending DB changes. Exiting.")
+        input("\n  Press Enter to close...")
         return
+
+    if not imported and db_dirty:
+        print("\n  No new imports this session, but nascar.db has uncommitted changes.")
+        push_anyway = input("  Push pending DB changes to Streamlit Cloud? (Y/n): ").strip().lower()
+        if push_anyway == "n":
+            input("\n  Press Enter to close...")
+            return
 
     # Git commit + push all at once
     if not args.no_push:
         # Build commit message from what was imported
-        parts = []
-        sal_races = [name for name, _, dtype in imported if dtype == "salaries"]
-        odds_races = [name for name, _, dtype in imported if dtype == "odds"]
-        if sal_races:
-            safe = ", ".join(r.replace('"', '').replace("'", "") for r in sal_races)
-            parts.append(f"salaries: {safe}")
-        if odds_races:
-            safe = ", ".join(r.replace('"', '').replace("'", "") for r in odds_races)
-            parts.append(f"odds: {safe}")
-        commit_msg = "Add " + "; ".join(parts)
+        if imported:
+            parts = []
+            sal_races = [name for name, _, dtype in imported if dtype == "salaries"]
+            odds_races = [name for name, _, dtype in imported if dtype == "odds"]
+            if sal_races:
+                safe = ", ".join(r.replace('"', '').replace("'", "") for r in sal_races)
+                parts.append(f"salaries: {safe}")
+            if odds_races:
+                safe = ", ".join(r.replace('"', '').replace("'", "") for r in odds_races)
+                parts.append(f"odds: {safe}")
+            commit_msg = "Add " + "; ".join(parts)
+        else:
+            commit_msg = "Update nascar.db"
+
+        project_dir = os.path.dirname(os.path.abspath(__file__))
 
         print(f"\n  Committing and pushing to git...")
-        ret1 = os.system('git add nascar.db')
-        ret2 = os.system(f'git commit -m "{commit_msg}"')
-        ret3 = os.system('git push')
-        if ret3 == 0:
+        print(f"  Working directory: {project_dir}")
+
+        # Step 1: git add
+        print(f"\n  [1/3] git add nascar.db")
+        r1 = subprocess.run(["git", "add", "nascar.db"],
+                            capture_output=True, text=True, cwd=project_dir)
+        if r1.returncode != 0:
+            print(f"  ERROR: git add failed (code {r1.returncode})")
+            print(f"  stdout: {r1.stdout.strip()}")
+            print(f"  stderr: {r1.stderr.strip()}")
+            input("\n  Press Enter to close...")
+            return
+        print(f"  OK")
+
+        # Step 2: git commit
+        print(f"\n  [2/3] git commit -m \"{commit_msg}\"")
+        r2 = subprocess.run(["git", "commit", "-m", commit_msg],
+                            capture_output=True, text=True, cwd=project_dir)
+        if r2.returncode != 0:
+            # Check if it's just "nothing to commit"
+            if "nothing to commit" in r2.stdout or "nothing to commit" in r2.stderr:
+                print(f"  Nothing to commit — DB already matches last commit.")
+                print(f"  Checking if push is needed...")
+            else:
+                print(f"  ERROR: git commit failed (code {r2.returncode})")
+                print(f"  stdout: {r2.stdout.strip()}")
+                print(f"  stderr: {r2.stderr.strip()}")
+                input("\n  Press Enter to close...")
+                return
+        else:
+            print(f"  OK: {r2.stdout.strip()}")
+
+        # Step 3: git push
+        print(f"\n  [3/3] git push")
+        r3 = subprocess.run(["git", "push"],
+                            capture_output=True, text=True, cwd=project_dir)
+        if r3.returncode == 0:
+            push_out = r3.stdout.strip() or r3.stderr.strip()
+            print(f"  OK: {push_out}")
             print(f"\n  Done! Data is now live on Streamlit Cloud.")
         else:
-            print(f"\n  WARNING: Git push may have failed (exit code {ret3}).")
-            print(f"  Try manually: git add nascar.db && git commit -m \"Add data\" && git push")
+            print(f"  ERROR: git push failed (code {r3.returncode})")
+            print(f"  stdout: {r3.stdout.strip()}")
+            print(f"  stderr: {r3.stderr.strip()}")
+            print(f"\n  Try manually:")
+            print(f'    cd "{project_dir}"')
+            print(f'    git add nascar.db && git commit -m "Add data" && git push')
     else:
         print(f"\n  Saved to local DB. To deploy:")
         print(f'    git add nascar.db && git commit -m "Add data" && git push')
 
-    print()
+    input("\n  Press Enter to close...")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\n  UNEXPECTED ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        input("\n  Press Enter to close...")
