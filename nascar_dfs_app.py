@@ -553,6 +553,16 @@ with st.expander("Settings & Data Upload", expanded=False):
             f'Using {len(odds_data)} odds from: {_src_label}</p>',
             unsafe_allow_html=True,
         )
+    # Debug: show DB odds status for troubleshooting
+    if race_id:
+        _db_odds = load_race_odds(race_id, series_id)
+        _db_count = len(_db_odds) if _db_odds else 0
+        _db_color = "#4ade80" if _db_count > 0 else "#f87171"
+        st.markdown(
+            f'<p style="color:{_db_color};font-size:0.78rem;margin:0.1rem 0;">'
+            f'DB odds for this race: {_db_count} drivers</p>',
+            unsafe_allow_html=True,
+        )
 
 
 
@@ -577,8 +587,15 @@ if not is_prerace and race_id and odds_source != "manual":
         odds_source = ""
 
 # Persist odds to DB for the currently selected race
+# Only auto-save if no higher-priority odds (bovada/manual) exist in DB
 if odds_data and race_id:
-    should_save_odds = (is_prerace and odds_source in ("auto", "salary_estimate")) or \
+    _has_imported = False
+    if is_prerace and odds_source in ("auto", "salary_estimate"):
+        _check_saved = load_race_odds(race_id, series_id)
+        if _check_saved:
+            # Higher-priority odds exist — don't overwrite with auto
+            _has_imported = True
+    should_save_odds = (is_prerace and odds_source in ("auto", "salary_estimate") and not _has_imported) or \
                        odds_source == "manual"
     if should_save_odds:
         prop_odds = fetch_nascar_prop_odds(series_id)
