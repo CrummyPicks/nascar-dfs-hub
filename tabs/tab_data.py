@@ -82,8 +82,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     if not fd_df.empty:
         master = fuzzy_merge(master, fd_df, on="Driver", how="left")
 
-    # Betting odds (preserve raw values — Bovada/Action Network already post
-    # clean rounded odds; re-bucketing here was corrupting the user's paste,
+    # Betting odds (preserve raw values — sportsbooks already post clean
+    # rounded odds; re-bucketing here was corrupting the user's paste,
     # e.g. +550 → +600)
     if odds_data:
         from src.utils import normalize_driver_name

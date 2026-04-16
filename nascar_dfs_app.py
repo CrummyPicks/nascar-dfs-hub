@@ -564,7 +564,7 @@ with st.expander("Settings & Data Upload", expanded=False):
             unsafe_allow_html=True,
         )
         # Raw DB diagnostic — breakdown by sportsbook so we can tell if
-        # Bovada/Action Network/etc are mixed or stale
+        # different sources are mixed or stale
         try:
             import sqlite3 as _sql
             _conn = _sql.connect(str(DB_PATH))
@@ -635,7 +635,7 @@ if not is_prerace and race_id and odds_source != "manual":
         odds_source = ""
 
 # Persist odds to DB for the currently selected race
-# Only auto-save if no higher-priority odds (bovada/manual) exist in DB
+# Only auto-save if no higher-priority odds (imported/manual) exist in DB
 if odds_data and race_id:
     _has_imported = False
     if is_prerace and odds_source in ("auto", "salary_estimate"):

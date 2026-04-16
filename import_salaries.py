@@ -1,5 +1,5 @@
 """
-Import DraftKings/FanDuel salary CSVs and Bovada odds into the database.
+Import DraftKings/FanDuel salary CSVs and sportsbook odds into the database.
 
 Interactive loop: import salaries and/or odds for multiple series, then commit + push once.
 
@@ -199,11 +199,11 @@ def pick_race(series_id, series_name, check_type="salary", platform="DraftKings"
     return all_races[idx]
 
 
-def parse_bovada_odds(text):
-    """Parse odds from Bovada copy-paste text.
+def parse_odds(text):
+    """Parse odds from sportsbook copy-paste text.
 
     Supports formats:
-        Corey Heim+300          (Bovada direct copy)
+        Corey Heim+300          (no-space direct copy)
         Kyle Larson, -115       (comma-separated)
         Chase Elliott +1200     (space-separated)
 
@@ -232,7 +232,7 @@ def parse_bovada_odds(text):
             if len(parts) == 2 and parts[0] and re.match(r'^[+-]?\d+$', parts[1]):
                 odds[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
                 continue
-        # Bovada no-space: "DriverName+300"
+        # No-space format: "DriverName+300"
         m = re.match(r'^(.+?)([+-]\d+)$', line)
         if m and m.group(1).strip():
             odds[m.group(1).strip()] = m.group(2)
@@ -246,12 +246,12 @@ def parse_bovada_odds(text):
 
 
 def import_odds():
-    """Import odds from pasted Bovada text. Returns (race_name, count) or None."""
+    """Import odds from pasted sportsbook text. Returns (race_name, count) or None."""
     series_id, series_name = pick_series()
 
-    print(f"\n  Paste odds from Bovada (or type them in).")
+    print(f"\n  Paste odds from your sportsbook (or type them in).")
     print(f"  Supported formats:")
-    print(f"    Corey Heim+300           (Bovada direct copy)")
+    print(f"    Corey Heim+300           (no-space direct copy)")
     print(f"    Kyle Larson, -115        (comma-separated)")
     print(f"    Chase Elliott +1200      (space-separated)")
     print(f"  Header lines (race name, date, 'Outright') are auto-skipped.")
@@ -280,7 +280,7 @@ def import_odds():
         return None
 
     text = "\n".join(lines)
-    odds_data = parse_bovada_odds(text)
+    odds_data = parse_odds(text)
 
     if not odds_data:
         print("  Could not parse any odds from input. Check format.")
@@ -317,7 +317,7 @@ def import_odds():
             return None
 
     # Save to DB
-    count = save_odds_to_db(odds_data, race_id, sportsbook="bovada", series_id=series_id)
+    count = save_odds_to_db(odds_data, race_id, sportsbook="import", series_id=series_id)
     if count and count > 0:
         print(f"\n  Saved {count} odds for {race_name}!")
         return race_name, count, "odds"
@@ -393,7 +393,7 @@ def import_salary(recent_files):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import DK/FD salaries and Bovada odds")
+    parser = argparse.ArgumentParser(description="Import DK/FD salaries and sportsbook odds")
     parser.add_argument("--no-push", action="store_true", help="Skip git commit + push")
     args = parser.parse_args()
 
@@ -407,7 +407,7 @@ def main():
     while True:
         print(f"\n  What would you like to import?")
         print(f"    [1] DK/FD Salaries (from CSV)")
-        print(f"    [2] Bovada Odds (paste from website)")
+        print(f"    [2] Sportsbook Odds (paste from website)")
         print(f"    [3] Both (salaries + odds for same race)")
         print(f"    [q] Done — commit & push")
 

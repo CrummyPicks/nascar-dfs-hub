@@ -1610,7 +1610,7 @@ def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
 def _fetch_all_nascar_odds(series_id: int = 1) -> dict:
     """Fetch upcoming NASCAR race odds from Action Network (Cup only).
 
-    Primary odds come from the user's manual import (bovada via UI/script).
+    Primary odds come from the user's manual import (via UI paste/script).
     This auto-fetch is a backup for Cup races only — Action Network doesn't
     cover lower series.
 
@@ -1716,7 +1716,7 @@ def _fetch_action_network_odds() -> dict:
 
 
 def fetch_nascar_odds(series_id: int = 1) -> dict:
-    """Fetch win odds. Tries Bovada (all series), then Action Network (Cup only).
+    """Fetch win odds from Action Network (Cup only).
 
     Returns {driver_name: odds_string}.
     """
@@ -1725,7 +1725,7 @@ def fetch_nascar_odds(series_id: int = 1) -> dict:
 
 
 def fetch_nascar_prop_odds(series_id: int = 1) -> dict:
-    """Fetch top3/top5/top10 prop odds from Bovada or Action Network.
+    """Fetch top3/top5/top10 prop odds from Action Network (Cup only).
 
     Returns {"top3": {name: odds_str}, "top5": {name: odds_str}, "top10": {name: odds_str}}.
     """
@@ -2054,9 +2054,9 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
         except Exception:
             pass
 
-    # When importing from script (bovada), remove competing sportsbook entries
+    # When importing from script, remove competing sportsbook entries
     # so the manually-loaded odds become the single source of truth
-    if sportsbook == "bovada":
+    if sportsbook in ("import", "bovada"):
         conn.execute(
             "DELETE FROM odds WHERE race_id = ? AND sportsbook IN ('action_network', 'auto')",
             (db_race_id,)
@@ -2142,7 +2142,8 @@ def load_race_odds(race_id: int, series_id: int = None) -> dict:
         return {}
 
     conn = sqlite3.connect(str(DB_PATH))
-    # Sportsbook priority: bovada (script import) > manual > auto > action_network
+    # Sportsbook priority: import (script import) > manual > auto > action_network
+    # "bovada" kept as alias for historical DB rows
     rows = conn.execute('''
         SELECT d.full_name, o.win_odds, o.sportsbook
         FROM odds o
@@ -2152,7 +2153,7 @@ def load_race_odds(race_id: int, series_id: int = None) -> dict:
     ''', (db_race_id,)).fetchall()
     conn.close()
 
-    SPORTSBOOK_PRIORITY = {"bovada": 0, "manual": 1, "csv_import": 2,
+    SPORTSBOOK_PRIORITY = {"import": 0, "bovada": 0, "manual": 1, "csv_import": 2,
                            "sportsbettingdime": 3, "auto": 4, "action_network": 5}
 
     result = {}
@@ -2202,7 +2203,7 @@ def load_race_prop_odds(race_id: int, series_id: int = None) -> dict:
         ''', (db_race_id,)).fetchall()
     conn.close()
 
-    SPORTSBOOK_PRIORITY = {"bovada": 0, "manual": 1, "csv_import": 2,
+    SPORTSBOOK_PRIORITY = {"import": 0, "bovada": 0, "manual": 1, "csv_import": 2,
                            "sportsbettingdime": 3, "auto": 4, "action_network": 5}
 
     top3 = {}

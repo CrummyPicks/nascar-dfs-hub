@@ -5,7 +5,7 @@ echo   NASCAR DFS - Import Salaries and Odds
 echo ==========================================
 echo.
 echo Import DraftKings/FanDuel salary CSVs
-echo and/or paste Bovada odds from the website.
+echo and/or paste sportsbook odds from the website.
 echo.
 
 cd /d "%~dp0"
