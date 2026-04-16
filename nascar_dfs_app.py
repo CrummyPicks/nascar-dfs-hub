@@ -553,7 +553,7 @@ with st.expander("Settings & Data Upload", expanded=False):
             f'Using {len(odds_data)} odds from: {_src_label}</p>',
             unsafe_allow_html=True,
         )
-    # Debug: show DB odds status for troubleshooting
+    # Debug: show DB odds status for troubleshooting (verbose breakdown by sportsbook)
     if race_id:
         _db_odds = load_race_odds(race_id, series_id)
         _db_count = len(_db_odds) if _db_odds else 0
@@ -563,6 +563,54 @@ with st.expander("Settings & Data Upload", expanded=False):
             f'DB odds for this race: {_db_count} drivers</p>',
             unsafe_allow_html=True,
         )
+        # Raw DB diagnostic — breakdown by sportsbook so we can tell if
+        # Bovada/Action Network/etc are mixed or stale
+        try:
+            import sqlite3 as _sql
+            _conn = _sql.connect(str(DB_PATH))
+            _dbrid_row = _conn.execute(
+                "SELECT id, race_name, race_date FROM races WHERE api_race_id = ? AND series_id = ?",
+                (race_id, series_id)
+            ).fetchone()
+            if _dbrid_row:
+                _dbrid, _rname_db, _rdate_db = _dbrid_row
+                _sb_rows = _conn.execute('''
+                    SELECT sportsbook, COUNT(*) AS n, MAX(scraped_at) AS last_saved
+                    FROM odds WHERE race_id = ?
+                    GROUP BY sportsbook ORDER BY COUNT(*) DESC
+                ''', (_dbrid,)).fetchall()
+                _sample = _conn.execute('''
+                    SELECT d.full_name, o.win_odds, o.sportsbook
+                    FROM odds o JOIN drivers d ON d.id = o.driver_id
+                    WHERE o.race_id = ? ORDER BY o.win_odds ASC LIMIT 3
+                ''', (_dbrid,)).fetchall()
+                _sb_text = " | ".join(
+                    f"{sb}:{n} (saved {ts})" for sb, n, ts in _sb_rows
+                ) if _sb_rows else "none"
+                _sample_text = ", ".join(
+                    f"{n} {('+' + str(int(w))) if w and w > 0 else str(int(w) if w else '?')} [{sb}]"
+                    for n, w, sb in _sample
+                ) if _sample else "—"
+                st.markdown(
+                    f'<p style="color:#64748b;font-size:0.72rem;margin:0.1rem 0;font-family:monospace;">'
+                    f'DB race_id={_dbrid} ({_rname_db}, {_rdate_db})<br/>'
+                    f'Sportsbooks: {_sb_text}<br/>'
+                    f'Top 3: {_sample_text}</p>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<p style="color:#f87171;font-size:0.72rem;margin:0.1rem 0;">'
+                    f'DB has NO race entry for api_race_id={race_id} series_id={series_id}</p>',
+                    unsafe_allow_html=True,
+                )
+            _conn.close()
+        except Exception as _e:
+            st.markdown(
+                f'<p style="color:#f87171;font-size:0.72rem;margin:0.1rem 0;">'
+                f'DB diagnostic error: {_e}</p>',
+                unsafe_allow_html=True,
+            )
 
 
 
