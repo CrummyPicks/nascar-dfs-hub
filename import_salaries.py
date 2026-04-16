@@ -322,8 +322,10 @@ def import_odds():
         print(f"\n  Saved {count} odds for {race_name}!")
         return race_name, count, "odds"
     else:
-        print(f"\n  Saved odds for {race_name}")
-        return race_name, len(odds_data), "odds"
+        print(f"\n  WARNING: 0 odds saved to DB!")
+        print(f"  The race may not have resolved to a DB entry.")
+        print(f"  Try running: python refresh_data.py")
+        return None
 
 
 def import_salary(recent_files):

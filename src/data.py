@@ -1937,24 +1937,44 @@ def _resolve_db_race_id(api_race_id: int, series_id: int = None):
 
 
 def _resolve_db_race_id_with_fallback(race_id: int, series_id: int = None):
-    """Resolve API race_id to DB race_id, with date-based fallback."""
+    """Resolve API race_id to DB race_id, with date-based fallback and auto-create.
+
+    If the race doesn't exist in the DB at all (common for upcoming races),
+    creates a new entry from the API race list data so salaries/odds can be saved.
+    """
     db_race_id = _resolve_db_race_id(race_id, series_id)
     if db_race_id:
         return db_race_id
 
-    # Fallback: try matching by date from API
+    # Fallback: try matching by date from API, or create if not found
     try:
+        from datetime import datetime
+        current_year = datetime.now().year
         search_series = [series_id] if series_id else [1, 2, 3]
-        for sid in search_series:
-            api_url = f"{NASCAR_API_BASE}/2026/{sid}/race_list_basic.json"
-            resp = requests.get(api_url, timeout=10)
-            if resp.status_code != 200:
-                continue
-            for r in resp.json():
-                if r.get("race_id") == race_id:
-                    race_date = (r.get("race_date") or "")[:10]
-                    if race_date:
+        # Try current year and previous year
+        search_years = [current_year, current_year - 1]
+
+        for year in search_years:
+            for sid in search_series:
+                api_url = f"{NASCAR_API_BASE}/{year}/{sid}/race_list_basic.json"
+                resp = requests.get(api_url, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                for r in resp.json():
+                    if r.get("race_id") == race_id:
+                        race_date = (r.get("race_date") or "")[:10]
+                        race_name = r.get("race_name", "")
+                        track_id = r.get("track_id", 0)
+                        scheduled_laps = r.get("scheduled_laps", 0)
+                        scheduled_dist = r.get("scheduled_distance", 0)
+                        race_num = r.get("race_season", year)
+
+                        if not race_date:
+                            break
+
                         conn_tmp = sqlite3.connect(str(DB_PATH))
+
+                        # Try matching by date first
                         row = conn_tmp.execute(
                             "SELECT id FROM races WHERE race_date = ? AND series_id = ?",
                             (race_date, sid)
@@ -1966,7 +1986,27 @@ def _resolve_db_race_id_with_fallback(race_id: int, series_id: int = None):
                                 (race_id, db_race_id)
                             )
                             conn_tmp.commit()
+                        else:
+                            # Create the race entry so odds/salaries can be saved
+                            # Determine race_num (sequential within season)
+                            max_num = conn_tmp.execute(
+                                "SELECT COALESCE(MAX(race_num), 0) FROM races WHERE series_id = ? AND season = ?",
+                                (sid, year)
+                            ).fetchone()[0]
+                            conn_tmp.execute('''
+                                INSERT INTO races (series_id, track_id, season, race_num, race_name,
+                                                   race_date, laps, miles, api_race_id)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (sid, track_id, year, max_num + 1, race_name,
+                                  race_date, scheduled_laps, scheduled_dist, race_id))
+                            conn_tmp.commit()
+                            db_race_id = conn_tmp.execute(
+                                "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                            ).fetchone()[0]
+
                         conn_tmp.close()
+                        break
+                if db_race_id:
                     break
             if db_race_id:
                 break
