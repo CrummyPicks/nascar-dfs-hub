@@ -616,9 +616,9 @@ def _generate_race_projections(race, series_id, weights=None):
                     continue
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    rounded = round_odds(oval)
+                    # Preserve raw odds — sportsbook already posts clean values
                     driver_odds_display[matched] = {
-                        "odds_str": rounded,
+                        "odds_str": oval,
                         "impl_pct": round(impl, 1),
                     }
             except (ValueError, TypeError):
@@ -1750,8 +1750,8 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                         continue
                     matched = fuzzy_match_name(name, drivers)
                     if matched:
-                        rounded = round_odds(oval)
-                        driver_odds_display[matched] = {"odds_str": rounded, "impl_pct": round(impl, 1)}
+                        # Preserve raw odds — sportsbook already posts clean values
+                        driver_odds_display[matched] = {"odds_str": oval, "impl_pct": round(impl, 1)}
                 except (ValueError, TypeError):
                     continue
 

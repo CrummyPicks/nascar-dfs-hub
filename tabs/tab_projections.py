@@ -1118,7 +1118,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                        f"Odds weight redistributed to other signals.")
 
     # ── Build odds display lookup for the projections table ──────────────────
-    from src.data import round_odds
+    # Preserve raw odds values — sportsbooks already post clean rounded numbers
+    # and further bucketing corrupts the user's paste (e.g. +550 → +600).
     driver_odds_display = {}  # d -> {"odds_str": "+350", "impl_pct": 22.2}
     if odds_data:
         for name, odds_str in odds_data.items():
@@ -1134,9 +1135,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     continue
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    rounded = round_odds(oval)
                     driver_odds_display[matched] = {
-                        "odds_str": rounded,  # numeric for sorting
+                        "odds_str": oval,  # raw numeric for sorting
                         "impl_pct": round(impl, 1),
                     }
             except (ValueError, TypeError):

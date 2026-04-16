@@ -82,16 +82,16 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     if not fd_df.empty:
         master = fuzzy_merge(master, fd_df, on="Driver", how="left")
 
-    # Betting odds (store as numeric for proper sorting, rounded for display)
+    # Betting odds (preserve raw values — Bovada/Action Network already post
+    # clean rounded odds; re-bucketing here was corrupting the user's paste,
+    # e.g. +550 → +600)
     if odds_data:
-        from src.data import round_odds
         from src.utils import normalize_driver_name
         def _parse_odds(v):
             if v is None or str(v).strip() in ("", "None", "null"):
                 return None
             try:
-                raw = int(float(str(v).replace("+", "")))
-                return round_odds(raw)
+                return int(float(str(v).replace("+", "")))
             except (ValueError, TypeError):
                 return None
         # Use normalized + fuzzy matching to handle name format differences
