@@ -85,6 +85,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     # Betting odds (store as numeric for proper sorting, rounded for display)
     if odds_data:
         from src.data import round_odds
+        from src.utils import normalize_driver_name
         def _parse_odds(v):
             if v is None or str(v).strip() in ("", "None", "null"):
                 return None
@@ -93,14 +94,35 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
                 return round_odds(raw)
             except (ValueError, TypeError):
                 return None
-        # Use fuzzy matching to handle name format differences (Jr. vs Jr, etc.)
+        # Use normalized + fuzzy matching to handle name format differences
+        # (Jr. vs Jr, Suárez vs Suarez, A.J. vs AJ, etc.)
         odds_keys = list(odds_data.keys())
+        # Pre-build normalized lookup for fast matching
+        _norm_odds = {normalize_driver_name(k): v for k, v in odds_data.items()}
         def _match_odds(driver):
+            # Direct match
             if driver in odds_data:
                 return odds_data[driver]
+            # Normalized match (handles periods, accents, suffixes)
+            norm = normalize_driver_name(driver)
+            if norm in _norm_odds:
+                return _norm_odds[norm]
+            # Fuzzy fallback
             matched = fuzzy_match_name(driver, odds_keys)
             return odds_data.get(matched) if matched else None
         master["Win Odds"] = master["Driver"].map(_match_odds).map(_parse_odds)
+
+        # Diagnostic: show how many odds matched vs. total
+        _matched = master["Win Odds"].notna().sum()
+        _total_drivers = len(master)
+        if _matched == 0 and len(odds_data) > 0:
+            # No matches at all — show debugging info to help identify the mismatch
+            _sample_odds = list(odds_data.keys())[:3]
+            _sample_drivers = master["Driver"].head(3).tolist()
+            st.warning(
+                f"Odds loaded ({len(odds_data)}) but 0 matched to entry list. "
+                f"Sample odds names: {_sample_odds}  •  Sample driver names: {_sample_drivers}"
+            )
 
     # Top 3 / Top 5 / Top 10 finish odds (informational only, from sportsbook)
     if prop_odds is None:
