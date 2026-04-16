@@ -458,6 +458,68 @@ def import_odds_csv(csv_path: str):
         print(f"  Error importing CSV: {e}")
 
 
+def _prepopulate_upcoming_races(year=2026):
+    """Ensure all races from the API schedule exist in the DB.
+
+    The API has the full season schedule. Without this, upcoming races
+    won't have DB entries and odds/salary imports will silently fail.
+    """
+    import sqlite3
+    from src.config import DB_PATH
+    from src.data import fetch_race_list
+
+    conn = sqlite3.connect(str(DB_PATH))
+    total_created = 0
+
+    for series_id in [1, 2, 3]:
+        series_name = {1: "Cup", 2: "Xfinity", 3: "Truck"}[series_id]
+        races = fetch_race_list(series_id, year)
+        if not races:
+            continue
+
+        existing = set(
+            r[0] for r in conn.execute(
+                "SELECT api_race_id FROM races WHERE series_id = ? AND season = ? AND api_race_id IS NOT NULL",
+                (series_id, year)
+            ).fetchall()
+        )
+
+        created = 0
+        for race in races:
+            api_id = race.get("race_id")
+            if api_id in existing:
+                continue
+
+            track_name = race.get("track_name", "")
+            track_row = conn.execute("SELECT id FROM tracks WHERE name = ?", (track_name,)).fetchone()
+            if not track_row:
+                conn.execute("INSERT INTO tracks (name) VALUES (?)", (track_name,))
+                track_row = conn.execute("SELECT id FROM tracks WHERE name = ?", (track_name,)).fetchone()
+
+            race_date = (race.get("race_date") or "")[:10]
+            max_num = conn.execute(
+                "SELECT COALESCE(MAX(race_num), 0) FROM races WHERE series_id = ? AND season = ?",
+                (series_id, year)
+            ).fetchone()[0]
+
+            conn.execute('''
+                INSERT OR IGNORE INTO races (series_id, track_id, season, race_num, race_name,
+                                             race_date, laps, miles, api_race_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (series_id, track_row[0], year, max_num + 1, race.get("race_name", ""),
+                  race_date, race.get("scheduled_laps", 0), race.get("scheduled_distance", 0), api_id))
+            created += 1
+
+        if created:
+            print(f"  Pre-populated {created} upcoming {series_name} races for {year}")
+            total_created += created
+
+    conn.commit()
+    conn.close()
+    if total_created:
+        print(f"  Total: {total_created} new race entries created")
+
+
 def main():
     parser = argparse.ArgumentParser(description="NASCAR DFS Hub — Data Refresh")
     parser.add_argument("--series", type=str, default="cup",
@@ -508,6 +570,9 @@ def main():
     # Verify existing api_race_ids, then backfill missing ones
     verify_api_race_ids()
     backfill_api_race_ids()
+
+    # Pre-populate all upcoming races for the season so odds/salaries can be saved
+    _prepopulate_upcoming_races(args.year)
 
     # Fetch odds if requested or during normal refresh
     if args.odds or not args.race:
