@@ -128,6 +128,104 @@ def sync_race_schedule_from_api(series_id: int, year: int, verbose: bool = False
     return summary
 
 
+def merge_duplicate_drivers(verbose: bool = False) -> dict:
+    """Find and merge duplicate driver entries.
+
+    Detection: two driver rows whose normalize_driver_name() output matches.
+    Examples it catches:
+      - "A.J. Allmendinger" vs "AJ Allmendinger"  (period stripping)
+      - "Daniel Suárez" vs "Daniel Suarez"         (accent folding)
+      - "Corey LaJoie" vs "Corey Lajoie"           (case)
+      - "John H. Nemechek" vs "John Hunter Nemechek" (via DRIVER_ALIASES)
+
+    Merge strategy for each group of duplicates:
+      1. Canonical driver = the row with the most race_results (most proven
+         real), tiebreak on lowest ID. If tied at zero race_results, keep
+         the prettier display name (most accented / most periods, since
+         that's usually the "official" NASCAR spelling).
+      2. UPDATE all foreign keys (race_results, salaries, odds, dfs_points)
+         to point to the canonical driver_id.
+      3. DELETE the duplicate driver rows.
+
+    Returns {"groups_merged": int, "drivers_deleted": int, "rows_rekeyed": int}.
+    """
+    from src.utils import normalize_driver_name
+    summary = {"groups_merged": 0, "drivers_deleted": 0, "rows_rekeyed": 0}
+    if not DB_PATH.exists():
+        return summary
+
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+
+    # Group all drivers by normalized key
+    all_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
+    groups = {}
+    for row in all_drivers:
+        key = normalize_driver_name(row["full_name"])
+        if not key:
+            continue
+        groups.setdefault(key, []).append(dict(row))
+
+    def _score_row(r):
+        """Higher score = better canonical choice.
+
+        Primary: race_results count (real data wins).
+        Secondary: name has accents (prefer "Suárez" over "Suarez" — official).
+        Tertiary: lower id (older entry, more historically linked).
+        """
+        rr = conn.execute(
+            "SELECT COUNT(*) FROM race_results WHERE driver_id = ?", (r["id"],)
+        ).fetchone()[0]
+        has_accent = any(ord(c) > 127 for c in r["full_name"])
+        # Large primary, moderate tiebreakers
+        return (rr, 1 if has_accent else 0, -r["id"])
+
+    for key, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        # Pick canonical
+        canonical = max(rows, key=_score_row)
+        others = [r for r in rows if r["id"] != canonical["id"]]
+        if not others:
+            continue
+
+        if verbose:
+            names = " | ".join(f"{r['full_name']} (id={r['id']})" for r in rows)
+            print(f"  merging [{key}]: {names} -> canonical id={canonical['id']} '{canonical['full_name']}'")
+
+        # Rekey all foreign keys to canonical
+        for o in others:
+            dup_id = o["id"]
+            for table in ["race_results", "salaries", "odds", "dfs_points"]:
+                try:
+                    # UPDATE OR IGNORE to avoid duplicate PK conflicts when
+                    # the canonical already has an entry for (race_id, driver_id).
+                    # race_results + dfs_points + odds have UNIQUE on (race_id,
+                    # driver_id[, platform/sportsbook]); in that case we keep
+                    # the canonical's row and just drop the duplicate's.
+                    cur = conn.execute(
+                        f"UPDATE OR IGNORE {table} SET driver_id = ? WHERE driver_id = ?",
+                        (canonical["id"], dup_id)
+                    )
+                    summary["rows_rekeyed"] += cur.rowcount
+                    # Delete remaining rows (those that couldn't be rekeyed
+                    # due to unique conflict — canonical already has that row)
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE driver_id = ?", (dup_id,)
+                    )
+                except Exception:
+                    pass
+
+            conn.execute("DELETE FROM drivers WHERE id = ?", (dup_id,))
+            summary["drivers_deleted"] += 1
+
+        summary["groups_merged"] += 1
+
+    conn.commit()
+    conn.close()
+    return summary
+
+
 def sync_all_schedules(years: list = None, verbose: bool = False) -> dict:
     """Run sync_race_schedule_from_api for all 3 series across given years.
 
@@ -2549,10 +2647,21 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
                         break
             fastest = fastest or 0
 
-            # Find or create driver
+            # Find or create driver — normalized lookup prevents duplicates
+            # from name variations (A.J./AJ, Suárez/Suarez, Jr./Jr, etc.).
+            # See src.utils.normalize_driver_name for the normalization rules.
+            from src.utils import normalize_driver_name as _norm
+            _norm_key = _norm(driver_name)
             d = conn.execute(
                 "SELECT id FROM drivers WHERE full_name = ?", (driver_name,)
             ).fetchone()
+            if not d and _norm_key:
+                # Scan existing drivers for a normalized match
+                existing = conn.execute("SELECT id, full_name FROM drivers").fetchall()
+                for row in existing:
+                    if _norm(row["full_name"]) == _norm_key:
+                        d = {"id": row["id"]}
+                        break
             if not d:
                 conn.execute("INSERT INTO drivers (full_name) VALUES (?)", (driver_name,))
                 d = conn.execute(

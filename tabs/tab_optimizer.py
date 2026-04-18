@@ -531,22 +531,30 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         )
         rec_low = _dom_rec.get("recommended_low", _dom_rec["recommended"])
         rec_high = _dom_rec.get("recommended_high", _dom_rec["recommended"])
-        if rec_low == rec_high:
-            _rec_label = f"**{rec_low}** dominator{'s' if rec_low != 1 else ''}"
+        rec_str = f"{rec_low}" if rec_low == rec_high else f"{rec_low}-{rec_high}"
+        rec_plural = "s" if rec_high != 1 else ""
+        n_pool_doms = len(_proj_doms)
+
+        # Source line — track-specific vs track-type fallback
+        races_n = _dom_rec.get("races_analyzed", 0)
+        if _dom_rec.get("scope") == "track":
+            source = (f"Based on {races_n} prior {track_name} race"
+                      f"{'s' if races_n != 1 else ''} "
+                      f"(avg {_dom_rec['avg']:.1f}).")
+        elif _dom_rec.get("scope") == "track_type":
+            tt_label = _track_type_lookup.replace("_", " ").title()
+            source = (f"Based on {races_n} prior {tt_label} races "
+                      f"(track-specific history not available; avg {_dom_rec['avg']:.1f}).")
         else:
-            _rec_label = f"**{rec_low}-{rec_high}** dominators"
-        _pool_tally = (
-            f"  •  Pool currently has {len(_proj_doms)} driver"
-            f"{'s' if len(_proj_doms) != 1 else ''} meeting the "
-            f"{_dom_threshold:.0f}-pt dominator threshold "
-            f"for {_track_type_lookup.replace('_', ' ')} tracks"
-            if _proj_doms else
-            f"  •  No drivers in pool meet the {_dom_threshold:.0f}-pt "
-            f"dominator threshold for {_track_type_lookup.replace('_', ' ')} tracks"
-        )
+            source = "Track-type default (insufficient historical data)."
+
+        # Render as 3 short lines for readability instead of a run-on sentence
         st.info(
-            f"**Dominator guidance:** target {_rec_label} for {track_name}. "
-            f"{_dom_rec['rationale']}{_pool_tally}"
+            f"**Dominator guidance — {track_name}**\n\n"
+            f"**Target:** {rec_str} dominator{rec_plural} per lineup  •  "
+            f"**Current pool:** {n_pool_doms} driver{'s' if n_pool_doms != 1 else ''} "
+            f"meeting the {_dom_threshold:.0f}-pt LL+FL threshold\n\n"
+            f"_{source}_"
         )
     except Exception:
         # Non-fatal — banner is informational only

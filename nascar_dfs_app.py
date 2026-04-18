@@ -675,6 +675,36 @@ if not is_prerace and lap_data and race_id:
     if _arp:
         save_arp_to_db(_arp, race_id)
 
+# Auto-persist race_results to DB when viewing a completed race whose results
+# haven't been stored yet. Without this, completed races are only populated in
+# the DB when the user explicitly runs refresh_data.py — causing DB Health to
+# correctly (but confusingly) flag "missing results" for races that already
+# finished. Only run once per session per race to avoid repeated work.
+if not is_prerace and feed and race_id:
+    _results_save_key = f"results_autosaved_{series_id}_{race_id}"
+    if _results_save_key not in st.session_state:
+        try:
+            import sqlite3 as _sql
+            _conn = _sql.connect(str(DB_PATH))
+            _db_race = _conn.execute(
+                "SELECT id FROM races WHERE api_race_id = ? AND series_id = ?",
+                (race_id, series_id)
+            ).fetchone()
+            _needs_save = False
+            if _db_race:
+                _n = _conn.execute(
+                    "SELECT COUNT(*) FROM race_results WHERE race_id = ?",
+                    (_db_race[0],)
+                ).fetchone()[0]
+                _needs_save = (_n == 0)
+            _conn.close()
+            if _needs_save:
+                from src.data import fetch_and_store_race
+                fetch_and_store_race(series_id, race_id, selected_year)
+            st.session_state[_results_save_key] = True
+        except Exception:
+            pass  # never block the app if auto-save fails
+
 qualifying_df = extract_qualifying(feed) if feed else pd.DataFrame()
 entry_list_df = extract_entry_list(feed) if feed else pd.DataFrame()
 

@@ -590,6 +590,18 @@ def main():
     else:
         print("  Schedule is already in sync with API — no changes.")
 
+    # Merge any duplicate driver entries that accumulated from name-variation
+    # mismatches between data sources (A.J. vs AJ, Suárez vs Suarez, etc.).
+    print("\nMerging duplicate driver entries...")
+    from src.data import merge_duplicate_drivers
+    dup_totals = merge_duplicate_drivers(verbose=True)
+    if dup_totals["groups_merged"] > 0:
+        print(f"  Merged {dup_totals['groups_merged']} duplicate groups, "
+              f"rekeyed {dup_totals['rows_rekeyed']} foreign-key rows, "
+              f"deleted {dup_totals['drivers_deleted']} duplicate driver rows.")
+    else:
+        print("  No duplicate drivers found — all names are canonical.")
+
     # Fetch odds if requested or during normal refresh
     if args.odds or not args.race:
         series_id = SERIES_MAP.get(args.series.lower(), 1)
