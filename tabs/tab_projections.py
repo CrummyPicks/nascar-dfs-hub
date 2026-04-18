@@ -34,29 +34,10 @@ PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _find_db_race_id(series_id, race_name, track_name):
-    """Try to find a matching race_id in the database."""
-    if not os.path.exists(PROJ_DB):
-        return None
-    try:
-        conn = sqlite3.connect(PROJ_DB)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
-            (series_id, race_name)
-        ).fetchone()
-        if row:
-            conn.close()
-            return row["id"]
-        row = conn.execute("""
-            SELECT r.id FROM races r JOIN tracks t ON t.id = r.track_id
-            WHERE r.series_id = ? AND t.name LIKE ?
-            ORDER BY r.season DESC, r.race_num DESC LIMIT 1
-        """, (series_id, f"%{track_name}%")).fetchone()
-        conn.close()
-        return row["id"] if row else None
-    except Exception:
-        return None
+# Removed: _find_db_race_id() had an unsafe race_name-only fallback that
+# could resolve a recurring race (e.g. "Kansas Lottery 300") to the wrong
+# year. Use src.data._resolve_db_race_id(api_race_id, series_id) instead,
+# which is uniqueness-safe.
 
 
 def _run_projection_engine(race_id, platform, weights):
