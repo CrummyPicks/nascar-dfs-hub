@@ -574,6 +574,77 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         return {}
 
 
+def query_driver_dk_points_by_track_type(
+    track_type: str,
+    series_id: int,
+    season: int,
+    before_date: str = None,
+    exclude_track: str = None,
+) -> dict:
+    """Compute per-driver avg/best/worst DK points at tracks of a given TYPE
+    within a single season. Useful for "how have drivers done at similar
+    tracks this year?" — captures current-season form.
+
+    Args:
+        track_type: e.g. "intermediate", "short", "superspeedway"
+        series_id: 1=Cup, 2=O'Reilly, 3=Truck
+        season: year (e.g. 2026)
+        before_date: if set, only races before this date (YYYY-MM-DD).
+        exclude_track: if set, exclude races at this track name (e.g. to
+            avoid double-counting the track the user is currently viewing).
+
+    Returns {driver_name: {"avg_dk": X, "best_dk": Y, "worst_dk": Z, "races": N}}.
+    """
+    if not DB_PATH.exists() or not track_type:
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where = (
+            "WHERE t.track_type = ? AND r.series_id = ? AND r.season = ? "
+            "AND rr.finish_pos IS NOT NULL"
+        )
+        params = [track_type, series_id, season]
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+        if exclude_track:
+            where += " AND t.name != ?"
+            params.append(exclude_track)
+
+        rows = conn.execute(f'''
+            SELECT d.full_name, rr.finish_pos, rr.start_pos,
+                   rr.laps_led, rr.fastest_laps, r.race_name, r.race_date
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            {where}
+            ORDER BY r.race_date DESC
+        ''', params).fetchall()
+        conn.close()
+
+        from src.utils import calc_dk_points
+        driver_scores = {}
+        for name, finish, start, ll, fl, _rname, _rdate in rows:
+            if finish is None or start is None:
+                continue
+            dk = calc_dk_points(finish, start, ll or 0, fl or 0)
+            driver_scores.setdefault(name, []).append(dk)
+
+        result = {}
+        for name, scores in driver_scores.items():
+            if scores:
+                result[name] = {
+                    "avg_dk": round(sum(scores) / len(scores), 1),
+                    "best_dk": round(max(scores), 1),
+                    "worst_dk": round(min(scores), 1),
+                    "races": len(scores),
+                }
+        return result
+    except Exception:
+        return {}
+
+
 def query_driver_career_dnf(series_id: int, before_date: str = None) -> dict:
     """Query career DNF and crash rates for all drivers.
 

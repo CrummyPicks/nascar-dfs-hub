@@ -784,6 +784,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     )
     dk_hist_names = list(dk_history.keys())
 
+    # ── Current-season DK points at SIMILAR tracks (track type, excluding this one) ──
+    # This captures who's in form right now at this type of racing. E.g. at
+    # Kansas we pull in Vegas, Texas, Charlotte, Homestead, etc. from 2026.
+    from src.data import query_driver_dk_points_by_track_type as _query_tt_dk
+    similar_tt_dk = _query_tt_dk(
+        track_type=track_type,
+        series_id=series_id,
+        season=season,
+        before_date=race_date if not is_prerace else None,
+        exclude_track=track_name,
+    )
+    similar_tt_names = list(similar_tt_dk.keys())
+
     # Build cross-series track history lookup
     cross_th_lookup = {}
     if not cross_th_df.empty:
@@ -1171,6 +1184,14 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         best_dk_track = dk_hist["best_dk"] if dk_hist else None
         worst_dk_track = dk_hist["worst_dk"] if dk_hist else None
 
+        # Current-season DK performance at similar tracks (track type)
+        sim = similar_tt_dk.get(d)
+        if not sim:
+            matched_sim = fuzzy_match_name(d, similar_tt_names) if similar_tt_names else None
+            sim = similar_tt_dk.get(matched_sim) if matched_sim else None
+        sim_avg_dk = sim["avg_dk"] if sim else None
+        sim_races = sim["races"] if sim else 0
+
         odds_info = driver_odds_display.get(d, {})
         odds_val = odds_info.get("odds_str", None)
         odds_numeric = odds_val if isinstance(odds_val, (int, float)) else None
@@ -1191,6 +1212,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "Avg DK": avg_dk_track,
             "Best DK": best_dk_track,
             "Worst DK": worst_dk_track,
+            "Avg DK (Similar)": sim_avg_dk,
+            "Similar Races": sim_races,
             "Start": pr["start"],
             "Sig Odds": sig.get("Odds"),
             "Sig Track": sig.get("Track"),
@@ -1317,7 +1340,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     display_cols.extend(["Proj Finish", "PD Upside",
                          "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
-                         "Avg DK", "Best DK", "Worst DK"]
+                         "Avg DK", "Best DK", "Worst DK",
+                         "Avg DK (Similar)", "Similar Races"]
                         )
     # Signal detail columns at the end — practice before qualifying
     display_cols.extend(["Sig Odds", "Sig Track", "Sig TType",
