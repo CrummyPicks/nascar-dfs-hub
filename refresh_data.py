@@ -574,6 +574,22 @@ def main():
     # Pre-populate all upcoming races for the season so odds/salaries can be saved
     _prepopulate_upcoming_races(args.year)
 
+    # Reconcile DB race rows against the live NASCAR API schedule.
+    # This fixes the issue where races that get moved or renamed mid-season
+    # leave stale dates/names in the DB. We sync current and prior season
+    # (older seasons are immutable in the API so no point).
+    print("\nSyncing race schedule against live NASCAR API...")
+    from src.data import sync_all_schedules
+    from datetime import datetime as _dt
+    cur_year = _dt.now().year
+    totals = sync_all_schedules(years=[cur_year - 1, cur_year], verbose=True)
+    if any(totals.values()):
+        print(f"  Updated {totals['dates_updated']} dates, "
+              f"{totals['names_updated']} names, "
+              f"deleted {totals['placeholders_deleted']} stale placeholders")
+    else:
+        print("  Schedule is already in sync with API — no changes.")
+
     # Fetch odds if requested or during normal refresh
     if args.odds or not args.race:
         series_id = SERIES_MAP.get(args.series.lower(), 1)

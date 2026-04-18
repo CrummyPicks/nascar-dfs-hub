@@ -50,6 +50,103 @@ def fetch_race_list(series_id: int, year: int = 2026) -> list:
         return []
 
 
+def sync_race_schedule_from_api(series_id: int, year: int, verbose: bool = False) -> dict:
+    """Reconcile DB race rows against the live NASCAR API race_list_basic.
+
+    Why this exists: the DB caches race metadata (date, name) at the time of
+    first scrape. When NASCAR updates the schedule later — moving a race to
+    a different weekend, renaming it for a new sponsor — our DB keeps the
+    stale values. This function pulls the current API schedule and UPDATEs
+    any DB row whose api_race_id matches, fixing dates and names in place.
+
+    Also deletes clearly-stale placeholder rows (no api_race_id, zero
+    dependent data — no race_results/salaries/odds).
+
+    Returns a summary dict: {dates_updated, names_updated, placeholders_deleted}.
+    """
+    summary = {"dates_updated": 0, "names_updated": 0, "placeholders_deleted": 0}
+    if not DB_PATH.exists():
+        return summary
+    try:
+        api_data = fetch_race_list(series_id, year)
+        if not api_data:
+            return summary
+
+        api_by_id = {
+            r["race_id"]: {
+                "date": (r.get("race_date") or "")[:10],
+                "name": r.get("race_name", ""),
+            }
+            for r in api_data if r.get("race_id")
+        }
+
+        conn = sqlite3.connect(str(DB_PATH))
+        # 1. Update stale dates/names where api_race_id matches
+        rows = conn.execute(
+            "SELECT id, api_race_id, race_date, race_name FROM races "
+            "WHERE series_id = ? AND season = ? AND api_race_id IS NOT NULL",
+            (series_id, year)
+        ).fetchall()
+        for db_id, api_id, db_date, db_name in rows:
+            api = api_by_id.get(api_id)
+            if not api:
+                continue
+            # Date sync
+            if db_date and api["date"] and db_date[:10] != api["date"]:
+                conn.execute("UPDATE races SET race_date = ? WHERE id = ?",
+                             (api["date"], db_id))
+                summary["dates_updated"] += 1
+                if verbose:
+                    print(f"  date  db={db_id}  {db_date[:10]} -> {api['date']}  ({db_name[:30]})")
+            # Name sync — only when our name is stale (API has updated sponsor)
+            if api["name"] and db_name != api["name"]:
+                conn.execute("UPDATE races SET race_name = ? WHERE id = ?",
+                             (api["name"], db_id))
+                summary["names_updated"] += 1
+                if verbose:
+                    print(f"  name  db={db_id}  '{db_name[:30]}' -> '{api['name'][:30]}'")
+
+        # 2. Delete placeholder rows (no api_race_id + no dependent data)
+        placeholders = conn.execute('''
+            SELECT id, race_name, race_date FROM races
+            WHERE series_id = ? AND season = ? AND api_race_id IS NULL
+              AND NOT EXISTS (SELECT 1 FROM race_results WHERE race_id = races.id)
+              AND NOT EXISTS (SELECT 1 FROM salaries WHERE race_id = races.id)
+              AND NOT EXISTS (SELECT 1 FROM odds WHERE race_id = races.id)
+        ''', (series_id, year)).fetchall()
+        for db_id, name, date in placeholders:
+            conn.execute("DELETE FROM races WHERE id = ?", (db_id,))
+            summary["placeholders_deleted"] += 1
+            if verbose:
+                print(f"  del   db={db_id}  '{name[:30]}' date={date[:10] if date else '?'}")
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        if verbose:
+            print(f"  sync_race_schedule_from_api error: {e}")
+    return summary
+
+
+def sync_all_schedules(years: list = None, verbose: bool = False) -> dict:
+    """Run sync_race_schedule_from_api for all 3 series across given years.
+
+    Default: sync the current season and the prior season (fresh races only —
+    historical seasons are immutable in the API). Returns aggregate summary.
+    """
+    from datetime import datetime
+    if years is None:
+        cur = datetime.now().year
+        years = [cur - 1, cur]
+    totals = {"dates_updated": 0, "names_updated": 0, "placeholders_deleted": 0}
+    for year in years:
+        for sid in [1, 2, 3]:
+            res = sync_race_schedule_from_api(sid, year, verbose=verbose)
+            for k in totals:
+                totals[k] += res[k]
+    return totals
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_weekend_feed(series_id: int, race_id: int, year: int = 2026) -> Optional[dict]:
     """Fetch weekend feed (entry list, qualifying, practice, results)."""
