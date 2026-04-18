@@ -174,6 +174,45 @@ def _find_duplicate_drivers(conn) -> pd.DataFrame:
     return pd.DataFrame(out).sort_values("Count", ascending=False) if out else pd.DataFrame()
 
 
+def _find_duplicate_races(conn) -> pd.DataFrame:
+    """Find races with the same (series_id, season, race_date) — indicates
+    either a genuine doubleheader (rare) or a stale schedule entry that
+    wasn't cleaned up when the API's race list changed.
+
+    Excludes Daytona Duels (pre-season qualifying races, legitimately
+    scheduled on the same day).
+    """
+    rows = conn.execute('''
+        SELECT r1.id, r1.series_id, r1.season, r1.race_date, r1.race_name,
+               r1.api_race_id,
+               (SELECT COUNT(*) FROM race_results WHERE race_id = r1.id) as nr,
+               (SELECT COUNT(*) FROM salaries WHERE race_id = r1.id) as ns,
+               (SELECT COUNT(*) FROM odds WHERE race_id = r1.id) as no
+        FROM races r1
+        WHERE EXISTS (
+            SELECT 1 FROM races r2
+            WHERE r2.series_id = r1.series_id
+              AND r2.season = r1.season
+              AND r2.race_date = r1.race_date
+              AND r2.id != r1.id
+        )
+        AND r1.race_name NOT LIKE '%Duel%'
+        ORDER BY r1.race_date, r1.series_id
+    ''').fetchall()
+    series_names = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
+    return pd.DataFrame([{
+        "DB ID": r[0],
+        "Series": series_names.get(r[1], str(r[1])),
+        "Season": r[2],
+        "Date": (r[3] or "")[:10],
+        "Race": r[4],
+        "API ID": r[5] if r[5] else "—",
+        "Results": r[6],
+        "Salaries": r[7],
+        "Odds": r[8],
+    } for r in rows])
+
+
 def _find_races_without_api_race_id(conn) -> pd.DataFrame:
     """Races without an api_race_id can't be resolved by the NASCAR API."""
     rows = conn.execute('''
@@ -302,6 +341,24 @@ def render(*, series_id: int = None, selected_year: int = None):
             f"salaries={orphans['salaries']}, odds={orphans['odds']}, "
             f"race_results={orphans['race_results']}"
         )
+
+    st.divider()
+
+    # ── Duplicate races (same date, same series) ──
+    st.markdown("### 📅 Duplicate races on the same date")
+    st.caption(
+        "Races with the same (series, season, date) but different DB IDs. "
+        "Usually stale schedule entries from pre-season that weren't cleaned "
+        "up when the NASCAR API updated the schedule. Pre-season Daytona "
+        "Duels are excluded automatically. "
+        "**Safe to delete:** rows with no api_race_id, 0 results, 0 salaries, 0 odds."
+    )
+    dup_race_df = _find_duplicate_races(conn)
+    if dup_race_df.empty:
+        st.success("✅ No duplicate race-date entries detected.")
+    else:
+        st.warning(f"⚠️ Found {len(dup_race_df)} races sharing dates with another race:")
+        st.dataframe(dup_race_df, width="stretch", hide_index=True)
 
     st.divider()
 
