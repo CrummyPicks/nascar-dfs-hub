@@ -104,10 +104,23 @@ def compute_projections(
             sigs["ttype"] = tt_regressed
             sig_w["ttype"] = tt_weight
 
-        # Qualifying signal
+        # Qualifying signal.
+        # When we have history: regress slightly toward mid-field (qual tends to
+        # overstate race pace). When we have NO history, we should NOT regress
+        # toward mid-field — that would inflate inexperienced drivers' projections
+        # by blending them with ghost-average performers. Instead, anchor on the
+        # qualifying position and regress slightly toward the BACK of the field,
+        # since rookies with no track data typically fade in race conditions.
+        has_real_history = (th and th.get("races", 0) >= 2) or \
+                           (tt and isinstance(tt, dict) and tt.get("races", 0) >= 3)
         if qp and qp <= field_size and wn.get("qual", 0) > 0:
-            has_history = bool(th or tt)
-            qual_finish = qp * 0.80 + mid_field * 0.20 if has_history else qp * 0.40 + mid_field * 0.60
+            if has_real_history:
+                qual_finish = qp * 0.80 + mid_field * 0.20
+            else:
+                # No experience anchor — project slightly worse than start,
+                # never better. Weight toward back of field (field_size * 0.85).
+                back_field = field_size * 0.85
+                qual_finish = qp * 0.70 + back_field * 0.30
             sigs["qual"] = qual_finish
             sig_w["qual"] = wn["qual"]
 
@@ -123,10 +136,11 @@ def compute_projections(
             sigs["prac"] = prac_finish
             sig_w["prac"] = wn.get("practice", 0)
 
-        # Odds signal
+        # Odds signal. Same fix as qual: when driver has no history, don't
+        # blend toward mid-field (which helps longshots too much). Let odds
+        # stand on their own — Vegas already accounts for driver quality.
         if od and wn.get("odds", 0) > 0:
-            has_history = bool(th or tt)
-            odds_val = od if has_history else od * 0.60 + mid_field * 0.40
+            odds_val = od  # use as-is; Vegas is the best no-history signal
             sigs["odds"] = odds_val
             sig_w["odds"] = wn["odds"]
 
@@ -213,6 +227,19 @@ def compute_projections(
             raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
             raw_finish = field_size * 0.75
+
+        # Low-information penalty: when a driver has few quality signals, we
+        # should not trust the remaining signal(s) at full confidence. This
+        # prevents inexperienced drivers from projecting well off of a single
+        # qualifying lap or a single odds quote. Blend toward back-of-field
+        # proportional to how little data we have.
+        signal_count = len([s for s in sigs if s not in ("team",)])
+        # "team" isn't driver-specific context so we exclude it from the count
+        confidence = min(1.0, signal_count / 3.0)  # full trust only at 3+ signals
+        if confidence < 1.0:
+            back_field_anchor = field_size * 0.85
+            raw_finish = raw_finish * confidence + back_field_anchor * (1 - confidence)
+            sig_detail["LowInfo"] = f"{signal_count}sig"
 
         # Manufacturer adjustment
         mfr_adj = mfr_adjustment.get(d, 0) if mfr_adjustment else 0

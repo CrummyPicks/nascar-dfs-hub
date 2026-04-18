@@ -200,6 +200,18 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         0
     )
 
+    # Merge projected ownership + leverage if projections tab ran
+    own_map = st.session_state.get("proj_own_map", {})
+    if own_map:
+        own_norm = build_norm_lookup(own_map)
+        pool["Proj Own %"] = pool["Driver"].map(
+            lambda d: fuzzy_get(d, own_map, own_norm) or 0).round(1)
+    lev_map = st.session_state.get("proj_leverage_map", {})
+    if lev_map:
+        lev_norm = build_norm_lookup(lev_map)
+        pool["Leverage"] = pool["Driver"].map(
+            lambda d: fuzzy_get(d, lev_map, lev_norm) or 0).round(2)
+
     # Build signal label
     signals_used = []
     if proj_dk_map: signals_used.append("proj_dk")
@@ -502,6 +514,45 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     if pool.empty:
         st.warning("Could not build projection pool. Check salary data.")
         return
+
+    # ─── Dominator recommendation banner ──────────────────────────────────
+    try:
+        from src.dominators import get_dominator_recommendation, identify_dominators_in_projection
+        from src.config import DB_PATH as _DB_PATH
+        _track_type_lookup = TRACK_TYPE_MAP.get(track_name, "intermediate")
+        _dom_rec = get_dominator_recommendation(
+            _DB_PATH, series_id,
+            track_name=track_name,
+            track_type=_track_type_lookup,
+        )
+        # Count how many drivers in the pool are currently projected to be dominators
+        # (uses proj_detail laps_led + fast_laps from the projection engine)
+        _proj_detail = st.session_state.get("proj_detail_map", {})
+        _proj_doms = identify_dominators_in_projection(_proj_detail)
+        # Count locked dominators
+        _locked_doms = st.session_state.opt_locked & _proj_doms
+        rec_low = _dom_rec.get("recommended_low", _dom_rec["recommended"])
+        rec_high = _dom_rec.get("recommended_high", _dom_rec["recommended"])
+        if rec_low == rec_high:
+            _rec_label = f"**{rec_low}** dominator{'s' if rec_low != 1 else ''}"
+        else:
+            _rec_label = f"**{rec_low}-{rec_high}** dominators"
+        _scope_label = "🎯 " if _dom_rec["scope"] == "track" else "📊 "
+        _doms_available_label = (
+            f"  •  {len(_proj_doms)} projected dominator{'s' if len(_proj_doms) != 1 else ''} in pool"
+            if _proj_doms else "  •  No projected dominators yet (build lineups first)"
+        )
+        _locked_label = (
+            f"  •  {len(_locked_doms)} locked"
+            if _locked_doms else ""
+        )
+        st.info(
+            f"{_scope_label}**Dominator target:** {_rec_label} for {track_name}. "
+            f"{_dom_rec['rationale']}{_doms_available_label}{_locked_label}"
+        )
+    except Exception as _dom_err:
+        # Non-fatal — banner is informational only
+        pass
 
     # Apply overrides to pool BEFORE anything else uses it
     for drv, pts in st.session_state.opt_overrides.items():

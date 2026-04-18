@@ -1,0 +1,321 @@
+"""DB Health tab.
+
+Surfaces data-quality anomalies so bugs like the Kansas salary bleed-through
+are caught automatically instead of by accident. Everything is read-only —
+no writes happen here. Findings are grouped by severity.
+"""
+from __future__ import annotations
+import os
+import sqlite3
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from src.config import DB_PATH
+from src.utils import normalize_driver_name
+
+
+def _file_size_mb(path: Path) -> float:
+    try:
+        return path.stat().st_size / 1024 / 1024
+    except Exception:
+        return 0.0
+
+
+def _row_counts(conn) -> dict:
+    tables = [
+        "races", "drivers", "tracks", "race_results",
+        "salaries", "odds", "projections",
+    ]
+    counts = {}
+    for t in tables:
+        try:
+            counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        except Exception:
+            counts[t] = None
+    return counts
+
+
+def _find_salary_fingerprint_collisions(conn) -> pd.DataFrame:
+    """Detect races that share the exact same DK salary set (same drivers + prices).
+
+    This catches the Kansas-style bug where salaries get written to the wrong
+    year's race_id.
+    """
+    races_with_sal = conn.execute('''
+        SELECT DISTINCT s.race_id, r.race_name, r.race_date, r.series_id
+        FROM salaries s JOIN races r ON r.id = s.race_id
+        WHERE s.platform = 'DraftKings'
+    ''').fetchall()
+
+    fp_map = defaultdict(list)
+    for rid, rname, rdate, sid in races_with_sal:
+        rows = conn.execute('''
+            SELECT driver_id, salary FROM salaries
+            WHERE race_id = ? AND platform = 'DraftKings'
+            ORDER BY driver_id
+        ''', (rid,)).fetchall()
+        if not rows:
+            continue
+        fp = tuple(rows)
+        fp_map[fp].append((rid, rname, rdate, sid))
+
+    collisions = []
+    for fp, races in fp_map.items():
+        if len(races) > 1:
+            for rid, rname, rdate, sid in races:
+                collisions.append({
+                    "Race ID": rid,
+                    "Series": {1: "Cup", 2: "O'Reilly", 3: "Truck"}.get(sid, str(sid)),
+                    "Race": rname,
+                    "Date": (rdate or "")[:10],
+                    "Group Size": len(races),
+                })
+    return pd.DataFrame(collisions).sort_values(
+        ["Group Size", "Race"], ascending=[False, True]
+    ) if collisions else pd.DataFrame()
+
+
+def _find_races_missing_data(conn, series_id: int | None = None, season: int | None = None) -> pd.DataFrame:
+    """Find races missing critical data (salaries / odds / ARP)."""
+    params = []
+    where = "1=1"
+    if series_id:
+        where += " AND r.series_id = ?"
+        params.append(series_id)
+    if season:
+        where += " AND r.season = ?"
+        params.append(season)
+
+    q = f'''
+        SELECT
+            r.id, r.race_name, r.race_date, r.series_id, r.season,
+            (SELECT COUNT(*) FROM salaries s WHERE s.race_id = r.id AND s.platform = 'DraftKings') as n_sal,
+            (SELECT COUNT(*) FROM odds o WHERE o.race_id = r.id) as n_odds,
+            (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.id) as n_results,
+            (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.id AND rr.avg_running_position IS NOT NULL) as n_arp
+        FROM races r
+        WHERE {where}
+        ORDER BY r.race_date DESC
+    '''
+    rows = conn.execute(q, params).fetchall()
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    series_names = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
+    out = []
+    for rid, rname, rdate, sid, season_year, n_sal, n_odds, n_results, n_arp in rows:
+        is_past = (rdate or "") < today
+        # Report what's missing
+        missing = []
+        if n_sal == 0:
+            missing.append("Salaries")
+        if n_odds == 0:
+            missing.append("Odds")
+        if is_past:
+            if n_results == 0:
+                missing.append("Results")
+            elif n_arp == 0:
+                missing.append("ARP")
+        if not missing:
+            continue
+        out.append({
+            "Season": season_year,
+            "Series": series_names.get(sid, str(sid)),
+            "Date": (rdate or "")[:10],
+            "Race": rname,
+            "Missing": ", ".join(missing),
+            "Past": is_past,
+        })
+    return pd.DataFrame(out)
+
+
+def _find_orphaned_rows(conn) -> dict:
+    """Find salary/odds rows referencing races that don't exist."""
+    orphan_sal = conn.execute('''
+        SELECT COUNT(*) FROM salaries s
+        WHERE NOT EXISTS (SELECT 1 FROM races r WHERE r.id = s.race_id)
+    ''').fetchone()[0]
+    orphan_odds = conn.execute('''
+        SELECT COUNT(*) FROM odds o
+        WHERE NOT EXISTS (SELECT 1 FROM races r WHERE r.id = o.race_id)
+    ''').fetchone()[0]
+    orphan_results = conn.execute('''
+        SELECT COUNT(*) FROM race_results rr
+        WHERE NOT EXISTS (SELECT 1 FROM races r WHERE r.id = rr.race_id)
+    ''').fetchone()[0]
+    return {
+        "salaries": orphan_sal,
+        "odds": orphan_odds,
+        "race_results": orphan_results,
+    }
+
+
+def _find_duplicate_drivers(conn) -> pd.DataFrame:
+    """Find driver names that normalize to the same key but are stored separately.
+
+    Indicates name-matching failures where one driver got two driver_ids.
+    """
+    rows = conn.execute("SELECT id, full_name FROM drivers").fetchall()
+    norm_map = defaultdict(list)
+    for did, name in rows:
+        nn = normalize_driver_name(name)
+        norm_map[nn].append((did, name))
+    out = []
+    for nn, entries in norm_map.items():
+        if len(entries) > 1:
+            out.append({
+                "Normalized Key": nn,
+                "Duplicate Names": " | ".join(f"{n} (id={i})" for i, n in entries),
+                "Count": len(entries),
+            })
+    return pd.DataFrame(out).sort_values("Count", ascending=False) if out else pd.DataFrame()
+
+
+def _find_races_without_api_race_id(conn) -> pd.DataFrame:
+    """Races without an api_race_id can't be resolved by the NASCAR API."""
+    rows = conn.execute('''
+        SELECT id, race_name, race_date, series_id, season
+        FROM races
+        WHERE api_race_id IS NULL
+        ORDER BY race_date DESC LIMIT 50
+    ''').fetchall()
+    series_names = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
+    return pd.DataFrame([{
+        "ID": r[0],
+        "Race": r[1],
+        "Date": (r[2] or "")[:10],
+        "Series": series_names.get(r[3], str(r[3])),
+        "Season": r[4],
+    } for r in rows])
+
+
+def render(*, series_id: int = None, selected_year: int = None):
+    """Render the DB Health tab."""
+    from src.components import section_header
+    section_header("Database Health", "Data-quality diagnostics and anomaly detection")
+
+    if not DB_PATH.exists():
+        st.error(f"Database not found at {DB_PATH}")
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+
+    # ── Overview ──
+    st.markdown("### Overview")
+    counts = _row_counts(conn)
+    size_mb = _file_size_mb(DB_PATH)
+    cols = st.columns(5)
+    cols[0].metric("DB Size", f"{size_mb:.1f} MB")
+    cols[1].metric("Races", f"{counts.get('races', 0):,}")
+    cols[2].metric("Drivers", f"{counts.get('drivers', 0):,}")
+    cols[3].metric("Results", f"{counts.get('race_results', 0):,}")
+    cols[4].metric("Odds rows", f"{counts.get('odds', 0):,}")
+
+    cols2 = st.columns(3)
+    cols2[0].metric("Salaries", f"{counts.get('salaries', 0):,}")
+    cols2[1].metric("Projections", f"{counts.get('projections', 0):,}")
+    cols2[2].metric("Tracks", f"{counts.get('tracks', 0):,}")
+
+    st.divider()
+
+    # ── Salary fingerprint collisions (the Kansas bug detector) ──
+    st.markdown("### 🔍 Salary fingerprint collisions")
+    st.caption(
+        "Detects races that share identical DK salary sets (same drivers + prices). "
+        "Collisions often mean salaries got written to the wrong year's race_id. "
+        "Expected: 0 collisions."
+    )
+    fp_df = _find_salary_fingerprint_collisions(conn)
+    if fp_df.empty:
+        st.success("✅ No salary fingerprint collisions detected.")
+    else:
+        st.error(f"⚠️ Found {len(fp_df)} races with duplicate salary fingerprints:")
+        st.dataframe(fp_df, width="stretch", hide_index=True)
+        st.caption(
+            "**Action:** Identify which race should have these salaries. "
+            "Delete from the others using: "
+            "`DELETE FROM salaries WHERE race_id = <bad_race_id>`"
+        )
+
+    st.divider()
+
+    # ── Missing data ──
+    st.markdown("### 📋 Races missing critical data")
+    filter_cols = st.columns(3)
+    with filter_cols[0]:
+        scope = st.selectbox(
+            "Scope",
+            ["This series + season", "All series, current season",
+             "All series, all seasons"],
+            key="dbh_scope",
+        )
+    _sid = series_id if scope == "This series + season" else None
+    _season = selected_year if scope != "All series, all seasons" else None
+    missing_df = _find_races_missing_data(conn, series_id=_sid, season=_season)
+    if missing_df.empty:
+        st.success("✅ All races have required data.")
+    else:
+        past_df = missing_df[missing_df["Past"] == True].drop(columns=["Past"])
+        upc_df = missing_df[missing_df["Past"] == False].drop(columns=["Past"])
+        if not past_df.empty:
+            st.warning(f"⚠️ {len(past_df)} past races missing data:")
+            st.dataframe(past_df, width="stretch", hide_index=True)
+        if not upc_df.empty:
+            st.info(f"ℹ️ {len(upc_df)} upcoming races missing data (may still be coming):")
+            st.dataframe(upc_df, width="stretch", hide_index=True)
+
+    st.divider()
+
+    # ── Duplicate drivers ──
+    st.markdown("### 👥 Duplicate driver entries")
+    st.caption(
+        "Drivers whose names normalize to the same key but have separate driver_ids. "
+        "These indicate name-matching failures where the same driver got split into "
+        "multiple rows. Expected: 0 duplicates."
+    )
+    dup_df = _find_duplicate_drivers(conn)
+    if dup_df.empty:
+        st.success("✅ No duplicate driver entries detected.")
+    else:
+        st.error(f"⚠️ Found {len(dup_df)} normalized keys with multiple driver_ids:")
+        st.dataframe(dup_df, width="stretch", hide_index=True)
+        st.caption(
+            "**Action:** Merge duplicates. Pick one canonical driver_id, update "
+            "foreign keys in race_results/salaries/odds to point to it, then delete "
+            "the redundant driver row."
+        )
+
+    st.divider()
+
+    # ── Orphaned rows ──
+    st.markdown("### 🔗 Orphaned rows")
+    orphans = _find_orphaned_rows(conn)
+    total_orphans = sum(orphans.values())
+    if total_orphans == 0:
+        st.success("✅ No orphaned rows.")
+    else:
+        st.warning(
+            f"⚠️ Found {total_orphans} rows referencing non-existent races: "
+            f"salaries={orphans['salaries']}, odds={orphans['odds']}, "
+            f"race_results={orphans['race_results']}"
+        )
+
+    st.divider()
+
+    # ── Races without api_race_id ──
+    st.markdown("### 🔖 Races without `api_race_id`")
+    st.caption(
+        "Races that lack a NASCAR API ID can't be auto-resolved. Historical races "
+        "often lack this and that's fine. Recent/upcoming races should all have one."
+    )
+    no_api_df = _find_races_without_api_race_id(conn)
+    if no_api_df.empty:
+        st.success("✅ All races have api_race_id set.")
+    else:
+        st.info(f"ℹ️ {len(no_api_df)} races missing api_race_id (showing 50 most recent):")
+        st.dataframe(no_api_df, width="stretch", hide_index=True)
+
+    conn.close()

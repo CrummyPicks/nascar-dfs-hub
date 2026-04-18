@@ -725,8 +725,8 @@ if fd_file and not fd_df.empty:
 # ============================================================
 # TABS
 # ============================================================
-tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj, tab_optimizer, tab_acc, tab_standings = st.tabs([
-    "Race Data", "Practice", "Track History", "Race Analyzer", "Projections", "Optimizer", "Accuracy", "Standings"
+tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj, tab_optimizer, tab_acc, tab_standings, tab_dbhealth = st.tabs([
+    "Race Data", "Practice", "Track History", "Race Analyzer", "Projections", "Optimizer", "Accuracy", "Standings", "DB Health"
 ])
 
 from tabs import tab_data as td
@@ -737,6 +737,7 @@ from tabs import tab_projections as tproj
 from tabs import tab_optimizer as topt
 from tabs import tab_accuracy as tacc
 from tabs import tab_standings as tstand
+from tabs import tab_db_health as tdbh
 
 with tab_data:
     # Load prop odds (top5/top10) from DB — always available even if live fetch fails
@@ -799,4 +800,9 @@ with tab_standings:
     tstand.render(
         series_id=series_id, series_name=series_name,
         selected_year=selected_year,
+    )
+
+with tab_dbhealth:
+    tdbh.render(
+        series_id=series_id, selected_year=selected_year,
     )

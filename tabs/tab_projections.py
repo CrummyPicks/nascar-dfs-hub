@@ -1223,8 +1223,38 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     proj.index = proj.index + 1
     proj.index.name = "Rank"
 
+    # ── Projected ownership (heuristic) ──
+    try:
+        from src.ownership import project_ownership, compute_leverage
+        _proj_dk_dict = dict(zip(proj["Driver"], proj["Proj DK"]))
+        _sal_dict = dict(zip(proj["Driver"], proj["DK Salary"])) if "DK Salary" in proj.columns else {}
+        # win_odds: odds_data is keyed by driver display name already
+        _own_map = project_ownership(
+            drivers=proj["Driver"].tolist(),
+            proj_dk=_proj_dk_dict,
+            salary=_sal_dict,
+            win_odds=odds_data,
+            qual_pos=qual_pos,
+            field_size=field_size,
+            roster_size=6 if series_id != 3 else 5,  # Truck DK is 5-driver rosters
+        )
+        proj["Proj Own %"] = proj["Driver"].map(_own_map).round(1)
+        # Leverage = points per ownership point (higher = better GPP play)
+        _lev_map = compute_leverage(_proj_dk_dict, _own_map)
+        proj["Leverage"] = proj["Driver"].map(_lev_map).round(2)
+    except Exception as _ow_err:
+        # Non-fatal — ownership is additive info only
+        pass
+
     # Share Proj DK with optimizer tab via session state
     st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
+    # Share per-driver detail so optimizer can identify projected dominators
+    st.session_state["proj_detail_map"] = _proj_detail
+    # Share ownership + leverage for optimizer leverage scoring
+    if "Proj Own %" in proj.columns:
+        st.session_state["proj_own_map"] = dict(zip(proj["Driver"], proj["Proj Own %"]))
+    if "Leverage" in proj.columns:
+        st.session_state["proj_leverage_map"] = dict(zip(proj["Driver"], proj["Leverage"]))
 
     # Rename Start column — "Qual Pos" if qualifying happened, "Proj Qual Pos" if not
     if "Start" in proj.columns:
@@ -1250,6 +1280,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     display_cols.append("Proj DK")
     if "Value" in proj.columns:
         display_cols.append("Value")
+    if "Proj Own %" in proj.columns:
+        display_cols.append("Proj Own %")
+    if "Leverage" in proj.columns:
+        display_cols.append("Leverage")
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)
