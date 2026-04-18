@@ -43,6 +43,7 @@ def project_ownership(
     salary: dict,
     win_odds: dict | None = None,
     qual_pos: dict | None = None,
+    proj_finish: dict | None = None,
     field_size: int = 37,
     roster_size: int = 6,
     gpp_dispersion: float = 1.0,
@@ -55,6 +56,9 @@ def project_ownership(
         salary: {driver: DK salary}
         win_odds: {driver: American odds string} (optional)
         qual_pos: {driver: qualifying/start position} (optional)
+        proj_finish: {driver: projected finish position} (optional — used to
+            reduce ownership for drivers with strong PD upside, which the
+            casual field tends to under-roster)
         field_size: total drivers in the race
         roster_size: number of roster slots (6 for Cup DK, 5 for Truck)
         gpp_dispersion: 0.5-1.5 range. <1.0 flattens (less chalk), >1.0
@@ -137,6 +141,35 @@ def project_ownership(
         W_SAL += W_QUAL * 0.5
         W_QUAL = 0.0
 
+    # ── PD-upside ownership adjustment ──
+    # Casual DFS players don't model place differential. Drivers with strong
+    # PD upside (projected to gain 10+ positions) tend to be *under-owned*
+    # relative to their projected points. Apply a small dampener for these
+    # drivers — they're the low-owned GPP plays that win tournaments.
+    # Conversely, fade-risk drivers (start near the front, project back) are
+    # *over-owned* because casuals see "top qualifier" and lock them in.
+    pd_multiplier = {}
+    if proj_finish:
+        for d in drivers:
+            qp = qual_pos.get(d) if qual_pos else None
+            pf = proj_finish.get(d)
+            if qp is None or pf is None:
+                pd_multiplier[d] = 1.0
+                continue
+            delta = qp - pf  # positive = gain positions = PD upside
+            if delta >= 10:
+                # Big PD upside — field under-rosters these
+                pd_multiplier[d] = 0.80
+            elif delta >= 5:
+                pd_multiplier[d] = 0.92
+            elif delta <= -10:
+                # Big fade risk — field over-rosters the front-row that fades
+                pd_multiplier[d] = 1.15
+            elif delta <= -5:
+                pd_multiplier[d] = 1.05
+            else:
+                pd_multiplier[d] = 1.0
+
     raw = {}
     for d in drivers:
         score = (
@@ -145,6 +178,8 @@ def project_ownership(
             + salary_score.get(d, 0) * W_SAL
             + qual_score.get(d, 0) * W_QUAL
         )
+        # Apply PD-upside multiplier before dispersion
+        score *= pd_multiplier.get(d, 1.0)
         # Apply GPP dispersion — raises score to a power. Higher power
         # concentrates ownership on top plays (chalk leaders go from 40%→50%).
         raw[d] = score ** gpp_dispersion

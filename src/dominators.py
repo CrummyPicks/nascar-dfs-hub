@@ -4,26 +4,48 @@ Analyzes historical race_results to recommend how many "dominator" drivers a
 DFS lineup should target at a given track.
 
 A "dominator" is a driver who accumulates significant DK points from laps-led
-and fastest-laps bonuses. In DFS lineup construction, you want to roster as
-many dominators as the track historically produces — no more (over-concentration
-risk), no fewer (leaving bonus points on the table).
+and fastest-laps bonuses. The threshold is track-type-aware because short
+tracks (400+ laps) produce far more LL/FL points per driver than superspeedways
+(200 laps with constantly-shuffling leaders). A flat threshold would under-
+count dominators at Bristol and over-count them at Daytona.
 
-We use a 20 DK-points threshold (LL*0.25 + FL*0.5 >= 20) as "true dominator"
-— drivers who meaningfully shaped the race. Lower thresholds count too many
-drivers who had brief stints; higher thresholds miss typical intermediate-track
-dominators.
+Thresholds were chosen empirically so that ~2-3 "true dominators" emerge per
+race at tracks where that's the DFS ideal, and ~0-1 at tracks where dominator
+points are too distributed to matter.
 """
 from __future__ import annotations
 import sqlite3
 from collections import Counter
 from pathlib import Path
 
-DOM_THRESHOLD = 20.0  # DK pts from LL+FL to count as a dominator
+# DK pts (LL*0.25 + FL*0.5) required to count as a dominator, per track type.
+# Based on Cup 2022-26 historical distribution analysis.
+DOM_THRESHOLDS = {
+    "superspeedway":    20.0,  # ~0-1 dominators typical (pack racing disperses LL)
+    "road":             15.0,  # Short races, fewer total laps available
+    "intermediate":     20.0,  # ~2 dominators typical (Kansas, Vegas, etc.)
+    "intermediate_worn": 20.0,  # ~2-3 (Darlington, Homestead)
+    "short":            25.0,  # ~3 dominators (Martinsville, Phoenix, Richmond)
+    "short_concrete":   30.0,  # ~3 dominators (Bristol, Dover)
+}
+DOM_THRESHOLD_DEFAULT = 20.0
+
 MIN_RACES_FOR_CONFIDENCE = 3  # need this many races to trust track-specific stat
+
+
+def threshold_for_track_type(track_type: str | None) -> float:
+    """Return the dominator threshold (DK pts from LL+FL) for a given track type."""
+    if not track_type:
+        return DOM_THRESHOLD_DEFAULT
+    return DOM_THRESHOLDS.get(track_type, DOM_THRESHOLD_DEFAULT)
 
 
 def _compute_dominator_stats(conn, series_id, track_name=None, track_type=None, min_season=2022):
     """Query race_results and compute dominator counts per race.
+
+    The threshold used depends on track_type (short tracks produce more LL/FL
+    points so require a higher bar). When querying by track_name, the threshold
+    is looked up via the track's DB track_type.
 
     Returns list of dominator counts, one per race matching the filters.
     """
@@ -37,7 +59,7 @@ def _compute_dominator_stats(conn, series_id, track_name=None, track_type=None, 
         params.append(track_type)
 
     q = f'''
-        SELECT r.id, rr.laps_led, rr.fastest_laps
+        SELECT r.id, t.track_type, rr.laps_led, rr.fastest_laps
         FROM race_results rr
         JOIN races r ON r.id = rr.race_id
         JOIN tracks t ON t.id = r.track_id
@@ -45,15 +67,20 @@ def _compute_dominator_stats(conn, series_id, track_name=None, track_type=None, 
     '''
     rows = conn.execute(q, params).fetchall()
 
-    # Group by race and count dominators per race
+    # Group by race and count dominators per race — use each race's own
+    # track-type threshold so a mixed query (by track_type only) still counts
+    # correctly if there were edge cases.
     per_race = {}
-    for rid, ll, fl in rows:
+    race_ttype = {}
+    for rid, ttype, ll, fl in rows:
         pts = (ll or 0) * 0.25 + (fl or 0) * 0.5
         per_race.setdefault(rid, []).append(pts)
+        race_ttype[rid] = ttype
 
     counts = []
-    for pts_list in per_race.values():
-        n_doms = sum(1 for p in pts_list if p >= DOM_THRESHOLD)
+    for rid, pts_list in per_race.items():
+        thr = threshold_for_track_type(race_ttype.get(rid))
+        n_doms = sum(1 for p in pts_list if p >= thr)
         counts.append(n_doms)
     return counts
 
@@ -174,10 +201,16 @@ def _default_recommendation(track_type):
     }
 
 
-def identify_dominators_in_projection(proj_detail: dict, threshold: float = DOM_THRESHOLD) -> set:
+def identify_dominators_in_projection(
+    proj_detail: dict, track_type: str | None = None, threshold: float | None = None
+) -> set:
     """Given per-driver projection detail with laps_led + fast_laps, return the
     set of driver names projected to be dominators (LL*0.25 + FL*0.5 >= threshold).
+
+    The threshold defaults to the track-type-appropriate value if not supplied.
     """
+    if threshold is None:
+        threshold = threshold_for_track_type(track_type)
     doms = set()
     for driver, det in (proj_detail or {}).items():
         ll = det.get("laps_led", 0) or 0

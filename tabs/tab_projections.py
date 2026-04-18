@@ -1204,6 +1204,31 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     proj = pd.DataFrame(rows)
 
+    # PD Upside: categorize each driver by their projected place-differential
+    # potential. This is display-only — it does not modify projections.
+    # - High:     start >= P25 AND projected finish <= P20 (bounce-back)
+    # - Low:      start <= P8  AND projected finish >= P18 (fade risk)
+    # - Neutral:  within +/- 5 positions of start-finish delta
+    def _pd_upside_tier(start, proj_finish):
+        try:
+            s = int(start)
+            f = float(proj_finish)
+        except (TypeError, ValueError):
+            return ""
+        delta = s - f  # positive = gain positions (good)
+        if s >= 25 and f <= 20:
+            return "High"
+        if s <= 8 and f >= 18:
+            return "Low"
+        if abs(delta) <= 5:
+            return "Neutral"
+        if delta > 5:
+            return "Mild+"
+        return "Mild-"
+    proj["PD Upside"] = proj.apply(
+        lambda r: _pd_upside_tier(r.get("Start"), r.get("Proj Finish")), axis=1
+    )
+
     # Merge car number if available
     if "Car" in base_df.columns:
         proj = proj.merge(base_df[["Driver", "Car"]].drop_duplicates("Driver"),
@@ -1228,6 +1253,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         from src.ownership import project_ownership, compute_leverage
         _proj_dk_dict = dict(zip(proj["Driver"], proj["Proj DK"]))
         _sal_dict = dict(zip(proj["Driver"], proj["DK Salary"])) if "DK Salary" in proj.columns else {}
+        _proj_finish_dict = dict(zip(proj["Driver"], proj["Proj Finish"])) if "Proj Finish" in proj.columns else {}
         # win_odds: odds_data is keyed by driver display name already
         _own_map = project_ownership(
             drivers=proj["Driver"].tolist(),
@@ -1235,6 +1261,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             salary=_sal_dict,
             win_odds=odds_data,
             qual_pos=qual_pos,
+            proj_finish=_proj_finish_dict,
             field_size=field_size,
             roster_size=6 if series_id != 3 else 5,  # Truck DK is 5-driver rosters
         )
@@ -1287,7 +1314,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)
-    display_cols.extend(["Proj Finish",
+    display_cols.extend(["Proj Finish", "PD Upside",
                          "Finish Pts", "Diff Pts",
                          "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
                          "Avg DK", "Best DK", "Worst DK"]
