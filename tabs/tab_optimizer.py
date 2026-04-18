@@ -597,6 +597,32 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             pool_display = pool_display[
                 pool_display["Driver"].str.contains(search, case=False, na=False)]
 
+        # Salary range slider — filter optimizer consideration by price tier.
+        # Drivers outside this range are excluded from lineup building (unless
+        # the user has specifically locked them; locks always win).
+        pool_min_sal = int(pool["DK Salary"].min()) if not pool.empty else 4000
+        pool_max_sal = int(pool["DK Salary"].max()) if not pool.empty else 15000
+        # Round bounds to nearest $100 for cleaner slider steps
+        _sal_floor = max(4000, (pool_min_sal // 100) * 100)
+        _sal_ceil = ((pool_max_sal + 99) // 100) * 100
+        salary_range = st.slider(
+            "Salary range for optimizer consideration",
+            min_value=_sal_floor, max_value=_sal_ceil,
+            value=(_sal_floor, _sal_ceil),
+            step=100, key=f"opt_salary_range_{race_id}",
+            help="Only drivers in this salary range are considered by the "
+                 "optimizer. Locked drivers override this filter."
+        )
+        sal_range_active = (salary_range[0] > _sal_floor) or (salary_range[1] < _sal_ceil)
+        if sal_range_active:
+            _n_in_range = int(((pool["DK Salary"] >= salary_range[0]) &
+                               (pool["DK Salary"] <= salary_range[1])).sum())
+            st.caption(
+                f"Salary filter active: only {_n_in_range}/{len(pool)} drivers "
+                f"eligible for optimization (${salary_range[0]:,} - ${salary_range[1]:,}). "
+                f"Locked drivers still participate even if outside this range."
+            )
+
         # Reset All button — above the driver list
         if st.button("Reset All (Locks, Excludes, Overrides)", key="opt_reset_all",
                       type="secondary"):
@@ -611,6 +637,17 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 if k.startswith(("pp_lock_", "pp_excl_", "pp_ov_", "lu_lock_", "lu_excl_")):
                     del st.session_state[k]
             st.rerun()
+
+        # Compute the effective excluded set for optimization.
+        # Merge user's manual excludes + salary-range filter. Locked drivers
+        # always override filters (explicit lock wins over implicit filter).
+        locked = list(st.session_state.opt_locked)
+        _user_excluded = set(st.session_state.opt_excluded)
+        _salary_filtered = set()
+        if sal_range_active:
+            _mask = (pool["DK Salary"] < salary_range[0]) | (pool["DK Salary"] > salary_range[1])
+            _salary_filtered = set(pool.loc[_mask, "Driver"].tolist())
+        excluded = (_user_excluded | _salary_filtered) - set(locked)
 
         # Lock/Exclude/Override in a table-like layout
         # Header row
@@ -705,7 +742,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=list(st.session_state.opt_locked),
-                excluded=st.session_state.opt_excluded)
+                excluded=excluded)
             # Keep player pool open so user can continue making changes
             st.session_state.opt_pool_expanded = True
             st.rerun()
@@ -717,10 +754,6 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
     # ─── OPTIMAL LINEUP PANEL ───────────────────────────────────────────────
     st.divider()
-
-    # Auto-build optimal lineup if none exists yet
-    locked = list(st.session_state.opt_locked)
-    excluded = st.session_state.opt_excluded
 
     if not st.session_state.opt_lineup:
         st.session_state.opt_lineup = _build_optimal_lineup(
@@ -912,7 +945,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=list(st.session_state.opt_locked),
-                excluded=st.session_state.opt_excluded)
+                excluded=excluded)
             st.rerun()
 
     else:
@@ -933,7 +966,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         pool, salary_cap, roster_size, num_lineups,
                         max_exposure, mode.lower(),
                         locked=list(st.session_state.opt_locked),
-                        excluded=st.session_state.opt_excluded)
+                        excluded=excluded)
                     st.session_state.opt_multi_lineups = multi
                     if not multi:
                         st.warning("No valid lineups found within salary cap.")

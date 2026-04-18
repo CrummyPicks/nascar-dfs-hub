@@ -231,6 +231,111 @@ def _find_races_without_api_race_id(conn) -> pd.DataFrame:
     } for r in rows])
 
 
+def quick_health_check() -> dict:
+    """Lightweight DB anomaly scan for boot-time display.
+
+    Runs the same underlying queries as the full DB Health tab but returns
+    only anomaly counts, not DataFrames. Designed to be cheap enough to
+    run on every app load. Returns:
+        {
+            "ok": bool,
+            "anomalies": [
+                {"kind": str, "count": int, "severity": "warn"|"error"},
+                ...
+            ],
+        }
+    """
+    result = {"ok": True, "anomalies": []}
+    if not DB_PATH.exists():
+        result["ok"] = False
+        result["anomalies"].append({"kind": "DB file missing", "count": 0, "severity": "error"})
+        return result
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+
+        # Salary fingerprint collisions — high severity (silent data corruption)
+        fp_df = _find_salary_fingerprint_collisions(conn)
+        if not fp_df.empty:
+            result["anomalies"].append({
+                "kind": "Salary fingerprint collisions",
+                "count": len(fp_df),
+                "severity": "error",
+            })
+
+        # Duplicate driver entries — high severity (breaks joins)
+        dup_df = _find_duplicate_drivers(conn)
+        if not dup_df.empty:
+            result["anomalies"].append({
+                "kind": "Duplicate driver entries",
+                "count": len(dup_df),
+                "severity": "error",
+            })
+
+        # Duplicate race entries — medium severity
+        dup_race_df = _find_duplicate_races(conn)
+        if not dup_race_df.empty:
+            result["anomalies"].append({
+                "kind": "Same-date race duplicates",
+                "count": len(dup_race_df),
+                "severity": "warn",
+            })
+
+        # Orphaned rows — medium severity
+        orphans = _find_orphaned_rows(conn)
+        total_orphans = sum(orphans.values())
+        if total_orphans > 0:
+            result["anomalies"].append({
+                "kind": "Orphaned rows (salaries/odds/results)",
+                "count": total_orphans,
+                "severity": "warn",
+            })
+
+        conn.close()
+    except Exception as e:
+        result["ok"] = False
+        result["anomalies"].append({
+            "kind": f"Health check error: {e}",
+            "count": 0, "severity": "error",
+        })
+
+    result["ok"] = len(result["anomalies"]) == 0
+    return result
+
+
+def render_health_banner():
+    """Render a one-line banner at the top of the app if anomalies exist.
+
+    Silent when everything is clean. Uses an expander so it doesn't take much
+    vertical space when collapsed. Caches for 5 minutes to avoid running the
+    checks on every rerun.
+    """
+    # Cache the check results for 5 minutes so reruns don't hammer the DB
+    import time
+    CACHE_KEY = "_dbhealth_cache"
+    CACHE_TTL = 300  # seconds
+    now = time.time()
+    cached = st.session_state.get(CACHE_KEY)
+    if cached and now - cached["t"] < CACHE_TTL:
+        check = cached["check"]
+    else:
+        check = quick_health_check()
+        st.session_state[CACHE_KEY] = {"t": now, "check": check}
+
+    if check["ok"]:
+        return  # silent when clean — no banner needed
+
+    # Build a concise one-line message
+    has_error = any(a["severity"] == "error" for a in check["anomalies"])
+    summary = " • ".join(
+        f"{a['count']} {a['kind']}" if a["count"] > 0 else a["kind"]
+        for a in check["anomalies"]
+    )
+    if has_error:
+        st.error(f"⚠️ DB Health: {summary} — open the **DB Health** tab for details.")
+    else:
+        st.warning(f"⚠️ DB Health: {summary} — open the **DB Health** tab for details.")
+
+
 def render(*, series_id: int = None, selected_year: int = None):
     """Render the DB Health tab."""
     from src.components import section_header

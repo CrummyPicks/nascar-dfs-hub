@@ -1285,6 +1285,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             win_odds=odds_data,
             qual_pos=qual_pos,
             proj_finish=_proj_finish_dict,
+            track_type=track_type,
             field_size=field_size,
             roster_size=6 if series_id != 3 else 5,  # Truck DK is 5-driver rosters
         )

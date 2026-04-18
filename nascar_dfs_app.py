@@ -317,6 +317,15 @@ else:
     upcoming_races = []
 
 # ============================================================
+# DB HEALTH BANNER (silent when clean)
+# ============================================================
+try:
+    from tabs.tab_db_health import render_health_banner
+    render_health_banner()
+except Exception:
+    pass  # never block the app for a health-check error
+
+# ============================================================
 # SETTINGS EXPANDER (DK/FD upload, weights)
 # ============================================================
 with st.expander("Settings & Data Upload", expanded=False):
