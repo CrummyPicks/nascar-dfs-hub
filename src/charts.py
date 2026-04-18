@@ -265,28 +265,32 @@ def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
 
 
 def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
-    """Avg Running Position vs Avg Driver Rating scatter with car numbers.
+    """Avg Running Position vs Avg DK Points scatter with car numbers.
 
-    Expects columns: Driver, Car, Avg Running Pos, Avg Driver Rating
+    Expects columns: Driver, Car, Avg Running Pos, Avg DK Pts
     """
     if season_data.empty:
+        return None
+
+    y_col = "Avg DK Pts" if "Avg DK Pts" in season_data.columns else None
+    if y_col is None:
         return None
 
     fig = go.Figure()
 
     # Compute quadrant lines
     x_med = season_data["Avg Running Pos"].median()
-    y_med = season_data["Avg Driver Rating"].median()
+    y_med = season_data[y_col].median()
 
     fig.add_trace(go.Scatter(
         x=season_data["Avg Running Pos"],
-        y=season_data["Avg Driver Rating"],
+        y=season_data[y_col],
         mode="markers+text",
         text=season_data["Car"].astype(str),
         textposition="middle center",
         textfont=dict(size=10, color="white"),
         marker=dict(size=28, color="#1e293b", line=dict(width=1.5, color="#64748b")),
-        hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>Rating: %{y:.1f}<extra></extra>",
+        hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>DK Pts: %{y:.1f}<extra></extra>",
         customdata=season_data[["Driver"]].values,
     ))
 
@@ -297,10 +301,10 @@ def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
     fig.update_layout(
         **DARK_LAYOUT,
         height=height,
-        title="Season Overview: Avg Running Position vs Driver Rating",
+        title="Season Overview: Avg Running Position vs DK Points",
         xaxis_title="Avg Running Pos",
-        yaxis_title="Avg Driver Rating",
-        xaxis=dict(autorange="reversed"),  # Lower running pos = better = right side
+        yaxis_title="Avg DK Pts",
+        xaxis=dict(autorange="reversed"),
     )
     return apply_dark_theme(fig)
 
@@ -336,45 +340,6 @@ def race_scatter(results_df: pd.DataFrame, height: int = 350) -> go.Figure:
         xaxis=dict(autorange="reversed"),
     )
     return apply_dark_theme(fig_obj)
-
-
-def rating_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
-                              height: int = 450) -> go.Figure:
-    """Avg Driver Rating vs Avg Finish scatter for track history."""
-    if "Avg Rating" not in hist_df.columns or "Avg Finish" not in hist_df.columns:
-        return None
-
-    clean = hist_df.dropna(subset=["Avg Rating", "Avg Finish"]).copy()
-    if clean.empty:
-        return None
-
-    fig = go.Figure(go.Scatter(
-        x=clean["Avg Finish"],
-        y=clean["Avg Rating"],
-        mode="markers+text",
-        text=clean["Driver"],
-        textposition="top center",
-        textfont=dict(size=9, color="#94a3b8"),
-        marker=dict(
-            size=14,
-            color=clean["Avg Rating"],
-            colorscale="RdYlGn",
-            showscale=True,
-            colorbar=dict(title="Rating"),
-            line=dict(width=1, color="#334155"),
-        ),
-        hovertemplate="%{text}<br>Avg Finish: %{x:.1f}<br>Rating: %{y:.1f}<extra></extra>",
-    ))
-
-    fig.update_layout(
-        **DARK_LAYOUT,
-        height=height,
-        title=f"Avg Driver Rating vs Avg Finish{' — ' + track_name if track_name else ''}",
-        xaxis_title="Avg Finish Position",
-        yaxis_title="Avg Driver Rating",
-        xaxis=dict(autorange="reversed"),  # Lower finish = better = right side
-    )
-    return apply_dark_theme(fig)
 
 
 def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",

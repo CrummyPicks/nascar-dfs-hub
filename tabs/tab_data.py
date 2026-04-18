@@ -12,11 +12,10 @@ from src.data import (
 from src.utils import (
     calc_dk_points, calc_fd_points, safe_fillna, format_display_df,
     fuzzy_match_name, fuzzy_merge, fuzzy_get, build_norm_lookup,
-    calc_driver_rating,
 )
 from src.charts import (
     dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
-    season_trend_line, arp_vs_finish_scatter, rating_vs_finish_scatter,
+    season_trend_line, arp_vs_finish_scatter,
     finish_distribution_box, fantasy_vs_arp_scatter,
 )
 
@@ -192,16 +191,6 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         master = master.merge(th_dedup, on="_th_key", how="left")
         master = master.drop(columns=["_th_key"])
 
-        # Compute TH_Rating from aggregate track history stats
-        if all(c in master.columns for c in ["TH_Avg Finish", "TH_Races"]):
-            master["TH_Rating"] = master.apply(
-                lambda r: calc_driver_rating(
-                    r.get("TH_Avg Finish", 20),
-                    r.get("TH_Avg Run Pos") if pd.notna(r.get("TH_Avg Run Pos")) else None,
-                    r.get("TH_Laps Led", 0) / max(r.get("TH_Races", 1), 1),
-                    0, 200, 200, 40
-                ) if pd.notna(r.get("TH_Avg Finish")) else None, axis=1)
-
     # Historical DK points at this track
     dk_hist = query_driver_dk_points_at_track(track_name, series_id, min_season=2022)
     if dk_hist:
@@ -371,21 +360,8 @@ def _render_charts_view(completed_races, series_id, selected_year,
                     col_map[c] = "Avg Finish"
                 elif cl in ("avg_run_pos", "avg_running_pos", "avg_running_position"):
                     col_map[c] = "Avg Run Pos"
-                elif cl in ("avg_rating", "driver_rating", "avg_driver_rating"):
-                    col_map[c] = "Avg Rating"
             if col_map:
                 hist_df = hist_df.rename(columns=col_map)
-
-            # Compute Avg Rating if not present
-            if "Avg Rating" not in hist_df.columns and "Avg Finish" in hist_df.columns:
-                hist_df["Avg Rating"] = hist_df.apply(
-                    lambda r: calc_driver_rating(
-                        r.get("Avg Finish", 20),
-                        r.get("Avg Run Pos") if pd.notna(r.get("Avg Run Pos")) else None,
-                        r.get("Laps Led", 0) / max(r.get("Races", 1), 1),
-                        r.get("Fast Laps", 0) / max(r.get("Races", 1), 1) if "Fast Laps" in r.index else 0,
-                        200, 200, 40
-                    ) if pd.notna(r.get("Avg Finish")) else None, axis=1)
 
             # ARP vs Finish scatter — shows wreck luck
             if "Avg Run Pos" in hist_df.columns and "Avg Finish" in hist_df.columns:
@@ -393,13 +369,6 @@ def _render_charts_view(completed_races, series_id, selected_year,
                 fig = arp_vs_finish_scatter(hist_df, track_name)
                 if fig:
                     st.plotly_chart(fig, width="stretch", key="data_arp_vs_finish")
-
-            # Rating vs Finish scatter
-            if "Avg Rating" in hist_df.columns and "Avg Finish" in hist_df.columns:
-                st.divider()
-                fig = rating_vs_finish_scatter(hist_df, track_name)
-                if fig:
-                    st.plotly_chart(fig, width="stretch", key="data_rating_vs_finish")
 
         # Avg Fantasy Points vs Avg Running Position
         st.divider()

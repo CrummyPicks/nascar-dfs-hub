@@ -914,7 +914,7 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
     col_names_13_recent = [
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
         "Top 10", "Laps Led", "Avg Start", "Best Finish",
-        "Worst Finish", "Avg Rating", "Detail",
+        "Worst Finish", "Detail",
     ]
     col_names_13_alltime = [
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
@@ -924,7 +924,7 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
     col_names_14_recent = [
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
         "Top 10", "Top 20", "Laps Led", "Avg Start", "Best Finish",
-        "DNF", "Avg Rating", "Detail",
+        "DNF", "Detail",
     ]
     col_names_10_alltime = [
         "Rank", "Driver", "Wins", "Races", "Avg Finish",
@@ -933,7 +933,7 @@ def _scrape_da_tables(track_name: str, series_id: int = 1):
     col_names_15 = [
         "Rank", "Driver", "Avg Finish", "Races", "Wins", "Top 5",
         "Top 10", "Top 20", "Laps Led", "Avg Start", "Best Finish",
-        "Worst Finish", "DNF", "Avg Rating", "Detail",
+        "Worst Finish", "DNF", "Detail",
     ]
 
     try:

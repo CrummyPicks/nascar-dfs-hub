@@ -792,8 +792,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Build cross-series track history lookup
     cross_th_lookup = {}
     if not cross_th_df.empty:
-        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races",
-                     "Avg Rating", "Wins", "Top 5", "Top 10", "DNF"]:
+        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF"]:
             if col in cross_th_df.columns:
                 cross_th_df[col] = pd.to_numeric(cross_th_df[col], errors="coerce")
         cross_idx = cross_th_df.drop_duplicates("Driver").set_index("Driver")
@@ -810,8 +809,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 }
 
     if not th_df.empty:
-        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races",
-                     "Avg Rating", "Wins", "Top 5", "Top 10", "DNF"]:
+        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF"]:
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")

@@ -71,7 +71,7 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     th_df = scrape_track_history(track_name, series_id)
     th_scores = {}
     if not th_df.empty and "Avg Finish" in th_df.columns:
-        for col in ["Avg Finish", "Avg Start", "Avg Rating"]:
+        for col in ["Avg Finish", "Avg Start", "Avg Run Pos"]:
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
@@ -81,10 +81,11 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
             if matched and matched in th_idx.index:
                 row = th_idx.loc[matched]
                 af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
-                ar = row.get("Avg Rating", 80) if pd.notna(row.get("Avg Rating")) else 80
-                finish_s = max(0, (40 - af) / 39 * 100) * 0.5
-                rating_s = min(100, max(0, ar / 1.5)) * 0.5
-                th_scores[d] = max(5, min(95, finish_s + rating_s))
+                arp = row.get("Avg Run Pos", 20) if pd.notna(row.get("Avg Run Pos")) else af
+                # Score: lower finish+ARP = higher score (0-100 scale)
+                finish_s = max(0, (40 - af) / 39 * 100) * 0.6
+                arp_s = max(0, (40 - arp) / 39 * 100) * 0.4
+                th_scores[d] = max(5, min(95, finish_s + arp_s))
             else:
                 th_scores[d] = 35
     pool["TrackScore"] = pool["Driver"].map(lambda d: th_scores.get(d, 35))
