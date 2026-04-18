@@ -1446,22 +1446,23 @@ def sync_dk_salaries_to_db(dk_df: pd.DataFrame, race_id: int, series_id: int,
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
 
-        # Find DB race — api_race_id is most reliable (race names differ between sources)
+        # Find DB race — api_race_id is the ONLY reliable key (unique per year+series).
+        # Name-only fallback is unsafe: "Kansas Lottery 300" exists in multiple years,
+        # and ORDER BY season DESC would route current-season salaries to the wrong year.
         db_race = None
         if race_id:
             db_race = conn.execute(
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
             ).fetchone()
-
-        if not db_race:
+            # If race not in DB yet (upcoming), auto-create from API data
+            if not db_race:
+                db_race = _ensure_race_in_db(conn, race_id, series_id, race_name)
+        else:
+            # No race_id at all — last resort, match by series+name+most-recent season
             db_race = conn.execute(
                 "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
                 (series_id, race_name)
             ).fetchone()
-
-        # If race not in DB yet (upcoming), auto-create from API data
-        if not db_race and race_id:
-            db_race = _ensure_race_in_db(conn, race_id, series_id, race_name)
 
         if not db_race:
             conn.close()
@@ -1536,22 +1537,22 @@ def sync_fd_salaries_to_db(fd_df: pd.DataFrame, race_id: int, series_id: int,
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
 
-        # Find DB race — api_race_id first (most reliable), then name fallback
+        # Find DB race — api_race_id is the ONLY reliable key (unique per year+series).
+        # Name-only fallback is unsafe: race names repeat across years.
         db_race = None
         if race_id:
             db_race = conn.execute(
                 "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
             ).fetchone()
-
-        if not db_race:
+            # If race not in DB yet (upcoming), auto-create from API data
+            if not db_race:
+                db_race = _ensure_race_in_db(conn, race_id, series_id, race_name)
+        else:
+            # No race_id — last resort, match by series+name+most-recent season
             db_race = conn.execute(
                 "SELECT id FROM races WHERE series_id = ? AND race_name = ? ORDER BY season DESC LIMIT 1",
                 (series_id, race_name)
             ).fetchone()
-
-        # If race not in DB yet (upcoming), auto-create from API data
-        if not db_race and race_id:
-            db_race = _ensure_race_in_db(conn, race_id, series_id, race_name)
 
         if not db_race:
             conn.close()

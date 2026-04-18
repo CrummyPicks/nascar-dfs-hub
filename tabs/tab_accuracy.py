@@ -1859,6 +1859,8 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
 
         all_errors = []
         all_rank_corrs = []
+        all_ll_errors = []
+        all_fl_errors = []
 
         for rd in race_data:
             drivers = rd["drivers"]
@@ -1877,11 +1879,11 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
 
             # Run shared projection engine
             from src.projections import compute_projections
-            proj_rows, _ = compute_projections(
+            proj_rows, proj_detail = compute_projections(
                 drivers=drivers, field_size=field_size, wn=wn,
                 th_data=rd["th_data"], tt_data=rd["tt_data"],
                 qual_pos=rd["start_positions"],
-                practice_data={},
+                practice_data=rd.get("practice_data", {}),
                 odds_finish=rd["odds_finish"],
                 odds_display=rd.get("odds_display", {}),
                 team_signal=rd.get("team_signal", {}),
@@ -1897,6 +1899,21 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
             )
             proj_dk = {r["driver"]: r["proj_dk"] for r in proj_rows}
 
+            # Pre-index actual LL/FL per driver from results
+            actual_ll_map = {}
+            actual_fl_map = {}
+            for _, rrow in rd["results"].iterrows():
+                dn = rrow.get("Driver")
+                if dn:
+                    try:
+                        actual_ll_map[dn] = int(rrow.get("Laps Led", 0) or 0)
+                    except (TypeError, ValueError):
+                        actual_ll_map[dn] = 0
+                    try:
+                        actual_fl_map[dn] = int(rrow.get("Fastest Laps", 0) or 0)
+                    except (TypeError, ValueError):
+                        actual_fl_map[dn] = 0
+
             # Compute errors using pre-indexed actual_dk dict
             actual_dk = rd["actual_dk"]
             proj_vals = []
@@ -1906,6 +1923,15 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     all_errors.append(abs(proj_dk[d] - actual_dk[d]))
                     proj_vals.append(proj_dk[d])
                     actual_vals.append(actual_dk[d])
+
+                    # LL / FL error tracking
+                    det = proj_detail.get(d, {}) if isinstance(proj_detail, dict) else {}
+                    p_ll = det.get("laps_led", 0) or 0
+                    p_fl = det.get("fast_laps", 0) or 0
+                    if d in actual_ll_map:
+                        all_ll_errors.append(abs(p_ll - actual_ll_map[d]))
+                    if d in actual_fl_map:
+                        all_fl_errors.append(abs(p_fl - actual_fl_map[d]))
 
             # Rank correlation (vectorized)
             if len(proj_vals) > 5:
@@ -1924,6 +1950,8 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 "Team": combo.get("team", 0),
                 "Qualifying": combo.get("qual", 0),
                 "MAE": np.mean(all_errors),
+                "LL MAE": np.mean(all_ll_errors) if all_ll_errors else 0,
+                "FL MAE": np.mean(all_fl_errors) if all_fl_errors else 0,
                 "Rank Corr": np.mean(all_rank_corrs) if all_rank_corrs else 0,
             })
 
@@ -1968,6 +1996,10 @@ def _display_backtest_results(results_df, context_label):
     st.markdown(f"**Top 15 Weight Combinations — {context_label}**")
     top = results_df.head(15).copy()
     top["MAE"] = top["MAE"].round(1)
+    if "LL MAE" in top.columns:
+        top["LL MAE"] = top["LL MAE"].round(1)
+    if "FL MAE" in top.columns:
+        top["FL MAE"] = top["FL MAE"].round(1)
     top["Rank Corr"] = top["Rank Corr"].round(3)
     if "Score" in top.columns:
         top = top.drop(columns=["Score"])
