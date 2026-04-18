@@ -758,6 +758,79 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     locked=locked, excluded=excluded)
                 st.rerun()
 
+        # ─── Lineup Quality Indicator ─────────────────────────────────
+        # Compares this lineup against track-specific dominator target,
+        # total ownership (GPP leverage), and avg leverage. Advisory only.
+        try:
+            lineup_names = {d["Driver"] for d in lineup}
+            # Dominators this lineup contains
+            lineup_doms = lineup_names & _proj_doms if _proj_doms else set()
+            n_doms = len(lineup_doms)
+            tgt_low = _dom_rec.get("recommended_low", _dom_rec.get("recommended", 0))
+            tgt_high = _dom_rec.get("recommended_high", _dom_rec.get("recommended", 0))
+            if tgt_low <= n_doms <= tgt_high:
+                dom_flag = "✓"
+                dom_color = "#4ade80"
+            elif n_doms < tgt_low:
+                dom_flag = f"↓ {tgt_low - n_doms} short"
+                dom_color = "#fbbf24"
+            else:
+                dom_flag = f"↑ {n_doms - tgt_high} over"
+                dom_color = "#fbbf24"
+
+            # Lineup ownership sum and avg leverage
+            # Pool may or may not have ownership/leverage columns depending on
+            # whether the Projections tab has run.
+            own_lookup = pool.set_index("Driver")["Proj Own %"].to_dict() if "Proj Own %" in pool.columns else {}
+            lev_lookup = pool.set_index("Driver")["Leverage"].to_dict() if "Leverage" in pool.columns else {}
+            total_own = sum(own_lookup.get(d["Driver"], 0) or 0 for d in lineup)
+            avg_lev = (sum(lev_lookup.get(d["Driver"], 0) or 0 for d in lineup)
+                       / max(len(lineup), 1)) if lev_lookup else 0
+
+            # Ownership-level interpretation for GPP vs Cash
+            if total_own > 0:
+                # Lineup of 6 × ~40% average = 240%. Higher = chalkier (cash-safe),
+                # lower = more contrarian (GPP-leveraged).
+                if total_own <= 200:
+                    own_label = "Highly contrarian"
+                    own_color = "#a78bfa"
+                elif total_own <= 280:
+                    own_label = "GPP-shaped"
+                    own_color = "#4ade80"
+                elif total_own <= 350:
+                    own_label = "Balanced"
+                    own_color = "#60a5fa"
+                else:
+                    own_label = "Chalky (cash-shaped)"
+                    own_color = "#f87171"
+                own_display = f'<span style="color:{own_color};font-weight:600">{total_own:.0f}%</span> ({own_label})'
+            else:
+                own_display = '<span style="color:#94a3b8">— (run Projections tab)</span>'
+
+            q_cols = st.columns(4)
+            q_cols[0].markdown(
+                f'<div style="padding:4px;font-size:0.85rem;">'
+                f'<span style="color:#94a3b8">Doms:</span> '
+                f'<span style="color:{dom_color};font-weight:600">{n_doms}/{tgt_low}-{tgt_high}</span> {dom_flag}'
+                f'</div>', unsafe_allow_html=True)
+            q_cols[1].markdown(
+                f'<div style="padding:4px;font-size:0.85rem;">'
+                f'<span style="color:#94a3b8">Total Own:</span> {own_display}'
+                f'</div>', unsafe_allow_html=True)
+            q_cols[2].markdown(
+                f'<div style="padding:4px;font-size:0.85rem;">'
+                f'<span style="color:#94a3b8">Avg Leverage:</span> '
+                f'<span style="font-weight:600">{avg_lev:.2f}</span>'
+                f'</div>', unsafe_allow_html=True)
+            q_cols[3].markdown(
+                f'<div style="padding:4px;font-size:0.85rem;">'
+                f'<span style="color:#94a3b8">Avg Proj:</span> '
+                f'<span style="font-weight:600">{total_pts / max(len(lineup),1):.1f}</span>'
+                f'</div>', unsafe_allow_html=True)
+        except Exception:
+            # Quality indicator is informational — never block the optimizer
+            pass
+
         # Lineup table with swap controls
         # Use driver name in keys (not index) so keys stay stable across reruns
         sorted_lineup = sorted(lineup, key=lambda x: x["Proj Score"], reverse=True)
