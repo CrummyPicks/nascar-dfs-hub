@@ -212,18 +212,23 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         pool["Leverage"] = pool["Driver"].map(
             lambda d: fuzzy_get(d, lev_map, lev_norm) or 0).round(2)
 
-    # Build signal label
-    signals_used = []
-    if proj_dk_map: signals_used.append("proj_dk")
-    if th_scores: signals_used.append("track")
-    if tt_scores: signals_used.append("type")
-    if qual_scores: signals_used.append("qual")
-    if prac_scores: signals_used.append("practice")
-    if odds_scores: signals_used.append("odds")
-    engine_label = f"{len(signals_used)}-signal model ({', '.join(signals_used)})"
+    # Build signal label. When proj_dk_map is populated, the optimizer uses
+    # Projections-tab Proj DK directly — the other signals are NOT re-weighted
+    # here. Only when Proj DK is unavailable does the optimizer fall back to
+    # building its own composite from track/type/qual/practice/odds signals.
+    if proj_dk_map:
+        engine_label = "Using Proj DK from Projections tab"
+    else:
+        signals_used = []
+        if th_scores: signals_used.append("track")
+        if tt_scores: signals_used.append("type")
+        if qual_scores: signals_used.append("qual")
+        if prac_scores: signals_used.append("practice")
+        if odds_scores: signals_used.append("odds")
+        engine_label = f"Composite fallback — {len(signals_used)} signals ({', '.join(signals_used)})"
 
-    return pool[["Driver", "DK Salary", "Proj Score", "Value"]].sort_values(
-        "Proj Score", ascending=False).reset_index(drop=True), engine_label
+    # Preserve all pool columns (includes Proj Own % / Leverage if present)
+    return pool.sort_values("Proj Score", ascending=False).reset_index(drop=True), engine_label
 
 
 # ── Lineup Generation ───────────────────────────────────────────────────────
@@ -515,7 +520,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.warning("Could not build projection pool. Check salary data.")
         return
 
-    # ─── Dominator recommendation banner ──────────────────────────────────
+    # ─── Dominator recommendation banner (ADVISORY ONLY — does not affect optimization) ──
     try:
         from src.dominators import get_dominator_recommendation, identify_dominators_in_projection
         from src.config import DB_PATH as _DB_PATH
@@ -525,32 +530,31 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             track_name=track_name,
             track_type=_track_type_lookup,
         )
-        # Count how many drivers in the pool are currently projected to be dominators
-        # (uses proj_detail laps_led + fast_laps from the projection engine)
+        # Count how many drivers in the current projection pool meet the dominator
+        # threshold (20+ DK pts from projected LL + FL). This is an informational
+        # tally of the POOL, not a constraint on lineups.
         _proj_detail = st.session_state.get("proj_detail_map", {})
         _proj_doms = identify_dominators_in_projection(_proj_detail)
-        # Count locked dominators
-        _locked_doms = st.session_state.opt_locked & _proj_doms
         rec_low = _dom_rec.get("recommended_low", _dom_rec["recommended"])
         rec_high = _dom_rec.get("recommended_high", _dom_rec["recommended"])
         if rec_low == rec_high:
             _rec_label = f"**{rec_low}** dominator{'s' if rec_low != 1 else ''}"
         else:
             _rec_label = f"**{rec_low}-{rec_high}** dominators"
-        _scope_label = "🎯 " if _dom_rec["scope"] == "track" else "📊 "
-        _doms_available_label = (
-            f"  •  {len(_proj_doms)} projected dominator{'s' if len(_proj_doms) != 1 else ''} in pool"
-            if _proj_doms else "  •  No projected dominators yet (build lineups first)"
-        )
-        _locked_label = (
-            f"  •  {len(_locked_doms)} locked"
-            if _locked_doms else ""
+        _pool_tally = (
+            f"  •  Pool currently has {len(_proj_doms)} driver"
+            f"{'s' if len(_proj_doms) != 1 else ''} meeting the dominator threshold "
+            f"(20+ projected LL+FL DK pts)"
+            if _proj_doms else
+            "  •  No drivers in pool currently meet the 20 DK-pt dominator threshold"
         )
         st.info(
-            f"{_scope_label}**Dominator target:** {_rec_label} for {track_name}. "
-            f"{_dom_rec['rationale']}{_doms_available_label}{_locked_label}"
+            f"**Dominator guidance:** target {_rec_label} for {track_name}. "
+            f"{_dom_rec['rationale']}{_pool_tally}. "
+            f"_This is advisory — the optimizer will still find the best-projected "
+            f"lineups regardless._"
         )
-    except Exception as _dom_err:
+    except Exception:
         # Non-fatal — banner is informational only
         pass
 
@@ -616,7 +620,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
         # Lock/Exclude/Override in a table-like layout
         # Header row
-        hdr_cols = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.7])
+        hdr_cols = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.9])
         hdr_cols[0].markdown("**L**")
         hdr_cols[1].markdown("**X**")
         hdr_cols[2].markdown("**Driver**")
@@ -624,7 +628,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         hdr_cols[4].markdown("**Proj**")
         hdr_cols[5].markdown("**Override**")
         hdr_cols[6].markdown("**Value**")
-        hdr_cols[7].markdown("**Status**")
+        hdr_cols[7].markdown("**Own %**")
 
         # Scrollable player rows
         pool_rows = pool_display.head(50).to_dict("records")
@@ -640,7 +644,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             in_lineup = driver in lineup_drivers
             has_override = driver in st.session_state.opt_overrides
 
-            r = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.7])
+            r = st.columns([0.35, 0.35, 2.2, 0.9, 0.9, 0.9, 0.9, 0.9])
 
             with r[0]:
                 new_lock = st.checkbox("L", value=is_locked, key=f"pp_lock_{safe_key}",
@@ -689,14 +693,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
             r[6].markdown(f"{row['Value']:.2f}x")
 
-            status = ""
-            if is_locked:
-                status = "Locked"
-            elif is_excluded:
-                status = "Out"
-            elif in_lineup:
-                status = "In"
-            r[7].markdown(status)
+            # Projected ownership — empty if not yet computed (projections tab hasn't run)
+            own_val = row.get("Proj Own %")
+            if own_val is not None and not pd.isna(own_val):
+                r[7].markdown(f"{own_val:.1f}%")
+            else:
+                r[7].markdown("—")
 
         if needs_rerun:
             # Re-apply overrides to pool before re-optimizing

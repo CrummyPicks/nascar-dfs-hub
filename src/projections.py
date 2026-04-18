@@ -45,6 +45,11 @@ def compute_projections(
     mid_field = field_size * 0.5
     MIN_RACES_FULL_TRUST = 5
 
+    # Count how many drivers in the field have Vegas odds quoted. Used for the
+    # "absent from Vegas" penalty: if Vegas quoted 15+ drivers but skipped this
+    # one, that's informative (Vegas won't even price him) — apply extra penalty.
+    _odds_quoted_count = sum(1 for _d in drivers if odds_finish.get(_d))
+
     # ── Pass 1: Gather raw signal values per driver ──
     raw_signals = {}
     signal_weight_map = {}
@@ -228,18 +233,42 @@ def compute_projections(
         else:
             raw_finish = field_size * 0.75
 
-        # Low-information penalty: when a driver has few quality signals, we
-        # should not trust the remaining signal(s) at full confidence. This
-        # prevents inexperienced drivers from projecting well off of a single
-        # qualifying lap or a single odds quote. Blend toward back-of-field
-        # proportional to how little data we have.
-        signal_count = len([s for s in sigs if s not in ("team",)])
-        # "team" isn't driver-specific context so we exclude it from the count
-        confidence = min(1.0, signal_count / 3.0)  # full trust only at 3+ signals
+        # Low-information penalty: when a driver has few quality *driver-specific*
+        # signals, blend the projection toward back-of-field proportional to how
+        # little data we have. Without this, a driver with only a qualifying
+        # position (no history, no odds, no practice) gets that one signal at
+        # 100% confidence — inflating inexperienced drivers' projections.
+        #
+        # BUG FIX: this previously referenced `sigs` from Pass 1, which held
+        # whatever the LAST driver in that loop had — unpredictable. Now uses
+        # `norm` (the current driver's normalized signal dict).
+        #
+        # Weighting rule:
+        #   - track, track_type, practice, odds = "driver-specific" (count fully)
+        #   - qual = counts as 0.5 (single lap, doesn't prove race pace)
+        #   - team = counts as 0.5 (tells us about equipment, not the driver)
+        driver_specific = {"track", "ttype", "prac", "odds"}
+        partial_signals = {"qual", "team"}
+        signal_weight_score = (
+            sum(1.0 for s in norm if s in driver_specific)
+            + sum(0.5 for s in norm if s in partial_signals)
+        )
+        # Absent-from-Vegas penalty: when most of the field has odds but this
+        # driver doesn't, Vegas is saying they don't even trust him enough to
+        # quote. That's informative — not a neutral "missing" signal.
+        vegas_skipped = (_odds_quoted_count >= 15 and not odds_finish.get(d))
+        if vegas_skipped:
+            signal_weight_score = max(0.0, signal_weight_score - 0.5)
+
+        # Full trust only at 3.0+ signal-weight (e.g. track + ttype + odds,
+        # OR track + ttype + prac, OR odds + prac + qual + team).
+        confidence = min(1.0, signal_weight_score / 3.0)
         if confidence < 1.0:
-            back_field_anchor = field_size * 0.85
+            back_field_anchor = field_size * 0.90  # 85% → 90% (more punitive)
             raw_finish = raw_finish * confidence + back_field_anchor * (1 - confidence)
-            sig_detail["LowInfo"] = f"{signal_count}sig"
+            sig_detail["LowInfo"] = f"{signal_weight_score:.1f}sig"
+            if vegas_skipped:
+                sig_detail["LowInfo"] += " (no-odds)"
 
         # Manufacturer adjustment
         mfr_adj = mfr_adjustment.get(d, 0) if mfr_adjustment else 0
