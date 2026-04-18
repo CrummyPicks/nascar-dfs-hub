@@ -420,11 +420,22 @@ def compute_projections(
         dom_raw_scores[d] = dom_score
         fl_raw_scores[d] = fl_score
 
-    # ── Rank-order finish assignment ──
-    sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
+    # ── Finish position assignment ──
+    # Use the raw projected finish (rounded, clamped to [1, field_size]).
+    # Previously this was rank-based (1st place to last place by rank), which
+    # discarded the magnitude of raw_finish and compressed low-info drivers
+    # toward the middle of the field — e.g., a driver whose raw projection
+    # was P33 would get assigned P24 if only 23 drivers projected better,
+    # making the low-info penalty invisible in the displayed result.
+    #
+    # Raw-based assignment preserves the penalty's effect: a driver with
+    # insufficient data projects where the math says, not at an artificially
+    # middle-of-pack rank. Ties (multiple drivers rounding to the same
+    # position) are fine for display — diff_pts and finish_pts still
+    # compute correctly from the shared integer.
     driver_proj_finish = {}
-    for rank_idx, (d, _) in enumerate(sorted_drivers):
-        driver_proj_finish[d] = rank_idx + 1
+    for d, raw in driver_raw_scores.items():
+        driver_proj_finish[d] = max(1, min(field_size, round(raw)))
 
     # ── Allocate laps led and fastest laps ──
     allocated_ll = _allocate_laps_led(

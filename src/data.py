@@ -1504,42 +1504,6 @@ def query_salaries(race_id: int = None, platform: str = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def query_projections(race_id: int = None, platform: str = "DraftKings") -> pd.DataFrame:
-    """Query stored projections from database."""
-    if not DB_PATH.exists():
-        return pd.DataFrame()
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        query = """
-            SELECT d.full_name as Driver,
-                   p.proj_score as "Proj Score",
-                   p.salary as Salary,
-                   p.value as Value,
-                   p.track_score as "Track Score",
-                   p.track_type_score as "Track Type Score",
-                   p.form_score as "Form Score",
-                   p.qual_adj as "Qual Adj",
-                   p.practice_adj as "Practice Adj",
-                   p.odds_adj as "Odds Adj",
-                   p.track_races as "Track Races",
-                   p.form_races as "Form Races",
-                   p.generated_at
-            FROM projections p
-            JOIN drivers d ON d.id = p.driver_id
-            WHERE p.platform = ?
-        """
-        params = [platform]
-        if race_id:
-            query += " AND p.race_id = ?"
-            params.append(race_id)
-        query += " ORDER BY p.proj_score DESC"
-        df = pd.read_sql_query(query, conn, params=params)
-        conn.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
 # ============================================================
 # AUTO SALARY FETCH (DraftKings API)
 # ============================================================
