@@ -28,7 +28,7 @@ def _file_size_mb(path: Path) -> float:
 def _row_counts(conn) -> dict:
     tables = [
         "races", "drivers", "tracks", "race_results",
-        "salaries", "odds", "projections",
+        "salaries", "odds", "saved_projections",
     ]
     counts = {}
     for t in tables:
@@ -36,7 +36,27 @@ def _row_counts(conn) -> dict:
             counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         except Exception:
             counts[t] = None
+    # Rename for clearer display
+    counts["projections"] = counts.pop("saved_projections", 0)
     return counts
+
+
+def _projections_coverage(conn) -> dict:
+    """How many races have saved projections vs total races?
+
+    A "covered" race is one with at least one row in saved_projections.
+    Useful for tracking how well we're capturing snapshot-in-time projections
+    as a % of races the DB knows about.
+    """
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM races").fetchone()[0]
+        covered = conn.execute(
+            "SELECT COUNT(DISTINCT race_id) FROM saved_projections"
+        ).fetchone()[0]
+        return {"total": total, "covered": covered,
+                "pct": (covered / total * 100) if total else 0.0}
+    except Exception:
+        return {"total": 0, "covered": 0, "pct": 0.0}
 
 
 def _find_salary_fingerprint_collisions(conn) -> pd.DataFrame:
@@ -99,7 +119,6 @@ def _find_races_missing_data(conn, series_id: int | None = None, season: int | N
             (SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.id AND rr.avg_running_position IS NOT NULL) as n_arp
         FROM races r
         WHERE {where}
-        ORDER BY r.race_date DESC
     '''
     rows = conn.execute(q, params).fetchall()
 
@@ -358,10 +377,16 @@ def render(*, series_id: int = None, selected_year: int = None):
     cols[3].metric("Results", f"{counts.get('race_results', 0):,}")
     cols[4].metric("Odds rows", f"{counts.get('odds', 0):,}")
 
-    cols2 = st.columns(3)
+    cols2 = st.columns(4)
     cols2[0].metric("Salaries", f"{counts.get('salaries', 0):,}")
     cols2[1].metric("Projections", f"{counts.get('projections', 0):,}")
     cols2[2].metric("Tracks", f"{counts.get('tracks', 0):,}")
+    cov = _projections_coverage(conn)
+    cols2[3].metric(
+        "Proj Coverage",
+        f"{cov['covered']}/{cov['total']} races",
+        f"{cov['pct']:.0f}%"
+    )
 
     st.divider()
 
@@ -402,14 +427,20 @@ def render(*, series_id: int = None, selected_year: int = None):
     if missing_df.empty:
         st.success("✅ All races have required data.")
     else:
-        past_df = missing_df[missing_df["Past"] == True].drop(columns=["Past"])
-        upc_df = missing_df[missing_df["Past"] == False].drop(columns=["Past"])
-        if not past_df.empty:
-            st.warning(f"⚠️ {len(past_df)} past races missing data:")
-            st.dataframe(past_df, width="stretch", hide_index=True)
+        # Past races: most-recent first (you care about what JUST happened).
+        # Upcoming races: soonest first (next races on the calendar).
+        past_df = (missing_df[missing_df["Past"] == True]
+                   .drop(columns=["Past"])
+                   .sort_values("Date", ascending=False))
+        upc_df = (missing_df[missing_df["Past"] == False]
+                  .drop(columns=["Past"])
+                  .sort_values("Date", ascending=True))
         if not upc_df.empty:
-            st.info(f"ℹ️ {len(upc_df)} upcoming races missing data (may still be coming):")
+            st.info(f"ℹ️ {len(upc_df)} upcoming races missing data (soonest first):")
             st.dataframe(upc_df, width="stretch", hide_index=True)
+        if not past_df.empty:
+            st.warning(f"⚠️ {len(past_df)} past races missing data (most recent first):")
+            st.dataframe(past_df, width="stretch", hide_index=True)
 
     st.divider()
 

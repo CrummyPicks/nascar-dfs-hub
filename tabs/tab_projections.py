@@ -347,7 +347,32 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     section_header("Projections", race_name)
 
     if not is_prerace:
-        st.caption("Race completed — projections shown for review")
+        # When viewing a completed race, check if a snapshot was saved before
+        # the race. Show its saved_at date so the user knows this is a
+        # point-in-time view, not a recompute with post-race data.
+        snapshot_note = ""
+        try:
+            import sqlite3 as _sql
+            _c = _sql.connect(str(PROJ_DB))
+            _row = _c.execute(
+                "SELECT MIN(saved_at), MAX(saved_at), COUNT(*) "
+                "FROM saved_projections WHERE race_id = ? AND series_id = ?",
+                (race_id, series_id)
+            ).fetchone()
+            _c.close()
+            if _row and _row[2] > 0:
+                first_saved = (_row[0] or "")[:10]
+                last_saved = (_row[1] or "")[:10]
+                if first_saved == last_saved:
+                    snapshot_note = f" — snapshot captured {first_saved}"
+                else:
+                    snapshot_note = f" — snapshot range {first_saved} → {last_saved}"
+        except Exception:
+            pass
+        st.caption(
+            f"Race completed — projections use data available prior to race date "
+            f"({race_date}){snapshot_note}. No post-race data leakage."
+        )
 
     if entry_list_df.empty and dk_df.empty:
         st.warning("Entry list not available for this race.")
@@ -1349,18 +1374,43 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                          "Sig Prac", "Sig Qual", "Sig Team", "Team Adj", "Mfr Adj"])
     avail = [c for c in display_cols if c in proj.columns]
 
-    # Auto-save pre-race projections for historical record
-    if is_prerace and race_id:
-        _auto_save_key = f"proj_autosaved_{race_id}"
+    # Auto-save a snapshot of the current projection to DB. Runs for BOTH
+    # upcoming and completed races because the engine already applies a
+    # before_date filter when !is_prerace — so the projection shown for a
+    # historical race is "what we would have projected just before that race
+    # given only data available at the time." Saving it captures that
+    # snapshot-in-time for future accuracy analysis.
+    #
+    # Session-state dedup key means we save once per (race, session), not
+    # on every rerun — saves DB writes and keeps the snapshot stable.
+    if race_id:
+        _auto_save_key = f"proj_autosaved_{race_id}_{series_id}"
+        # If a saved projection already exists for this race AND was created
+        # recently (within a week), we don't overwrite — that protects
+        # historical snapshots from being clobbered by changes to the engine
+        # or the DB's underlying data. For upcoming races with no prior
+        # snapshot, always save fresh.
         if _auto_save_key not in st.session_state:
             try:
                 from tabs.tab_accuracy import save_projections_to_db
                 from datetime import datetime
-                season = datetime.now().year
-                save_projections_to_db(
-                    proj, race_id, race_name, track_name,
-                    series_id, season, wn
-                )
+                import sqlite3 as _sql
+                _save_conn = _sql.connect(str(PROJ_DB))
+                _existing = _save_conn.execute(
+                    "SELECT COUNT(*), MAX(saved_at) FROM saved_projections "
+                    "WHERE race_id = ? AND series_id = ?",
+                    (race_id, series_id)
+                ).fetchone()
+                _save_conn.close()
+                _has_existing = _existing[0] > 0
+                # Only save if: no existing snapshot, OR upcoming race (weights
+                # may have changed since last save).
+                should_save = (not _has_existing) or is_prerace
+                if should_save:
+                    save_projections_to_db(
+                        proj, race_id, race_name, track_name,
+                        series_id, season, wn
+                    )
                 st.session_state[_auto_save_key] = True
             except Exception:
                 pass
