@@ -728,13 +728,32 @@ if odds_data and not entry_list_df.empty:
             remapped[matched if matched else odds_name] = odds_val
     odds_data = remapped
 
-# Auto-pull practice data from lap averages
+# Auto-pull practice data from lap averages, remapping names to match the
+# entry list so downstream lookups succeed. NASCAR's lap-averages feed can
+# use different spellings than the entry list (e.g. "John H. Nemechek" vs
+# "John Hunter Nemechek"), so we normalize + fuzzy-match each key to the
+# canonical entry-list name before storing. Mirrors the odds remap above.
 if not lap_averages_df.empty and "Overall Rank" in lap_averages_df.columns and not practice_data:
+    from src.utils import normalize_driver_name, fuzzy_match_name
+    _entry_drivers = entry_list_df["Driver"].tolist() if not entry_list_df.empty else []
+    _norm_entry = {normalize_driver_name(d): d for d in _entry_drivers}
     for _, row in lap_averages_df.iterrows():
         driver = row.get("Driver")
         rank = row.get("Overall Rank")
-        if driver and rank and not pd.isna(rank):
-            practice_data[driver] = int(rank)
+        if not driver or rank is None or pd.isna(rank):
+            continue
+        key = driver
+        if _entry_drivers and driver not in _entry_drivers:
+            # Try normalized match
+            norm_key = normalize_driver_name(driver)
+            if norm_key in _norm_entry:
+                key = _norm_entry[norm_key]
+            else:
+                # Fuzzy fallback
+                matched = fuzzy_match_name(driver, _entry_drivers)
+                if matched:
+                    key = matched
+        practice_data[key] = int(rank)
 
 # Parse salary CSVs — priority: CSV upload > saved DB
 if dk_file:
