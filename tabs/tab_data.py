@@ -130,9 +130,14 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         pdata = prop_odds.get(key, {})
         if pdata:
             pkeys = list(pdata.keys())
-            def _match_prop(driver, _d=pdata, _k=pkeys):
+            # Match direct -> normalized (fast, handles periods/accents) -> fuzzy
+            _pnorm = {normalize_driver_name(k): v for k, v in pdata.items()}
+            def _match_prop(driver, _d=pdata, _k=pkeys, _norm=_pnorm):
                 if driver in _d:
                     return _d[driver]
+                nk = normalize_driver_name(driver)
+                if nk in _norm:
+                    return _norm[nk]
                 matched = fuzzy_match_name(driver, _k)
                 return _d.get(matched) if matched else None
             master[label] = master["Driver"].map(_match_prop)
@@ -335,7 +340,9 @@ def _render_charts_view(completed_races, series_id, selected_year,
     if not is_prerace and not results_df.empty:
         avg_run_pos = compute_avg_running_position(lap_data) if lap_data else {}
         res = results_df.copy()
-        res["Fastest Laps"] = res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")
+        _fl_norm = build_norm_lookup(fl_counts)
+        res["Fastest Laps"] = res["Driver"].map(
+            lambda d: fuzzy_get(d, fl_counts, _fl_norm) or 0).astype("Int64")
         res["DFS Points"] = res.apply(
             lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
 
@@ -431,10 +438,14 @@ def _render_charts_view(completed_races, series_id, selected_year,
         st.divider()
         avg_run_data = compute_avg_running_position(lap_data)
         race_res = results_df.copy()
-        race_res["Fastest Laps"] = race_res["Driver"].map(lambda d: fl_counts.get(d, 0)).astype("Int64")
+        _fl_norm2 = build_norm_lookup(fl_counts)
+        _arp_norm = build_norm_lookup(avg_run_data)
+        race_res["Fastest Laps"] = race_res["Driver"].map(
+            lambda d: fuzzy_get(d, fl_counts, _fl_norm2) or 0).astype("Int64")
         race_res["DK Pts"] = race_res.apply(
             lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
-        race_res["Avg Run"] = race_res["Driver"].map(lambda d: avg_run_data.get(d))
+        race_res["Avg Run"] = race_res["Driver"].map(
+            lambda d: fuzzy_get(d, avg_run_data, _arp_norm))
 
         fig = race_scatter(race_res)
         if fig:

@@ -1242,10 +1242,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         lambda r: _pd_upside_tier(r.get("Start"), r.get("Proj Finish")), axis=1
     )
 
-    # Merge car number if available
+    # Merge car number if available — use fuzzy_merge for name-variation
+    # safety even though proj and base_df should share driver spellings
+    # (both derived from the entry list).
     if "Car" in base_df.columns:
-        proj = proj.merge(base_df[["Driver", "Car"]].drop_duplicates("Driver"),
-                          on="Driver", how="left")
+        proj = fuzzy_merge(proj, base_df[["Driver", "Car"]].drop_duplicates("Driver"),
+                           on="Driver", how="left")
 
     # Merge salary
     if not dk_df.empty:
