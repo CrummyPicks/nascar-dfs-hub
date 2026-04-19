@@ -143,7 +143,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         qual_cols = qualifying_df[[c for c in qual_want if c in qualifying_df.columns]].copy()
         qual_cols = qual_cols.drop_duplicates("Driver")
         qual_cols = qual_cols.rename(columns={"Qualifying Position": "Qual", "Best Lap Speed": "Qual Speed"})
-        master = master.merge(qual_cols, on="Driver", how="left")
+        # Use fuzzy_merge for name-variation safety (e.g. Suárez/Suarez)
+        master = fuzzy_merge(master, qual_cols, on="Driver", how="left")
 
     # Sponsor from lap averages
     if not lap_averages_df.empty and "Sponsor" in lap_averages_df.columns and "Sponsor" not in master.columns:
@@ -152,7 +153,11 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         master["Sponsor"] = master["Driver"].map(
             lambda d: fuzzy_get(d, sponsor_map, sponsor_norm))
 
-    # Practice lap average ranks
+    # Practice lap average ranks — use fuzzy_merge so name variations
+    # from the lap-averages feed (e.g. "John Hunter Nemechek" vs entry-list
+    # "John H. Nemechek", "Daniel Suarez" vs "Daniel Suárez") still join.
+    # Plain pandas merge requires exact string match and silently produces
+    # NaN for mismatched driver names.
     if not lap_averages_df.empty:
         prac_cols = ["Driver"]
         for col in ["Overall Avg", "Overall Rank", "Best Lap",
@@ -160,7 +165,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
                      "20 Lap Rank", "25 Lap Rank", "30 Lap Rank"]:
             if col in lap_averages_df.columns:
                 prac_cols.append(col)
-        master = master.merge(lap_averages_df[prac_cols].drop_duplicates("Driver"), on="Driver", how="left")
+        master = fuzzy_merge(master, lap_averages_df[prac_cols].drop_duplicates("Driver"),
+                              on="Driver", how="left")
 
     # Track History — DB-backed (Next Gen era 2022+), cleaner than scraper
     with st.spinner(f"Loading {track_name} history..."):
