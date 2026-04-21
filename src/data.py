@@ -19,21 +19,35 @@ import re
 
 
 def _clean_api_name(name: str) -> str:
-    """Normalize a driver name from any NASCAR API endpoint.
+    """Canonicalize a driver name for display AND storage.
 
-    Strips rookie indicators (*), charter indicators (#), suffixes like (i)/(R),
-    and normalizes Jr./Sr. suffixes to consistent forms without trailing periods.
+    Applied at every API ingress point so the app surfaces one consistent
+    spelling throughout. Rules:
+      1. Strip race-meta indicators (*, #, (i), (R))
+      2. Fold Unicode to ASCII — "Daniel Suárez" -> "Daniel Suarez"
+      3. Remove ALL periods — "A.J." -> "AJ", "John H." -> "John H"
+      4. Collapse consecutive whitespace that period-stripping may introduce
+      5. Normalize Jr./Sr. suffixes (already covered by rule 3, kept for clarity)
+
+    Name matching via normalize_driver_name + DRIVER_ALIASES still works
+    because that layer also strips accents and periods and applies alias
+    mappings (e.g. "john h nemechek" -> "john hunter nemechek").
     """
     if not name:
         return ""
+    import unicodedata as _ud
     name = name.strip()
-    name = re.sub(r'^\*\s*', '', name)        # leading asterisk (rookie)
-    name = re.sub(r'\s*#$', '', name)          # trailing # (charter)
-    name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)  # trailing (i)/(R)
-    # Normalize "Jr." -> "Jr", "Sr." -> "Sr" (remove trailing period on suffixes)
-    name = re.sub(r'\bJr\.\s*$', 'Jr', name)
-    name = re.sub(r'\bSr\.\s*$', 'Sr', name)
-    return name.strip()
+    # Strip race-meta indicators
+    name = re.sub(r'^\*\s*', '', name)            # leading asterisk (rookie)
+    name = re.sub(r'\s*#$', '', name)              # trailing # (charter)
+    name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)   # trailing (i)/(R)
+    # Unicode fold: Suárez -> Suarez, Leguizamón -> Leguizamon
+    name = _ud.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    # Remove all periods (A.J. -> AJ, John H. -> John H, Jr. -> Jr)
+    name = name.replace(".", "")
+    # Collapse any accidental multiple spaces introduced by period stripping
+    name = " ".join(name.split())
+    return name
 
 
 # ============================================================

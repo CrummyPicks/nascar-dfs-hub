@@ -37,13 +37,20 @@ DK_FINISH_POINTS = {
 
 
 def _clean_api_name(name: str) -> str:
-    """Clean API name (same as src/data.py)."""
+    """Clean API name — must mirror src/data.py::_clean_api_name exactly
+    so scraped names align with the main ingest pipeline."""
+    if not name:
+        return ""
+    import unicodedata as _ud
+    name = name.strip()
     name = re.sub(r'^\*\s*', '', name)
     name = re.sub(r'\s*#$', '', name)
     name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)
-    name = re.sub(r'\bJr\.\s*$', 'Jr', name)
-    name = re.sub(r'\bSr\.\s*$', 'Sr', name)
-    return name.strip()
+    # Unicode fold + strip periods + collapse whitespace (matches src/data.py)
+    name = _ud.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    name = name.replace(".", "")
+    name = " ".join(name.split())
+    return name
 
 
 def compute_fastest_laps(lap_data: dict) -> dict:
