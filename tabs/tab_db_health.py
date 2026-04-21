@@ -173,23 +173,49 @@ def _find_orphaned_rows(conn) -> dict:
 
 
 def _find_duplicate_drivers(conn) -> pd.DataFrame:
-    """Find driver names that normalize to the same key but are stored separately.
+    """Find driver rows that normalize to the same key AND aren't provably
+    distinct (no shared races).
 
-    Indicates name-matching failures where one driver got two driver_ids.
+    Two drivers that BOTH appear in the same race can't be the same person
+    (one driver, one car per race), so we exclude those pairs. This avoids
+    false positives like "Austin Hill" vs "Austin J Hill" — two different
+    drivers who've raced each other and happen to share a last name.
     """
     rows = conn.execute("SELECT id, full_name FROM drivers").fetchall()
     norm_map = defaultdict(list)
     for did, name in rows:
         nn = normalize_driver_name(name)
         norm_map[nn].append((did, name))
+
+    def _shares_race(a_id, b_id):
+        r = conn.execute(
+            "SELECT 1 FROM race_results ra "
+            "JOIN race_results rb ON rb.race_id = ra.race_id "
+            "WHERE ra.driver_id = ? AND rb.driver_id = ? LIMIT 1",
+            (a_id, b_id)
+        ).fetchone()
+        return r is not None
+
     out = []
     for nn, entries in norm_map.items():
-        if len(entries) > 1:
-            out.append({
-                "Normalized Key": nn,
-                "Duplicate Names": " | ".join(f"{n} (id={i})" for i, n in entries),
-                "Count": len(entries),
-            })
+        if len(entries) <= 1:
+            continue
+        # Skip if any pair in the group has raced the same event (distinct drivers)
+        distinct = False
+        for i in range(len(entries)):
+            for j in range(i + 1, len(entries)):
+                if _shares_race(entries[i][0], entries[j][0]):
+                    distinct = True
+                    break
+            if distinct:
+                break
+        if distinct:
+            continue
+        out.append({
+            "Normalized Key": nn,
+            "Duplicate Names": " | ".join(f"{n} (id={i})" for i, n in entries),
+            "Count": len(entries),
+        })
     return pd.DataFrame(out).sort_values("Count", ascending=False) if out else pd.DataFrame()
 
 

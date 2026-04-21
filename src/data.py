@@ -205,9 +205,40 @@ def merge_duplicate_drivers(verbose: bool = False) -> dict:
         # Large primary, moderate tiebreakers
         return (rr, 1 if has_accent else 0, -r["id"])
 
+    def _shares_race(a_id, b_id):
+        """Return True if both driver_ids have race_results for the same race.
+        A single driver cannot race two cars in one event — so if both rows
+        appear in the same race they are DEFINITIVELY distinct people.
+        """
+        row = conn.execute(
+            "SELECT 1 FROM race_results ra "
+            "JOIN race_results rb ON rb.race_id = ra.race_id "
+            "WHERE ra.driver_id = ? AND rb.driver_id = ? LIMIT 1",
+            (a_id, b_id)
+        ).fetchone()
+        return row is not None
+
     for key, rows in groups.items():
         if len(rows) < 2:
             continue
+
+        # SAFETY: if any pair in the group raced the same event, they're
+        # distinct drivers (one car each per race) — skip the merge.
+        pairs_distinct = False
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                if _shares_race(rows[i]["id"], rows[j]["id"]):
+                    pairs_distinct = True
+                    if verbose:
+                        print(f"  SKIP [{key}]: {rows[i]['full_name']} (id={rows[i]['id']}) "
+                              f"and {rows[j]['full_name']} (id={rows[j]['id']}) "
+                              f"share a race — they're distinct drivers, not duplicates.")
+                    break
+            if pairs_distinct:
+                break
+        if pairs_distinct:
+            continue
+
         # Pick canonical
         canonical = max(rows, key=_score_row)
         others = [r for r in rows if r["id"] != canonical["id"]]
