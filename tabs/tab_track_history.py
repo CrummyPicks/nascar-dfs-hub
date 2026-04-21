@@ -123,14 +123,14 @@ def render(*, track_name, track_type, series_id):
             st.info(f"No data found for {track_name}. Run `python refresh_data.py --all` to populate.")
 
     elif hist_view == "By Track Type":
-        # Show stats for this track's type from database
+        # Show stats for this track's type from database, filtered to current series
         type_tracks = _tracks_for_type(track_type)
         parent_tracks = _tracks_for_type(f"All {parent_type.title()}")
         display_type = track_type.replace("_", " ").title()
-        st.caption(f"Track type: **{display_type}** — stats from database")
+        st.caption(f"Track type: **{display_type}** — stats from database (current series)")
         if type_tracks:
             st.caption(f"Includes: {', '.join(type_tracks)}")
-        tt_df = query_track_type_stats(track_type)
+        tt_df = query_track_type_stats(track_type, series_id=series_id)
         if not tt_df.empty:
             display = format_display_df(tt_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
@@ -138,7 +138,7 @@ def render(*, track_name, track_type, series_id):
             # Try parent type as fallback
             if track_type != parent_type:
                 st.caption(f"No data for subtype '{display_type}' — showing parent type '{parent_type.title()}'")
-                parent_df = query_track_type_stats(parent_type)
+                parent_df = query_track_type_stats(parent_type, series_id=series_id)
                 if not parent_df.empty:
                     display = format_display_df(parent_df)
                     st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
@@ -212,7 +212,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
         desc_tracks = _tracks_for_type(track_type_filter)
         if desc_tracks:
             st.caption(f"**{_format_type_label(track_type_filter)}**: {', '.join(desc_tracks)}")
-        tt_df = query_track_type_stats(track_type_filter)
+        tt_df = query_track_type_stats(track_type_filter, series_id=series_id)
         if not tt_df.empty:
             display = format_display_df(tt_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
@@ -223,7 +223,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
     elif hist_view == "2026 Season":
         st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks (2026 only)")
         # Use track type query to filter season data to this type AND 2026 only
-        season_df = query_track_type_stats(track_type_filter, season=2026)
+        season_df = query_track_type_stats(track_type_filter, season=2026, series_id=series_id)
         if not season_df.empty:
             display = format_display_df(season_df)
             st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)

@@ -1122,7 +1122,8 @@ def query_season_stats(track_name: str = None, season: int = None,
         return pd.DataFrame()
 
 
-def query_track_type_stats(track_type: str, season: int = None) -> pd.DataFrame:
+def query_track_type_stats(track_type: str, season: int = None,
+                            series_id: int = None) -> pd.DataFrame:
     """Pull stats filtered by track type from local DB.
 
     Handles both DB-level types (short, intermediate, road, superspeedway, dirt)
@@ -1130,6 +1131,9 @@ def query_track_type_stats(track_type: str, season: int = None) -> pd.DataFrame:
     - For subtypes: filtering by track names belonging to that subtype
     - For parent groups ("All Short"): including all tracks of that parent type
     - For base types: querying by DB track_type directly
+
+    When series_id is provided, results are filtered to that series only.
+    Without it, results span all series (useful for cross-series analysis).
     """
     from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
     if not DB_PATH.exists():
@@ -1181,16 +1185,20 @@ def query_track_type_stats(track_type: str, season: int = None) -> pd.DataFrame:
             JOIN tracks t ON t.id=r.track_id
             WHERE t.name IN ({placeholders})
         """
+        params = list(filter_tracks)
+        if series_id:
+            query += " AND r.series_id = ?"
+            params.append(series_id)
         if season:
-            query += f" AND r.season = ?"
-            filter_tracks = filter_tracks + [season]
+            query += " AND r.season = ?"
+            params.append(season)
         query += """
             GROUP BY d.full_name
             HAVING Races >= 1
             ORDER BY "Avg DFS" DESC
         """
 
-        df = pd.read_sql_query(query, conn, params=filter_tracks)
+        df = pd.read_sql_query(query, conn, params=params)
         conn.close()
         return df
     except Exception:
