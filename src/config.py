@@ -122,22 +122,90 @@ DA_TRACK_IDS = {
 # Keys/values are lowercase, ASCII-folded, period-stripped, suffix-stripped
 # ----------------------------
 DRIVER_ALIASES = {
-    # Middle-name / initial variants
+    # Middle-name / initial variants — most are now handled systematically
+    # by stripped_middle_key() and fuzzy_match_name(). These remain for
+    # non-pattern edge cases like stage/legal names.
     "john h nemechek": "john hunter nemechek",
     "john nemechek": "john hunter nemechek",
     "jh nemechek": "john hunter nemechek",
-    # Abbreviation variants
-    "a j allmendinger": "aj allmendinger",
-    "christopher buescher": "chris buescher",
-    "alexander bowman": "alex bowman",
-    # Nickname variants
-    "willy b": "william byron",
-    # CJ vs C.J. (periods stripped → "cj")
-    "c j mclaughlin": "cj mclaughlin",
-    "j j yeley": "jj yeley",
-    # Stage name / legal name variants
+    # Stage name / legal name variants (cannot be handled by rules)
     "cleetus mcfarland": "garrett mitchell",
     "cleetus mitchell": "garrett mitchell",
+    # "Willy B" nickname — not in NICKNAME_MAP because "willy" is uncommon
+    "willy b": "william byron",
+}
+
+# ----------------------------
+# COMMON FIRST-NAME NICKNAMES (bidirectional — both forms map to the canonical)
+# Used by nickname_canonical() in src/utils.py. Entries are lowercase.
+# Keys are alternate forms, values are the canonical longer form.
+# Applied during matching so "Nick Sanchez" and "Nicholas Sanchez" resolve
+# to the same driver without needing a hardcoded DRIVER_ALIASES entry.
+# ----------------------------
+NICKNAME_MAP = {
+    "nick":   "nicholas",
+    "nicky":  "nicholas",
+    "rob":    "robert",
+    "bob":    "robert",
+    "bobby":  "robert",
+    "robbie": "robert",
+    "dan":    "daniel",
+    "danny":  "daniel",
+    "mike":   "michael",
+    "mikey":  "michael",
+    "mick":   "michael",
+    "tom":    "thomas",
+    "tommy":  "thomas",
+    "chris":  "christopher",
+    "matt":   "matthew",
+    "matty":  "matthew",
+    "jim":    "james",
+    "jimmy":  "james",
+    "jamie":  "james",
+    "will":   "william",
+    "bill":   "william",
+    "billy":  "william",
+    "willie": "william",
+    "ted":    "theodore",
+    "teddy":  "theodore",
+    "tony":   "anthony",
+    "alex":   "alexander",
+    "xander": "alexander",
+    "ken":    "kenneth",
+    "kenny":  "kenneth",
+    "joe":    "joseph",
+    "joey":   "joseph",
+    "gabe":   "gabriel",
+    "sam":    "samuel",
+    "sammy":  "samuel",
+    "ben":    "benjamin",
+    "benny":  "benjamin",
+    "nate":   "nathaniel",
+    "ed":     "edward",
+    "eddie":  "edward",
+    "eddy":   "edward",
+    "rick":   "richard",
+    "ricky":  "richard",
+    "dick":   "richard",
+    "rich":   "richard",
+    "fred":   "frederick",
+    "freddy": "frederick",
+    "greg":   "gregory",
+    "pat":    "patrick",
+    "patty":  "patrick",
+    "andy":   "andrew",
+    "drew":   "andrew",
+    "jake":   "jacob",
+    "johnny": "john",
+    "stan":   "stanley",
+    "dave":   "david",
+    "davey":  "david",
+    "zach":   "zachary",
+    "zack":   "zachary",
+    "cam":    "cameron",
+    "vic":    "victor",
+    "vince":  "vincent",
+    "vinnie": "vincent",
 }
 
 # ----------------------------

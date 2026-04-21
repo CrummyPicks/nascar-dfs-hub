@@ -145,37 +145,48 @@ def sync_race_schedule_from_api(series_id: int, year: int, verbose: bool = False
 def merge_duplicate_drivers(verbose: bool = False) -> dict:
     """Find and merge duplicate driver entries.
 
-    Detection: two driver rows whose normalize_driver_name() output matches.
-    Examples it catches:
-      - "A.J. Allmendinger" vs "AJ Allmendinger"  (period stripping)
-      - "Daniel Suárez" vs "Daniel Suarez"         (accent folding)
-      - "Corey LaJoie" vs "Corey Lajoie"           (case)
-      - "John H. Nemechek" vs "John Hunter Nemechek" (via DRIVER_ALIASES)
+    Detection groups by a FULLY CANONICALIZED key that applies:
+      - normalize_driver_name (lowercase, accent fold, strip periods, aliases)
+      - nickname expansion   (Nick -> Nicholas, Bob -> Robert, etc.)
+      - middle-initial strip (Jason M White -> Jason White)
 
-    Merge strategy for each group of duplicates:
-      1. Canonical driver = the row with the most race_results (most proven
-         real), tiebreak on lowest ID. If tied at zero race_results, keep
-         the prettier display name (most accented / most periods, since
-         that's usually the "official" NASCAR spelling).
-      2. UPDATE all foreign keys (race_results, salaries, odds, dfs_points)
-         to point to the canonical driver_id.
+    Catches all of:
+      - A.J. Allmendinger / AJ Allmendinger           (periods)
+      - Daniel Suárez / Daniel Suarez                 (accent)
+      - Corey LaJoie / Corey Lajoie                   (case)
+      - John H. Nemechek / John Hunter Nemechek       (alias)
+      - Nick Sanchez / Nicholas Sanchez               (nickname)
+      - Jason White / Jason M White                   (middle initial)
+
+    Merge strategy per group:
+      1. Canonical = row with most race_results (most proven real).
+         Tiebreak: lower id.
+      2. UPDATE foreign keys (race_results/salaries/odds/dfs_points) to
+         canonical driver_id.
       3. DELETE the duplicate driver rows.
 
     Returns {"groups_merged": int, "drivers_deleted": int, "rows_rekeyed": int}.
     """
-    from src.utils import normalize_driver_name
+    from src.utils import normalize_driver_name, _nickname_canonical, _stripped_middle
     summary = {"groups_merged": 0, "drivers_deleted": 0, "rows_rekeyed": 0}
     if not DB_PATH.exists():
         return summary
 
+    def _canonical_group_key(name):
+        """Fully canonicalized key: normalize + nickname expand + strip middle."""
+        n = normalize_driver_name(name)
+        n = _nickname_canonical(n)
+        n = _stripped_middle(n)
+        return n
+
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
 
-    # Group all drivers by normalized key
+    # Group all drivers by the fully canonical key
     all_drivers = conn.execute("SELECT id, full_name FROM drivers").fetchall()
     groups = {}
     for row in all_drivers:
-        key = normalize_driver_name(row["full_name"])
+        key = _canonical_group_key(row["full_name"])
         if not key:
             continue
         groups.setdefault(key, []).append(dict(row))

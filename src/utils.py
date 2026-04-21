@@ -58,41 +58,104 @@ def normalize_driver_name(name: str) -> str:
     return name
 
 
+def _nickname_canonical(normalized: str) -> str:
+    """Expand a first-name nickname to its canonical long form.
+
+    Input must already be normalized (lowercase, ASCII). Returns a version
+    with the first token mapped through NICKNAME_MAP if applicable.
+    Example: "nick sanchez" -> "nicholas sanchez".
+    """
+    from src.config import NICKNAME_MAP
+    parts = normalized.split()
+    if not parts:
+        return normalized
+    first = parts[0]
+    canonical = NICKNAME_MAP.get(first)
+    if canonical:
+        parts[0] = canonical
+    return " ".join(parts)
+
+
+def _stripped_middle(normalized: str) -> str:
+    """Drop single-character middle tokens — "jason m white" -> "jason white".
+
+    Only drops tokens in the middle positions (not first, not last) that are
+    exactly one character long. Catches the "middle initial is optional"
+    pattern that shows up across NASCAR data sources.
+    Input must already be normalized.
+    """
+    parts = normalized.split()
+    if len(parts) <= 2:
+        return normalized
+    kept = [p for i, p in enumerate(parts)
+            if i == 0 or i == len(parts) - 1 or len(p) > 1]
+    return " ".join(kept)
+
+
+def _match_keys(name: str) -> list:
+    """Return all normalized keys a name could match against.
+
+    First key is the primary normalized form. Additional keys cover
+    systematic variants: nickname expansion (Nick -> Nicholas) and
+    middle-initial stripping (Jason M White -> Jason White). When matching
+    candidates, any shared key between name and candidate = match.
+    """
+    primary = normalize_driver_name(name)
+    keys = [primary]
+    # Nickname-expanded
+    nc = _nickname_canonical(primary)
+    if nc != primary:
+        keys.append(nc)
+    # Middle-initial stripped
+    sm = _stripped_middle(primary)
+    if sm != primary:
+        keys.append(sm)
+    # Also try combined: nickname + stripped middle
+    nc_sm = _stripped_middle(nc)
+    if nc_sm != primary and nc_sm not in keys:
+        keys.append(nc_sm)
+    return keys
+
+
 def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> str:
     """Find best fuzzy match for a driver name in a list of candidates.
 
-    Uses normalized names (Unicode-folded, period-stripped, alias-resolved)
-    and a last-name shortcut only when the last name is unique in the candidate list.
+    Matching passes (first hit wins):
+      1. Exact normalized match (Suárez↔Suarez, periods stripped, aliases)
+      2. Nickname equivalence (Nick↔Nicholas via NICKNAME_MAP)
+      3. Middle-initial optional (Jason M White↔Jason White)
+      4. Last-name match — only if that last name is unique in candidates
+      5. SequenceMatcher fuzzy ratio (threshold default 0.75)
     """
     from difflib import SequenceMatcher
 
     if not name or not candidates:
         return None
 
-    norm = normalize_driver_name(name)
-    best_match, best_score = None, 0.0
+    name_keys = set(_match_keys(name))
+    # Pre-compute all match keys for each candidate (stored as a tuple of keys)
+    norm_candidates = [(c, _match_keys(c)) for c in candidates]
 
-    # Pre-compute normalized candidates
-    norm_candidates = [(c, normalize_driver_name(c)) for c in candidates]
-
-    # Pass 1: exact normalized match
-    for candidate, norm_c in norm_candidates:
-        if norm == norm_c:
+    # Pass 1-3: any shared key between name and candidate = match
+    for candidate, cand_keys in norm_candidates:
+        if name_keys & set(cand_keys):
             return candidate
 
-    # Pass 2: last-name match — only if last name is unique among candidates
-    last_name = norm.split()[-1] if norm.split() else ""
+    # Pass 4: last-name match — only if unique
+    primary_norm = normalize_driver_name(name)
+    last_name = primary_norm.split()[-1] if primary_norm.split() else ""
     if last_name:
         last_name_matches = [
-            (c, nc) for c, nc in norm_candidates
-            if nc.split()[-1] == last_name
+            (c, ck) for c, ck in norm_candidates
+            if ck[0].split() and ck[0].split()[-1] == last_name
         ]
         if len(last_name_matches) == 1:
             return last_name_matches[0][0]
 
-    # Pass 3: fuzzy SequenceMatcher
-    for candidate, norm_c in norm_candidates:
-        score = SequenceMatcher(None, norm, norm_c).ratio()
+    # Pass 5: fuzzy SequenceMatcher
+    best_match, best_score = None, 0.0
+    for candidate, cand_keys in norm_candidates:
+        score = SequenceMatcher(None, primary_norm, cand_keys[0]).ratio()
         if score > best_score:
             best_score = score
             best_match = candidate
