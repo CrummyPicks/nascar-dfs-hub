@@ -53,7 +53,12 @@ def arp_finish_blend(arp, avg_finish, track_type: str = None) -> float:
     if arp is None:
         return avg_finish
     if track_type == "superspeedway":
-        return arp * 0.35 + avg_finish * 0.65
+        # 45/55 — wrecks decouple running position from finish, so finish
+        # gets more weight. But finish alone is noisy (one big pileup can
+        # wreck a front-runner who had nothing to do with the cause), so we
+        # don't go all the way to a finish-dominant blend. 45% ARP keeps
+        # survive-and-pick-off drivers properly rewarded.
+        return arp * 0.45 + avg_finish * 0.55
     if track_type == "road":
         return arp * 0.55 + avg_finish * 0.45
     return arp * 0.65 + avg_finish * 0.35
