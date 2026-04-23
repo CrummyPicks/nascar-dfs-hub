@@ -163,12 +163,33 @@ def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> st
     return best_match if best_score >= threshold else None
 
 
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _last_name_token(name: str) -> str:
+    """Return the last name of a driver, skipping over Jr/Sr/II/III suffixes.
+
+    "Ricky Stenhouse Jr" -> "Stenhouse"
+    "Kyle Busch"         -> "Busch"
+    "A J Allmendinger"   -> "Allmendinger"
+    """
+    parts = [p for p in name.strip().split() if p]
+    if not parts:
+        return ""
+    # Walk from the end, skipping suffix tokens
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() not in _NAME_SUFFIXES:
+            return parts[i]
+    return parts[-1]  # fallback: all tokens were suffixes (shouldn't happen)
+
+
 def short_name(full_name: str, all_names: list = None) -> str:
     """Abbreviate a driver name for chart labels.
 
     Returns last name only ("Larson"), or "First Initial. Last" when there
     are duplicate last names in *all_names* ("K. Busch" vs "Ky. Busch").
-    If car number is provided as "#9 Chase Elliott", strips it and adds back.
+    Handles Jr/Sr/II/III suffixes so "Ricky Stenhouse Jr" -> "Stenhouse"
+    (not "Jr").
     """
     if not full_name or not isinstance(full_name, str):
         return str(full_name) if full_name else ""
@@ -178,16 +199,17 @@ def short_name(full_name: str, all_names: list = None) -> str:
     if len(parts) <= 1:
         return name
 
-    last = parts[-1]
+    last = _last_name_token(name)
 
     if all_names:
-        # Check for duplicate last names
+        # Check for duplicate last names — use _last_name_token so "Stenhouse Jr"
+        # and "Stenhouse" both resolve to "Stenhouse" for comparison purposes.
         dup_lasts = [n for n in all_names
-                     if isinstance(n, str) and n.strip().split()[-1] == last and n.strip() != name]
+                     if isinstance(n, str) and _last_name_token(n) == last
+                        and n.strip() != name]
         if dup_lasts:
             # Use enough of first name to disambiguate
             first = parts[0]
-            # Check if single initial is enough
             initials_needed = 1
             for dup in dup_lasts:
                 dup_first = dup.strip().split()[0]
