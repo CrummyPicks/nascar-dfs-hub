@@ -102,14 +102,32 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         avg_n_leaders: average number of drivers who lead laps per race
         avg_n_fl_leaders: average number of drivers who get fastest laps per race
         concentration: exponent for score distribution
+
+    Per-track data is used when the track has >= MIN_RACES_TRACK_CAL
+    historical races (to avoid noisy single-race calibration). For tracks
+    with fewer samples, we fall back to track-type defaults which are
+    stable averages across similar tracks.
     """
+    MIN_RACES_TRACK_CAL = 3  # below this, per-track numbers are too noisy
+
+    # Pull track-type fallbacks for dominator-leader counts. These align with
+    # FALLBACK_FL in _allocate_fastest_laps and are empirically calibrated
+    # from Cup 2022+ data across track types.
+    FALLBACK_FL_CAL = {"superspeedway": 30, "road": 12, "intermediate": 15,
+                       "intermediate_worn": 18, "short": 18, "short_concrete": 18}
+    FALLBACK_N_LEADERS = {"superspeedway": 12, "road": 4, "intermediate": 6,
+                          "intermediate_worn": 7, "short": 6, "short_concrete": 5}
+
     type_defaults = TRACK_TYPE_DOM_DEFAULTS.get(track_type, {"max_ll": 150, "max_fl": 60})
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     defaults = {
         "avg_top_leader": 80,
         "max_laps_led": type_defaults["max_ll"],
         "max_fastest_laps": type_defaults["max_fl"],
-        "avg_n_leaders": 6,
-        "avg_n_fl_leaders": 10,
+        "avg_n_leaders": FALLBACK_N_LEADERS.get(track_type,
+                                                  FALLBACK_N_LEADERS.get(parent, 6)),
+        "avg_n_fl_leaders": FALLBACK_FL_CAL.get(track_type,
+                                                  FALLBACK_FL_CAL.get(parent, 15)),
         "concentration": TRACK_TYPE_CONCENTRATION.get(track_type, 1.5),
     }
     if not os.path.exists(PROJ_DB):
@@ -138,7 +156,13 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
 
         result = dict(defaults)
 
-        if race_stats:
+        # Only override defaults with per-track data when we have enough races.
+        # Single-race tracks (Road America, Mexico City, etc.) produce noisy
+        # calibration that's less reliable than the track-type average.
+        n_races = len(race_stats)
+        use_per_track = n_races >= MIN_RACES_TRACK_CAL
+
+        if race_stats and use_per_track:
             top_leaders = [r[0] for r in race_stats if r[0] and r[0] > 0]
             n_leaders_list = [r[1] for r in race_stats if r[1] and r[1] > 0]
             top_fl = [r[2] for r in race_stats if r[2] and r[2] > 0]
