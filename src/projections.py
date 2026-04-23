@@ -129,11 +129,41 @@ def compute_projections(
             sigs["qual"] = qual_finish
             sig_w["qual"] = wn["qual"]
 
-        # Team signal
+        # Team signal — auto-scaled by driver's track-history sample size.
+        # Rationale: track_history already bakes in the equipment the driver
+        # has been racing, so for a veteran on the same team the team
+        # signal is mostly a redundant echo (double-counting). But for
+        # rookies / team-changers with thin track history, team quality
+        # is a vital proxy for what their car can do.
+        #
+        # Scale factor by race count at this specific track:
+        #   0 races       -> 1.3x  (no track data — team signal is primary)
+        #   1-3 races     -> 0.9x  (small sample — still want team input)
+        #   4-7 races     -> 0.6x
+        #   8+ races      -> 0.3x  (rich history — team info is already in it)
+        #
+        # Redistribution: when team weight is scaled DOWN, the savings are
+        # added directly to the odds weight (Vegas is the most reliable
+        # independent signal). When scaled UP for rookies, the extra comes
+        # from normal redistribution (no track history means track/ttype
+        # aren't contributing much anyway).
+        team_savings_for_odds = 0.0
         tm = team_signal.get(d) if team_signal else None
         if tm is not None and wn.get("team", 0) > 0:
+            track_races = (th.get("races", 0) if th else 0)
+            if track_races >= 8:
+                team_scale = 0.30
+            elif track_races >= 4:
+                team_scale = 0.60
+            elif track_races >= 1:
+                team_scale = 0.90
+            else:
+                team_scale = 1.30
             sigs["team"] = tm
-            sig_w["team"] = wn["team"]
+            sig_w["team"] = wn["team"] * team_scale
+            # Capture the savings (if any) to be routed to odds below
+            if team_scale < 1.0:
+                team_savings_for_odds = wn["team"] * (1.0 - team_scale)
 
         # Practice signal
         if pr:
@@ -141,13 +171,18 @@ def compute_projections(
             sigs["prac"] = prac_finish
             sig_w["prac"] = wn.get("practice", 0)
 
-        # Odds signal. Same fix as qual: when driver has no history, don't
-        # blend toward mid-field (which helps longshots too much). Let odds
-        # stand on their own — Vegas already accounts for driver quality.
+        # Odds signal. Absorbs any team-scale savings so reduced team
+        # weight becomes increased Vegas weight (most reliable alternative).
+        # When driver has no history, don't blend toward mid-field
+        # (which helps longshots too much). Let odds stand on their own.
         if od and wn.get("odds", 0) > 0:
-            odds_val = od  # use as-is; Vegas is the best no-history signal
+            odds_val = od
             sigs["odds"] = odds_val
-            sig_w["odds"] = wn["odds"]
+            sig_w["odds"] = wn["odds"] + team_savings_for_odds
+        elif team_savings_for_odds > 0 and wn.get("track", 0) > 0 and "track" in sig_w:
+            # Fallback: if no odds for this driver, route team savings to
+            # track history instead (next best independent signal)
+            sig_w["track"] = sig_w["track"] + team_savings_for_odds
 
         raw_signals[d] = sigs
         signal_weight_map[d] = sig_w
