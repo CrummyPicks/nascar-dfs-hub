@@ -2528,6 +2528,170 @@ def load_race_prop_odds(race_id: int, series_id: int = None) -> dict:
 # AUTO-FETCH RACE RESULTS INTO DATABASE
 # ============================================================
 
+def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> dict:
+    """Fallback ingestion path using NASCAR's loopstats + lap-times endpoints.
+
+    The regular weekend-feed.json endpoint is sometimes empty for past races
+    (e.g. postponed playoff races like the 2025 YellaWood 500 rescheduled
+    from Oct 19 to Nov 17). In those cases the loopstats endpoint at
+        https://cf.nascar.com/loopstats/prod/{year}/{series}/{race_id}.json
+    still has full finishing data, and lap-times.json has the driver-name
+    to NASCAR-driver-id mapping we need.
+
+    Translates NASCAR's internal track_id to our DB's track_id by matching
+    track name (our track IDs are assigned locally, not from the API).
+
+    Returns the same dict shape as fetch_and_store_race.
+    """
+    from src.utils import normalize_driver_name, calc_dk_points, calc_fd_points
+    import requests
+
+    # 1. Race metadata from race_list_basic
+    rlist = requests.get(
+        f"{NASCAR_API_BASE}/{year}/{series_id}/race_list_basic.json", timeout=15
+    ).json()
+    meta = next((r for r in rlist if r.get("race_id") == race_id), None)
+    if not meta:
+        return {"drivers": 0, "race_name": "", "status": "error",
+                "error": "race not in race_list_basic"}
+
+    # 2. Driver stats from loopstats
+    loop_resp = requests.get(
+        f"https://cf.nascar.com/loopstats/prod/{year}/{series_id}/{race_id}.json",
+        timeout=15,
+    )
+    if loop_resp.status_code != 200:
+        return {"drivers": 0, "race_name": "", "status": "error",
+                "error": f"loopstats unavailable ({loop_resp.status_code})"}
+    loop = loop_resp.json()
+    driver_stats = loop[0].get("drivers", []) if isinstance(loop, list) and loop else []
+    if not driver_stats:
+        return {"drivers": 0, "race_name": "", "status": "error",
+                "error": "no driver stats in loopstats"}
+
+    # 3. Driver names from lap-times (keyed by NASCARDriverID)
+    laps_resp = requests.get(
+        f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-times.json", timeout=30
+    )
+    lap_data = laps_resp.json() if laps_resp.status_code == 200 else {}
+    id_to_name = {}
+    for drv in lap_data.get("laps", []):
+        nid = drv.get("NASCARDriverID")
+        full = drv.get("FullName", "")
+        if nid and full:
+            id_to_name[int(nid)] = _clean_api_name(full)
+
+    if not id_to_name:
+        return {"drivers": 0, "race_name": "", "status": "error",
+                "error": "could not resolve driver names from lap-times"}
+
+    # 4. Resolve track_id by NAME (NASCAR API's internal track IDs differ from ours)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    api_track_name = (meta.get("track_name") or "").strip()
+    track_row = conn.execute(
+        "SELECT id FROM tracks WHERE LOWER(name) = LOWER(?)", (api_track_name,)
+    ).fetchone()
+    if not track_row:
+        conn.execute(
+            "INSERT INTO tracks (name) VALUES (?)", (api_track_name,)
+        )
+        track_row = conn.execute(
+            "SELECT id FROM tracks WHERE LOWER(name) = LOWER(?)", (api_track_name,)
+        ).fetchone()
+    track_id = track_row["id"]
+
+    # 5. Insert/lookup race row
+    race_date = (meta.get("race_date") or "")[:10]
+    race_name = meta.get("race_name", "")
+    scheduled_laps = meta.get("scheduled_laps", 0)
+    scheduled_dist = meta.get("scheduled_distance", 0)
+    existing_race = conn.execute(
+        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+    ).fetchone()
+    if existing_race:
+        db_race_id = existing_race["id"]
+        # Ensure track_id is correct in case a prior insert got it wrong
+        conn.execute(
+            "UPDATE races SET track_id = ?, race_date = ?, race_name = ? WHERE id = ?",
+            (track_id, race_date, race_name, db_race_id)
+        )
+    else:
+        max_num = conn.execute(
+            "SELECT COALESCE(MAX(race_num), 0) FROM races WHERE series_id = ? AND season = ?",
+            (series_id, year)
+        ).fetchone()[0]
+        conn.execute('''
+            INSERT INTO races (series_id, track_id, season, race_num, race_name,
+                                race_date, laps, miles, api_race_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (series_id, track_id, year, max_num + 1, race_name, race_date,
+               scheduled_laps, scheduled_dist, race_id))
+        db_race_id = conn.execute(
+            "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+        ).fetchone()["id"]
+
+    # 6. Insert race_results + dfs_points per driver
+    count = 0
+    for d in driver_stats:
+        nid = d.get("driver_id")
+        driver_name = id_to_name.get(nid)
+        if not driver_name:
+            continue
+
+        # Find or create driver (normalized lookup first)
+        drv = conn.execute(
+            "SELECT id FROM drivers WHERE full_name = ?", (driver_name,)
+        ).fetchone()
+        if not drv:
+            _norm = normalize_driver_name(driver_name)
+            for row in conn.execute("SELECT id, full_name FROM drivers").fetchall():
+                if normalize_driver_name(row["full_name"]) == _norm:
+                    drv = {"id": row["id"]}
+                    break
+        if not drv:
+            conn.execute("INSERT INTO drivers (full_name) VALUES (?)", (driver_name,))
+            drv = conn.execute(
+                "SELECT id FROM drivers WHERE full_name = ?", (driver_name,)
+            ).fetchone()
+        driver_id = drv["id"]
+
+        finish_pos = d.get("ps", 0) or 0
+        start_pos = d.get("start_ps", 0) or 0
+        laps_led = d.get("lead_laps", 0) or 0
+        fastest = d.get("fast_laps", 0) or 0
+        laps_completed = d.get("laps", 0) or 0
+        arp = d.get("avg_ps")
+
+        conn.execute('''
+            INSERT INTO race_results (race_id, driver_id, start_pos, finish_pos,
+                                       laps_completed, laps_led, fastest_laps,
+                                       avg_running_position, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Running')
+            ON CONFLICT(race_id, driver_id) DO UPDATE SET
+              start_pos=excluded.start_pos, finish_pos=excluded.finish_pos,
+              laps_completed=excluded.laps_completed, laps_led=excluded.laps_led,
+              fastest_laps=excluded.fastest_laps,
+              avg_running_position=excluded.avg_running_position
+        ''', (db_race_id, driver_id, start_pos, finish_pos, laps_completed,
+              laps_led, fastest, arp))
+
+        dk = calc_dk_points(finish_pos, start_pos, laps_led, fastest)
+        fd = calc_fd_points(finish_pos, start_pos, laps_led, fastest)
+        for platform, score in [("DraftKings", dk), ("FanDuel", fd)]:
+            conn.execute('''
+                INSERT INTO dfs_points (race_id, driver_id, platform, dfs_score)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(race_id, driver_id, platform) DO UPDATE SET dfs_score=excluded.dfs_score
+            ''', (db_race_id, driver_id, platform, score))
+        count += 1
+
+    conn.commit()
+    conn.close()
+    return {"drivers": count, "race_name": race_name, "status": "success",
+            "error": None}
+
+
 def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict:
     """Fetch race results + lap times from the NASCAR API and populate the DB.
 
@@ -2558,6 +2722,15 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
     # -- 2. Extract results and fastest laps ---------------------------
     races = feed.get("weekend_race", [])
     if not races:
+        # NASCAR's weekend-feed endpoint is sometimes empty for races
+        # (notably post-Chase playoff races that get rescheduled). Fall back
+        # to the loopstats endpoint which has the same finishing data.
+        try:
+            fallback = _fetch_and_store_via_loopstats(series_id, race_id, year)
+            if fallback.get("status") == "success":
+                return fallback
+        except Exception as _e:
+            pass
         return {"drivers": 0, "race_name": "", "status": "error",
                 "error": "No weekend_race in feed"}
 
