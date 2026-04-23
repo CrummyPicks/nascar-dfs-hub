@@ -1202,8 +1202,31 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             except (ValueError, TypeError):
                 continue
 
-    # ── DNF risk data (career crash/mechanical rates) ──────────────────────
-    dnf_data = query_driver_career_dnf(series_id, before_date=race_date if not is_prerace else None)
+    # ── DNF risk data: prefer track-specific over career ──────────────────
+    # Per-track DNF rate is a much better signal at superspeedways than a
+    # career-wide average. A driver who wrecks 30% of the time at Talladega
+    # but 5% overall should get the higher rate applied HERE at Talladega.
+    # We blend: track-specific if >= 3 races at this track, else career.
+    from src.data import query_driver_track_dnf
+    _before_date = race_date if not is_prerace else None
+    track_dnf = query_driver_track_dnf(track_name, series_id,
+                                        before_date=_before_date, min_races=3)
+    career_dnf = query_driver_career_dnf(series_id, before_date=_before_date)
+    # Merge: track-specific takes priority when available
+    dnf_data = dict(career_dnf)
+    for drv, track_stats in track_dnf.items():
+        # Blend: 70% track-specific, 30% career (smooth small samples)
+        career_stats = career_dnf.get(drv, {})
+        if career_stats:
+            blended = {
+                "dnf_rate": track_stats["dnf_rate"] * 0.7 + career_stats.get("dnf_rate", 0) * 0.3,
+                "crash_rate": track_stats["crash_rate"] * 0.7 + career_stats.get("crash_rate", 0) * 0.3,
+                "speed_score": career_stats.get("speed_score", 0),  # speed always from career
+                "races": career_stats.get("races", 0),  # use career for trust threshold
+            }
+            dnf_data[drv] = blended
+        else:
+            dnf_data[drv] = track_stats
 
     # ── Run shared projection engine ──────────────────────────────────────────
     # Both the Projections tab and Accuracy tab call this same function to

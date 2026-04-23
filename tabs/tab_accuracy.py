@@ -622,8 +622,23 @@ def _generate_race_projections(race, series_id, weights=None):
             except (ValueError, TypeError):
                 continue
 
-    # ── 8. DNF risk data ──
-    dnf_data = query_driver_career_dnf(series_id, before_date=race_date)
+    # ── 8. DNF risk data: per-track preferred, blend with career ──
+    from src.data import query_driver_track_dnf
+    track_dnf = query_driver_track_dnf(track_name, series_id,
+                                        before_date=race_date, min_races=3)
+    career_dnf = query_driver_career_dnf(series_id, before_date=race_date)
+    dnf_data = dict(career_dnf)
+    for drv, ts in track_dnf.items():
+        cs = career_dnf.get(drv, {})
+        if cs:
+            dnf_data[drv] = {
+                "dnf_rate": ts["dnf_rate"] * 0.7 + cs.get("dnf_rate", 0) * 0.3,
+                "crash_rate": ts["crash_rate"] * 0.7 + cs.get("crash_rate", 0) * 0.3,
+                "speed_score": cs.get("speed_score", 0),
+                "races": cs.get("races", 0),
+            }
+        else:
+            dnf_data[drv] = ts
 
     # ── 9. Race laps + calibration ──
     race_laps = race.get("scheduled_laps", 0)
@@ -1692,8 +1707,25 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     delta = mfr_stats[matched_mfr]["avg_finish"] - field_avg_finish
                     mfr_adjustment[d] = max(-1.5, min(1.5, delta * 0.5))
 
-        # DNF data
-        dnf_data = query_driver_career_dnf(race_sid, before_date=race_date) if include_dnf else {}
+        # DNF data: per-track blended with career (matches tab_projections)
+        dnf_data = {}
+        if include_dnf:
+            from src.data import query_driver_track_dnf
+            track_dnf = query_driver_track_dnf(track_name, race_sid,
+                                                before_date=race_date, min_races=3)
+            career_dnf = query_driver_career_dnf(race_sid, before_date=race_date)
+            dnf_data = dict(career_dnf)
+            for drv, ts in track_dnf.items():
+                cs = career_dnf.get(drv, {})
+                if cs:
+                    dnf_data[drv] = {
+                        "dnf_rate": ts["dnf_rate"] * 0.7 + cs.get("dnf_rate", 0) * 0.3,
+                        "crash_rate": ts["crash_rate"] * 0.7 + cs.get("crash_rate", 0) * 0.3,
+                        "speed_score": cs.get("speed_score", 0),
+                        "races": cs.get("races", 0),
+                    }
+                else:
+                    dnf_data[drv] = ts
 
         # Qualifying from actual start positions
         start_positions = {}

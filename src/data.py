@@ -896,6 +896,64 @@ def query_driver_dk_points_by_track_type(
         return {}
 
 
+def query_driver_track_dnf(track_name: str, series_id: int,
+                            before_date: str = None,
+                            min_races: int = 3) -> dict:
+    """Query DNF and crash rates for drivers at a SPECIFIC track.
+
+    Complements query_driver_career_dnf by providing track-specific signal.
+    At superspeedways, career DNF rates miss the fact that some drivers
+    run the back-of-pack draft (high crash exposure) while others stay up
+    front (lower exposure). Per-track data captures that.
+
+    Returns {driver_name: {dnf_rate, crash_rate, speed_score, races}}.
+    Only includes drivers with >= min_races (default 3) at this track.
+
+    Returns empty dict if no data. Callers should fall back to career stats.
+    """
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where = "WHERE r.series_id = ? AND t.name = ?"
+        params = [series_id, track_name]
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+
+        rows = conn.execute(f'''
+            SELECT d.full_name,
+                   COUNT(*) as races,
+                   SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as dnfs,
+                   SUM(CASE WHEN LOWER(rr.status) IN ('accident','crash','damage') THEN 1 ELSE 0 END) as crashes,
+                   1.0 * SUM(rr.laps_led) / COUNT(*) as ll_per_race,
+                   1.0 * SUM(rr.fastest_laps) / COUNT(*) as fl_per_race
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            {where}
+            GROUP BY d.id
+            HAVING races >= ?
+        ''', params + [min_races]).fetchall()
+        conn.close()
+
+        result = {}
+        for r in rows:
+            name, races, dnfs, crashes, ll_per, fl_per = r
+            if races and races > 0:
+                speed = (ll_per or 0) + (fl_per or 0)
+                result[name] = {
+                    "dnf_rate": (dnfs or 0) / races,
+                    "crash_rate": (crashes or 0) / races,
+                    "speed_score": speed,
+                    "races": races,
+                }
+        return result
+    except Exception:
+        return {}
+
+
 def query_driver_career_dnf(series_id: int, before_date: str = None) -> dict:
     """Query career DNF and crash rates for all drivers.
 
@@ -1457,15 +1515,15 @@ def compute_team_adjusted_track_history(track_name: str, series_id: int,
 
         avg_hist_team = sum(hist_team_quals) / len(hist_team_quals)
 
-        # Team adjustment: current quality vs historical quality
-        # Negative = improved (lower avg finish = better team)
-        # Cap the adjustment to prevent extreme swings
+        # Team adjustment: current quality vs historical quality.
+        # Negative = improved (lower avg finish = better current team).
+        # Previously capped at +/- 4 and applied at 60% strength — too
+        # conservative. Drivers whose history mixes good and bad teams
+        # got only a fraction of the real boost/penalty they deserved.
+        # Now: cap at +/- 6, apply at 80% strength.
         raw_adj = current_quality - avg_hist_team
-        # Cap at +/- 4 positions (generous but not extreme)
-        team_adj = max(-4.0, min(4.0, raw_adj))
-
-        # Only apply 60% of the adjustment (regression toward reality)
-        team_adj *= 0.60
+        team_adj = max(-6.0, min(6.0, raw_adj))
+        team_adj *= 0.80
 
         result[driver] = {"team_adj": round(team_adj, 2),
                           "current_team_quality": current_quality,
@@ -2663,18 +2721,30 @@ def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> d
         laps_completed = d.get("laps", 0) or 0
         arp = d.get("avg_ps")
 
+        # Loopstats doesn't include team name — infer from driver's nearest
+        # same-season race. Without this, team ends up NULL and team-based
+        # signals (team quality, team adjustment) can't use this race.
+        team_row = conn.execute('''
+            SELECT rr2.team FROM race_results rr2 JOIN races r2 ON r2.id = rr2.race_id
+            WHERE rr2.driver_id = ? AND r2.season = ?
+              AND rr2.team IS NOT NULL AND rr2.team != '' AND rr2.team != 'None'
+            ORDER BY ABS(JULIANDAY(r2.race_date) - JULIANDAY(?)) ASC LIMIT 1
+        ''', (driver_id, year, race_date)).fetchone()
+        team_name = team_row["team"] if team_row else None
+
         conn.execute('''
             INSERT INTO race_results (race_id, driver_id, start_pos, finish_pos,
                                        laps_completed, laps_led, fastest_laps,
-                                       avg_running_position, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Running')
+                                       avg_running_position, team, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Running')
             ON CONFLICT(race_id, driver_id) DO UPDATE SET
               start_pos=excluded.start_pos, finish_pos=excluded.finish_pos,
               laps_completed=excluded.laps_completed, laps_led=excluded.laps_led,
               fastest_laps=excluded.fastest_laps,
-              avg_running_position=excluded.avg_running_position
+              avg_running_position=excluded.avg_running_position,
+              team=COALESCE(excluded.team, race_results.team)
         ''', (db_race_id, driver_id, start_pos, finish_pos, laps_completed,
-              laps_led, fastest, arp))
+              laps_led, fastest, arp, team_name))
 
         dk = calc_dk_points(finish_pos, start_pos, laps_led, fastest)
         fd = calc_fd_points(finish_pos, start_pos, laps_led, fastest)
