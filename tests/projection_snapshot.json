@@ -1,72 +1,72 @@
 {
   "A Elite1": {
     "diff_pts": 1,
-    "fast_laps": 131,
+    "fast_laps": 168,
     "laps_led": 171,
-    "proj_dk": 147.7,
+    "proj_dk": 164.4,
     "proj_finish": 1
   },
   "A Elite2": {
     "diff_pts": 2,
-    "fast_laps": 106,
+    "fast_laps": 121,
     "laps_led": 110,
-    "proj_dk": 119.2,
+    "proj_dk": 126.0,
     "proj_finish": 2
   },
   "A Elite3": {
     "diff_pts": 5,
-    "fast_laps": 63,
+    "fast_laps": 56,
     "laps_led": 53,
-    "proj_dk": 87.6,
+    "proj_dk": 84.5,
     "proj_finish": 3
   },
   "B Mid1": {
     "diff_pts": 2,
-    "fast_laps": 48,
+    "fast_laps": 38,
     "laps_led": 37,
-    "proj_dk": 72.8,
+    "proj_dk": 68.3,
     "proj_finish": 4
   },
   "B Mid2": {
     "diff_pts": 5,
-    "fast_laps": 20,
+    "fast_laps": 10,
     "laps_led": 12,
-    "proj_dk": 56.0,
+    "proj_dk": 51.5,
     "proj_finish": 5
   },
   "B Mid3": {
     "diff_pts": 8,
-    "fast_laps": 5,
+    "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 48.2,
+    "proj_dk": 46.5,
     "proj_finish": 6
   },
   "B Mid4": {
     "diff_pts": 9,
-    "fast_laps": 3,
+    "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 47.4,
+    "proj_dk": 46.5,
     "proj_finish": 7
   },
   "B Mid5": {
     "diff_pts": 8,
-    "fast_laps": 3,
+    "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 43.4,
+    "proj_dk": 42.0,
     "proj_finish": 10
   },
   "C Value1": {
     "diff_pts": 16,
-    "fast_laps": 3,
+    "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 52.4,
+    "proj_dk": 51.5,
     "proj_finish": 9
   },
   "C Value2": {
     "diff_pts": 4,
-    "fast_laps": 7,
+    "fast_laps": 2,
     "laps_led": 0,
-    "proj_dk": 43.1,
+    "proj_dk": 40.9,
     "proj_finish": 8
   },
   "D Back1": {
@@ -85,23 +85,23 @@
   },
   "E Rookie1": {
     "diff_pts": 1,
-    "fast_laps": 6,
+    "fast_laps": 2,
     "laps_led": 6,
-    "proj_dk": 36.2,
+    "proj_dk": 34.4,
     "proj_finish": 12
   },
   "E Rookie2": {
     "diff_pts": 9,
-    "fast_laps": 2,
+    "fast_laps": 0,
     "laps_led": 5,
-    "proj_dk": 41.1,
+    "proj_dk": 40.2,
     "proj_finish": 13
   },
   "F LongShot": {
     "diff_pts": 13,
-    "fast_laps": 3,
+    "fast_laps": 1,
     "laps_led": 5,
-    "proj_dk": 47.6,
+    "proj_dk": 46.7,
     "proj_finish": 11
   }
 }

@@ -315,17 +315,27 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
     top_drivers = dict(sorted_drivers[:n_with_fl])
 
-    # Fastest laps exponent — controls how much concentration there is
-    # among the top drivers. Higher = more concentrated on the leaders,
-    # lower = more evenly spread.
-    # Superspeedways (draft racing) have flatter distribution than short
-    # tracks (one dominant leader). Tune accordingly.
-    if parent == "superspeedway":
-        fl_exponent = 1.1   # very flat — draft shuffles leaders constantly
-    elif parent == "road":
-        fl_exponent = 1.8   # road courses concentrate FL in top few
-    else:
-        fl_exponent = 1.6   # default for ovals
+    # Fastest laps concentration exponent — empirically tuned per track
+    # type to reproduce historical Top-N FL share (Cup 2022+). Higher =
+    # more concentrated on leaders, lower = more evenly spread.
+    #
+    # Historical targets (Top5 / Top10 / Top15 / Top20 share of total FL):
+    #   superspeedway:    36% / 56% / 71% / 82%   -> exp 1.3
+    #   road:             62% / 82% / 92% / 98%   -> exp 2.2
+    #   intermediate:     57% / 80% / 91% / 96%   -> exp 2.4
+    #   intermediate_worn: 55% / 75% / 86% / 93%  -> exp 2.2
+    #   short:            54% / 76% / 87% / 93%   -> exp 2.2
+    #   short_concrete:   52% / 73% / 85% / 92%   -> exp 2.0
+    FL_EXPONENT_MAP = {
+        "superspeedway":     1.3,
+        "road":              2.2,
+        "intermediate":      2.4,
+        "intermediate_worn": 2.2,
+        "short":             2.2,
+        "short_concrete":    2.0,
+    }
+    fl_exponent = FL_EXPONENT_MAP.get(track_type,
+                                        FL_EXPONENT_MAP.get(parent, 2.0))
 
     # Odds-gap boost (same logic as laps led)
     if odds_display:
