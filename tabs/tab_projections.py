@@ -513,13 +513,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
 
 def _query_db_track_history(track_name, series_id, exclude_race_id=None,
-                             before_date=None, cross_series_ids=None):
+                             before_date=None, cross_series_ids=None,
+                             trim_worst: bool = False):
     """Query per-driver track history from DB with date filtering.
 
     Args:
         cross_series_ids: list of higher-series IDs for cross-series blending.
             When provided, returns a tuple (current_df, cross_df).
             When None, returns just current_df.
+        trim_worst: when True, each driver's WORST finish is excluded from
+            the aggregates (provided they have 4+ races at this track).
+            Used at superspeedways where one unavoidable pileup shouldn't
+            poison a driver's pace-reflective avg.
     """
     if not os.path.exists(PROJ_DB):
         return (pd.DataFrame(), pd.DataFrame()) if cross_series_ids else pd.DataFrame()
@@ -539,7 +544,8 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
             where += " AND r.race_date < ?"
             params.append(before_date)
 
-        query = f'''
+        # Base aggregate query (always used)
+        base_query = f'''
             SELECT d.full_name as Driver,
                    COUNT(*) as Races,
                    ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
@@ -560,9 +566,48 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
             HAVING COUNT(*) >= 1
         '''
         try:
-            return pd.read_sql_query(query, conn, params=params)
+            df = pd.read_sql_query(base_query, conn, params=params)
         except Exception:
             return pd.DataFrame()
+
+        # Optional trimmed-mean pass: for drivers with 4+ races, recompute
+        # Avg Finish and Avg Run Pos excluding their worst finish at this track.
+        # This is the "drop one unavoidable wreck" adjustment for supers.
+        if trim_worst and not df.empty:
+            trim_query = f'''
+                WITH ranked AS (
+                    SELECT d.id as did, d.full_name as Driver,
+                           rr.finish_pos, rr.avg_running_position,
+                           ROW_NUMBER() OVER (PARTITION BY d.id ORDER BY rr.finish_pos DESC, rr.id) as rn,
+                           COUNT(*) OVER (PARTITION BY d.id) as n
+                    FROM race_results rr
+                    JOIN drivers d ON d.id = rr.driver_id
+                    JOIN races r ON r.id = rr.race_id
+                    JOIN tracks t ON t.id = r.track_id
+                    {where}
+                )
+                SELECT did, Driver,
+                       ROUND(AVG(finish_pos), 1) as trimmed_finish,
+                       ROUND(AVG(avg_running_position), 1) as trimmed_arp
+                FROM ranked
+                WHERE (n >= 4 AND rn > 1) OR n < 4
+                GROUP BY did
+            '''
+            try:
+                tdf = pd.read_sql_query(trim_query, conn, params=params)
+                # Replace Avg Finish / Avg Run Pos with trimmed versions for
+                # drivers with 4+ races (where trimming actually happened)
+                base_idx = df.set_index("Driver")
+                for _, trow in tdf.iterrows():
+                    drv = trow["Driver"]
+                    if drv in base_idx.index and base_idx.loc[drv, "Races"] >= 4:
+                        df.loc[df["Driver"] == drv, "Avg Finish"] = trow["trimmed_finish"]
+                        if pd.notna(trow.get("trimmed_arp")):
+                            df.loc[df["Driver"] == drv, "Avg Run Pos"] = trow["trimmed_arp"]
+            except Exception:
+                # If the trim query fails, just use the un-trimmed aggregate
+                pass
+        return df
 
     conn = sqlite3.connect(PROJ_DB)
     current_df = _run_query(conn, [series_id])
@@ -832,12 +877,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Cross-series hierarchy: Cup stats flow DOWN to O'Reilly/Truck
     cross_ids = CROSS_SERIES_HIERARCHY.get(series_id, [])
 
+    # At superspeedways we trim each driver's WORST finish from the
+    # aggregate to stop a single unavoidable pileup from poisoning a
+    # driver's average beyond their race-pace reality (the
+    # "Hocevar problem": 4 races of 6/6/14/17 finishes averaged 10.75,
+    # but adding one P35 wreck from a different team pushed avg to 15.6).
+    _trim_worst = (track_type == "superspeedway")
     with st.spinner("Loading track history..."):
         th_result = _query_db_track_history(
             track_name, series_id,
             exclude_race_id=db_race_id,
             before_date=race_date if not is_prerace else None,
             cross_series_ids=cross_ids if cross_ids else None,
+            trim_worst=_trim_worst,
         )
         if cross_ids:
             th_df, cross_th_df = th_result

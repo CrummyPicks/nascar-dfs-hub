@@ -53,12 +53,15 @@ def arp_finish_blend(arp, avg_finish, track_type: str = None) -> float:
     if arp is None:
         return avg_finish
     if track_type == "superspeedway":
-        # 45/55 — wrecks decouple running position from finish, so finish
-        # gets more weight. But finish alone is noisy (one big pileup can
-        # wreck a front-runner who had nothing to do with the cause), so we
-        # don't go all the way to a finish-dominant blend. 45% ARP keeps
-        # survive-and-pick-off drivers properly rewarded.
-        return arp * 0.45 + avg_finish * 0.55
+        # 40/60 — wrecks decouple running position from finish at supers,
+        # so finish gets more weight. ARP still has 40% because finish
+        # alone is noisy (one pileup can wreck a front-runner through no
+        # fault of their own), but we lean clearly toward finish since
+        # that's what ends up as DFS points. Combined with trimmed-mean
+        # aggregation at supers (drop worst finish when >= 4 races), this
+        # properly rewards drivers like Hocevar whose one-race wreck
+        # otherwise poisoned their avg beyond race-pace reality.
+        return arp * 0.40 + avg_finish * 0.60
     if track_type == "road":
         return arp * 0.55 + avg_finish * 0.45
     return arp * 0.65 + avg_finish * 0.35

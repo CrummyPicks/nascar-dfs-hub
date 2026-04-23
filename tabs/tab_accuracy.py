@@ -294,6 +294,7 @@ def _generate_race_projections(race, series_id, weights=None):
         exclude_race_id=db_race_id,
         before_date=race_date,
         cross_series_ids=cross_ids if cross_ids else None,
+        trim_worst=(track_type == "superspeedway"),
     )
     if cross_ids:
         th_df, cross_th_df = th_result
@@ -1491,12 +1492,13 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
         db_race_id = _resolve_db_race_id(race_id, race_sid) if race_id else None
         cross_ids = CROSS_SERIES_HIERARCHY.get(race_sid, [])
 
-        # Track history
+        # Track history (trim worst finish at supers per standard rules)
         th_data = {}
         th_result = _query_db_track_history(
             track_name, race_sid, exclude_race_id=db_race_id,
             before_date=race_date,
             cross_series_ids=cross_ids if cross_ids else None,
+            trim_worst=(track_type == "superspeedway"),
         )
         if cross_ids:
             th_df, cross_th_df = th_result
