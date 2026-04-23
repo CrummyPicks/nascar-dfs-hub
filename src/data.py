@@ -1446,7 +1446,8 @@ def query_driver_track_history_by_team(track_name: str, series_id: int,
 
 def compute_team_adjusted_track_history(track_name: str, series_id: int,
                                          driver_team_map: dict,
-                                         before_date: str = None) -> dict:
+                                         before_date: str = None,
+                                         track_type: str = None) -> dict:
     """Compute team-adjusted track history for all drivers.
 
     For each driver, compares the quality of their historical teams at this
@@ -1457,6 +1458,9 @@ def compute_team_adjusted_track_history(track_name: str, series_id: int,
         series_id: series ID
         driver_team_map: {driver_name: current_team_name} from entry list
         before_date: only include races before this date
+        track_type: when provided, uses track-type-specific team quality
+            (e.g. Spire at superspeedway vs their career-wide average).
+            Without it, falls back to career-wide quality.
 
     Returns {driver_name: {"team_adj": float}} where team_adj is the
     position adjustment to apply to track history (negative = improved team).
@@ -1464,8 +1468,22 @@ def compute_team_adjusted_track_history(track_name: str, series_id: int,
     if not driver_team_map:
         return {}
 
-    # Get overall team quality scores
-    team_quality = query_team_quality_lookup(series_id, before_date=before_date)
+    # Get team quality — track-type-specific when possible (much better
+    # signal than career-wide, since teams' superspeedway vs short-track
+    # performance can differ by 5+ positions).
+    team_quality = {}
+    if track_type:
+        ts = query_team_stats(series_id, track_type=track_type,
+                              before_date=before_date)
+        if ts:
+            # query_team_stats returns dict-of-dicts; extract avg_finish
+            team_quality = {team: stats.get("avg_finish")
+                            for team, stats in ts.items()
+                            if stats.get("avg_finish") is not None}
+    if not team_quality:
+        # Fallback to career-wide
+        team_quality = query_team_quality_lookup(series_id,
+                                                  before_date=before_date)
     if not team_quality:
         return {}
 

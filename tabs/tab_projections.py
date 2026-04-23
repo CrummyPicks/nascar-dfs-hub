@@ -1104,6 +1104,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             team_adj_data = compute_team_adjusted_track_history(
                 track_name, series_id, _driver_team_map,
                 before_date=race_date if not is_prerace else None,
+                track_type=track_type,
             )
 
     # ── 2d. Manufacturer Adjustment (track-type specific) ────────────────────

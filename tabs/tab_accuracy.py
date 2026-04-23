@@ -496,6 +496,7 @@ def _generate_race_projections(race, series_id, weights=None):
                 team_adj_data = compute_team_adjusted_track_history(
                     track_name, series_id, dtm_for_adj,
                     before_date=race_date,
+                    track_type=track_type,
                 )
 
     # ── 4. Manufacturer Adjustment ──
@@ -1669,7 +1670,8 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 if tm:
                     dtm_for_adj[d] = tm
             if dtm_for_adj:
-                team_adj_data = _ctath(track_name, race_sid, dtm_for_adj, before_date=race_date)
+                team_adj_data = _ctath(track_name, race_sid, dtm_for_adj,
+                                        before_date=race_date, track_type=track_type)
 
         # Manufacturer adjustment
         mfr_adjustment = {}
