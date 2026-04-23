@@ -2752,10 +2752,12 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
     race_num = race_obj.get("race_season", 0) or race_obj.get("race_id", race_id)
     total_laps = race_obj.get("number_of_laps") or race_obj.get("laps") or 0
 
-    # Fastest laps from lap-times endpoint
+    # Fastest laps + avg running position from lap-times endpoint
     fastest_laps_map = {}
+    arp_map = {}
     if lap_data:
         fastest_laps_map = compute_fastest_laps(lap_data)
+        arp_map = compute_avg_running_position(lap_data)
 
     # -- 3-7. Database operations ---------------------------------------
     if not DB_PATH.exists():
@@ -2870,21 +2872,32 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
                 ).fetchone()
             driver_id = d["id"]
 
+            # Look up ARP — try direct then normalized match against the
+            # lap-times names (which can differ from results feed names)
+            arp_val = arp_map.get(driver_name) if arp_map else None
+            if arp_val is None and arp_map:
+                _nkey = _norm(driver_name)
+                for an, av in arp_map.items():
+                    if _norm(an) == _nkey:
+                        arp_val = av
+                        break
+
             # Upsert race_results
             conn.execute(
                 """INSERT INTO race_results
                    (race_id, driver_id, car_number, team, manufacturer,
                     start_pos, finish_pos, laps_completed, laps_led,
-                    fastest_laps, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    fastest_laps, avg_running_position, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(race_id, driver_id) DO UPDATE SET
                     car_number=excluded.car_number, team=excluded.team,
                     manufacturer=excluded.manufacturer, start_pos=excluded.start_pos,
                     finish_pos=excluded.finish_pos, laps_completed=excluded.laps_completed,
                     laps_led=excluded.laps_led, fastest_laps=excluded.fastest_laps,
+                    avg_running_position=excluded.avg_running_position,
                     status=excluded.status""",
                 (db_race_id, driver_id, car_number, team, manufacturer,
-                 start_pos, finish_pos, laps_completed, laps_led, fastest, status),
+                 start_pos, finish_pos, laps_completed, laps_led, fastest, arp_val, status),
             )
 
             # Compute and upsert DFS points for both platforms

@@ -37,7 +37,7 @@ def compute_projections(
     from tabs.tab_projections import (
         _allocate_laps_led, _allocate_fastest_laps,
     )
-    from src.utils import fuzzy_match_name
+    from src.utils import fuzzy_match_name, arp_finish_blend
 
     if cross_th_lookup is None:
         cross_th_lookup = {}
@@ -81,7 +81,7 @@ def compute_projections(
 
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
-            base_finish = arp * 0.65 + af * 0.35 if arp is not None else af
+            base_finish = arp_finish_blend(arp, af, track_type)
 
             t_adj = team_adj_data.get(d) if team_adj_data else None
             if t_adj and t_adj.get("team_adj", 0) != 0:
@@ -104,7 +104,7 @@ def compute_projections(
                 tt_trust *= 0.8
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
-            tt_avg = tt_arp * 0.65 + tt_af * 0.35 if tt_arp is not None else tt_af
+            tt_avg = arp_finish_blend(tt_arp, tt_af, track_type)
             tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
             sigs["ttype"] = tt_regressed
             sig_w["ttype"] = tt_weight

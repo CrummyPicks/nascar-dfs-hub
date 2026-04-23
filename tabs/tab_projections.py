@@ -27,7 +27,7 @@ from src.data import (
     compute_team_adjusted_track_history,
 )
 # projection_bar no longer used — replaced with inline stacked bar
-from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge
+from src.utils import safe_fillna, format_display_df, calc_dk_points, fuzzy_match_name, fuzzy_merge, arp_finish_blend
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
@@ -1030,7 +1030,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     ts_arp = ts.get("avg_arp")
                     ts_af = ts["avg_finish"]
                     if ts_arp is not None:
-                        team_finish = ts_arp * 0.65 + ts_af * 0.35
+                        team_finish = arp_finish_blend(ts_arp, ts_af, track_type)
                     else:
                         team_finish = ts_af
                     # Regress toward mid-field (team is a broad signal)

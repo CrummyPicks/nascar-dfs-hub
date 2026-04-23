@@ -31,6 +31,34 @@ def calc_fd_points(finish, start, laps_led, fastest_laps):
         return 0.0
 
 
+def arp_finish_blend(arp, avg_finish, track_type: str = None) -> float:
+    """Blend ARP and avg_finish into a single 'projected race result' signal.
+
+    Weighting is track-type-aware because ARP and finish correlate
+    differently across track types:
+
+      - Superspeedway: big wrecks decouple ARP from finish. A driver who
+        runs mid-pack (high ARP) but survives and finishes top-10 should
+        be credited for the FINISH, not penalized for staying back to
+        avoid the pileup. Weight: 35% ARP + 65% finish.
+      - Road course: limited passing, so ARP tracks finish closely. Still
+        lean slightly toward finish to account for pit-strategy outliers.
+        Weight: 55% ARP + 45% finish.
+      - Ovals (intermediate / short / etc): ARP is a strong pace proxy
+        since lead-lap cars maintain track position. Weight: 65% ARP +
+        35% finish.
+
+    Returns avg_finish if arp is None (missing data).
+    """
+    if arp is None:
+        return avg_finish
+    if track_type == "superspeedway":
+        return arp * 0.35 + avg_finish * 0.65
+    if track_type == "road":
+        return arp * 0.55 + avg_finish * 0.45
+    return arp * 0.65 + avg_finish * 0.35
+
+
 def normalize_driver_name(name: str) -> str:
     """Normalize a driver name for matching.
 

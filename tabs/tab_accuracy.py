@@ -20,7 +20,7 @@ from src.data import (
 )
 from src.utils import (
     calc_dk_points, safe_fillna, format_display_df, short_name_series,
-    fuzzy_match_name, fuzzy_get, build_norm_lookup,
+    fuzzy_match_name, fuzzy_get, build_norm_lookup, arp_finish_blend,
 )
 
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
@@ -476,7 +476,7 @@ def _generate_race_projections(race, series_id, weights=None):
                     ts = team_stats[matched_team]
                     ts_arp = ts.get("avg_arp")
                     ts_af = ts["avg_finish"]
-                    team_finish = ts_arp * 0.65 + ts_af * 0.35 if ts_arp is not None else ts_af
+                    team_finish = arp_finish_blend(ts_arp, ts_af, track_type)
                     trust = min(1.0, ts["races"] / 10)
                     team_signal[d] = team_finish * trust + mid_field * (1 - trust)
 
@@ -1639,7 +1639,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     ts = team_stats[matched_team]
                     ts_arp = ts.get("avg_arp")
                     ts_af = ts["avg_finish"]
-                    team_finish = ts_arp * 0.65 + ts_af * 0.35 if ts_arp is not None else ts_af
+                    team_finish = arp_finish_blend(ts_arp, ts_af, track_type)
                     trust = min(1.0, ts["races"] / 10)
                     team_signal[d] = team_finish * trust + mid_field * (1 - trust)
         if driver_team_map:
