@@ -1402,11 +1402,14 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
 
     # ── Per-signal weight constraints ──────────────────────────────────────
     SIGNAL_RANGES = {
-        "odds":       (10, 40),
+        # Team range tightened to (3-12) since engine applies 0.30x-1.30x
+        # per-driver scaling on top. A grid value of 12 still gives rookies
+        # a 15.6% effective weight but caps veterans at 3.6%.
+        "odds":       (10, 45),
         "track":      (10, 35),
         "ttype":      (5, 25),
         "practice":   (0, 25),
-        "team":       (5, 20),
+        "team":       (3, 12),
         "qual":       (5, 25),
     }
 

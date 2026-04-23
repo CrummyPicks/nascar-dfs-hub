@@ -253,11 +253,17 @@ DEFAULT_PROJECTION_WEIGHTS = {
 #   Road courses: qual strong (r=0.45), track-type specialists matter, practice key.
 #   Intermediate: balanced signals.
 TRACK_TYPE_WEIGHT_DEFAULTS = {
-    "superspeedway":  {"odds": 45, "track": 15, "ttype": 20, "prac": 5,  "team": 10, "qual": 5},
-    "short":          {"odds": 25, "track": 25, "ttype": 10, "prac": 10, "team": 10, "qual": 20},
-    "short_concrete": {"odds": 30, "track": 25, "ttype": 5,  "prac": 10, "team": 10, "qual": 20},
-    "road":           {"odds": 25, "track": 15, "ttype": 15, "prac": 20, "team": 10, "qual": 15},
-    "intermediate":   {"odds": 30, "track": 20, "ttype": 15, "prac": 10, "team": 10, "qual": 15},
+    # Team weight lowered from 10 -> 7 uniformly; 3 points shifted to odds.
+    # Rationale: the engine applies per-driver scaling on team (0.30x for
+    # veterans with 8+ track races, 1.30x for rookies). With a base of 7%,
+    # a veteran's effective team weight is ~2%, and a rookie's is ~9%.
+    # Odds absorb the shift since they're the most reliable independent
+    # signal when team is dampened.
+    "superspeedway":  {"odds": 48, "track": 15, "ttype": 20, "prac": 5,  "team": 7, "qual": 5},
+    "short":          {"odds": 28, "track": 25, "ttype": 10, "prac": 10, "team": 7, "qual": 20},
+    "short_concrete": {"odds": 33, "track": 25, "ttype": 5,  "prac": 10, "team": 7, "qual": 20},
+    "road":           {"odds": 28, "track": 15, "ttype": 15, "prac": 20, "team": 7, "qual": 15},
+    "intermediate":   {"odds": 33, "track": 20, "ttype": 15, "prac": 10, "team": 7, "qual": 15},
 }
 
 # ----------------------------
