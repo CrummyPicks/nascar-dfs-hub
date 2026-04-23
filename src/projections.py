@@ -188,13 +188,25 @@ def compute_projections(
         signal_weight_map[d] = sig_w
         sig_extras[d] = extras
 
-    # ── Pass 2: Normalize each signal to 1→field_size ──
+    # ── Pass 2: Normalize each signal to [1, field_size] ──
+    # All "position-like" signals (track, ttype, odds, qual, prac) are
+    # already in finish-position units and get CLAMPed to the valid range.
+    # Previously we MINMAX-stretched track/ttype/odds to span the full field
+    # which over-amplified narrow-spread signals — e.g., at Talladega
+    # where track history naturally clusters 11-29 (spread 18), MINMAX
+    # stretched that to 1-37 and doubled the discriminating power.
+    # Clamp-only is more honest: if a signal has naturally narrow spread,
+    # it should contribute less to the weighted combination, not be
+    # artificially boosted.
+    #
+    # Team signal is still rank-normalized because team avg_finish values
+    # (typically clustering 14-22) don't span the full field naturally
+    # and rank-based makes a good team quality proxy.
     signal_names = set()
     for sigs in raw_signals.values():
         signal_names.update(sigs.keys())
 
-    MINMAX_SIGNALS = {"odds", "track", "ttype"}
-    RANK_SIGNALS = {"team"}
+    RANK_SIGNALS = {"team"}  # team quality → rank-based
 
     normalized_signals = {d: {} for d in drivers}
     for sig_name in signal_names:
@@ -202,18 +214,7 @@ def compute_projections(
         if not sig_vals:
             continue
 
-        if sig_name in MINMAX_SIGNALS:
-            vals_only = [v for _, v in sig_vals]
-            raw_min, raw_max = min(vals_only), max(vals_only)
-            raw_range = raw_max - raw_min
-            for d, val in sig_vals:
-                if raw_range > 0:
-                    t = (val - raw_min) / raw_range
-                    normalized_signals[d][sig_name] = 1 + (field_size - 1) * t
-                else:
-                    normalized_signals[d][sig_name] = mid_field
-
-        elif sig_name in RANK_SIGNALS:
+        if sig_name in RANK_SIGNALS:
             sig_vals.sort(key=lambda x: x[1])
             n_with_sig = len(sig_vals)
             for rank_idx, (d, _) in enumerate(sig_vals):
@@ -222,6 +223,7 @@ def compute_projections(
                 else:
                     normalized_signals[d][sig_name] = mid_field
         else:
+            # Position-like signal — clamp to valid range, preserve magnitude
             for d, val in sig_vals:
                 normalized_signals[d][sig_name] = max(1, min(field_size, val))
 
