@@ -477,6 +477,22 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             unsafe_allow_html=True,
         )
 
+        # Note when qualifying hasn't happened — start positions shown are
+        # the engine's estimate from historical avg start at this track/type,
+        # not actual qualifying results.
+        _qualifying_available = bool(qualifying_df is not None
+                                      and not qualifying_df.empty
+                                      and "Qualifying Position" in qualifying_df.columns
+                                      and qualifying_df["Qualifying Position"].notna().any())
+        if not _qualifying_available:
+            st.markdown(
+                '<p style="color:#fbbf24;font-size:0.80rem;font-style:italic;margin:0.2rem 0;">'
+                "\u2139\ufe0f Projected Qualifying Position shown \u2014 based on historical "
+                "Avg Starting Position for this track/type. Will be replaced with actual "
+                "qualifying results once available.</p>",
+                unsafe_allow_html=True,
+            )
+
     # Weight info — display BEFORE projections table, using the SAME wn dict
     active = [(k, v) for k, v in wn.items() if v > 0]
     weight_str = " | ".join(f"{k.replace('_', ' ').title()} {v:.0%}" for k, v in active)
