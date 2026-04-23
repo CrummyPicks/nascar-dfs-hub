@@ -472,7 +472,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
             f"Laps led = 0.25 pts/lap | Fastest laps = 0.45 pts/lap | "
             f"Place diff = \u00b11.0 pts/pos | {race_laps} total laps | "
-            f"Avg {avg_leaders:.0f} leaders, avg leader leads {avg_top:.0f} laps "
+            f"Avg {avg_leaders:.0f} leaders, Avg Race Lap Leader leads {avg_top:.0f} laps "
             f"(max: {hist_max_ll})</p>",
             unsafe_allow_html=True,
         )
