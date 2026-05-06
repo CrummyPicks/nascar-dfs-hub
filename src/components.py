@@ -387,6 +387,18 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce").astype("Int64")
+    # Floats — coerce so the Styler.format() below has clean numerics to work
+    # with (otherwise NaN/strings can leak through and trip up the format spec)
+    for c in ["Avg Run", "DK Pts"]:
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce")
+
+    # Per-column display format. Avg Run = 1 decimal, DK Pts = 2 decimals.
+    fmt_map = {}
+    if "Avg Run" in disp.columns:
+        fmt_map["Avg Run"] = "{:.1f}"
+    if "DK Pts" in disp.columns:
+        fmt_map["DK Pts"] = "{:.2f}"
 
     # Apply finish-position heatmap so the user can scan results at a glance
     finish_col = "Finish" if "Finish" in disp.columns else None
@@ -396,9 +408,14 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
                          else "" for v in col],
             axis=0,
         )
+        if fmt_map:
+            styled = styled.format(fmt_map, na_rep="—")
         st.dataframe(styled, width="stretch", hide_index=True, height=420)
     else:
-        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=420)
+        styled = disp.style
+        if fmt_map:
+            styled = styled.format(fmt_map, na_rep="—")
+        st.dataframe(styled, width="stretch", hide_index=True, height=420)
 
 
 def interactive_drill_down_dataframe(df, *, key, series_id,
