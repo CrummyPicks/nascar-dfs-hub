@@ -587,24 +587,38 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
     return apply_dark_theme(fig)
 
 
-def season_trend_line(series_id: int = 1, season: int = 2026,
+def season_trend_line(series_id: int = 1, season: int = None,
                        drivers: list = None, top_n: int = 10,
+                       last_n_races: int = 5,
                        height: int = 400) -> go.Figure:
-    """Line chart of DK points race-by-race this season — shows form trends."""
+    """Line chart of DK points across the most recent N races — shows form trends.
+
+    Uses a categorical x-axis with "Track Name (Date)" labels so the chart
+    renders correctly regardless of how the race_date column is stored
+    (avoids plotly's datetime-axis collapse when dates are sparse/identical).
+    """
     import sqlite3
+    from datetime import datetime
     from src.config import DB_PATH
+    if season is None:
+        _t = datetime.now()
+        season = _t.year + 1 if _t.month >= 10 else _t.year
     if not DB_PATH.exists():
         return None
     try:
         conn = sqlite3.connect(str(DB_PATH))
         df = pd.read_sql_query('''
-            SELECT d.full_name as Driver, r.race_name as Race,
-                   r.race_date as Date, dp.dfs_score as DK_Pts
+            SELECT d.full_name as Driver,
+                   r.id          as RaceId,
+                   r.race_name   as Race,
+                   r.track_name  as Track,
+                   r.race_date   as Date,
+                   dp.dfs_score  as DK_Pts
             FROM dfs_points dp
             JOIN drivers d ON d.id = dp.driver_id
-            JOIN races r ON r.id = dp.race_id
+            JOIN races   r ON r.id = dp.race_id
             WHERE r.series_id = ? AND r.season = ? AND dp.platform = 'DraftKings'
-            ORDER BY r.race_date
+            ORDER BY r.race_date, r.id
         ''', conn, params=[series_id, season])
         conn.close()
     except Exception:
@@ -613,21 +627,57 @@ def season_trend_line(series_id: int = 1, season: int = 2026,
     if df.empty:
         return None
 
-    # Pick top drivers by avg DK pts if none specified
+    # Identify the most recent N races (by race_date, with race_id as tiebreaker
+    # for same-day double-headers).
+    race_order = (df[["RaceId", "Race", "Track", "Date"]]
+                  .drop_duplicates("RaceId")
+                  .sort_values(["Date", "RaceId"]))
+    recent_races = race_order.tail(last_n_races).reset_index(drop=True)
+    if recent_races.empty:
+        return None
+
+    df = df[df["RaceId"].isin(recent_races["RaceId"])]
+    if df.empty:
+        return None
+
+    # Build "Track (M/D)" label per race, ordered chronologically.
+    def _fmt_date(d):
+        try:
+            return pd.to_datetime(d).strftime("%-m/%-d") if d else ""
+        except Exception:
+            try:
+                return pd.to_datetime(d).strftime("%#m/%#d") if d else ""
+            except Exception:
+                return str(d) if d else ""
+
+    recent_races["Label"] = recent_races.apply(
+        lambda r: f"{(r['Track'] or r['Race'] or 'Race').split(' (')[0]}"
+                  + (f" ({_fmt_date(r['Date'])})" if r['Date'] else ""),
+        axis=1,
+    )
+    label_order = recent_races["Label"].tolist()
+    label_map = dict(zip(recent_races["RaceId"], recent_races["Label"]))
+    df = df.assign(Label=df["RaceId"].map(label_map))
+
+    # Pick top drivers by avg DK pts (over the recent window) if none specified.
     if not drivers:
         avg_pts = df.groupby("Driver")["DK_Pts"].mean().sort_values(ascending=False)
         drivers = avg_pts.head(top_n).index.tolist()
-
     df = df[df["Driver"].isin(drivers)]
     if df.empty:
         return None
 
-    # Shorten race names for x-axis
-    df["Race Short"] = df["Race"].apply(lambda r: r.split(" ")[0][:10] if r else "")
+    # Sort so each driver's line connects in chronological race order.
+    df["_x_idx"] = df["Label"].apply(lambda lbl: label_order.index(lbl) if lbl in label_order else -1)
+    df = df.sort_values(["Driver", "_x_idx"])
 
-    fig = px.line(df, x="Date", y="DK_Pts", color="Driver",
-                  markers=True, title=f"{season} Season DK Points Trend",
-                  hover_data=["Race"])
+    n_races = len(label_order)
+    title_suffix = f" — Last {n_races} Race{'s' if n_races != 1 else ''}"
+    fig = px.line(df, x="Label", y="DK_Pts", color="Driver",
+                  markers=True,
+                  title=f"{season} Season DK Points Trend{title_suffix}",
+                  hover_data={"Race": True, "Label": False, "_x_idx": False})
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=label_order)
     fig.update_layout(**DARK_LAYOUT, height=height,
                       xaxis_title="", yaxis_title="DK Points",
                       legend=dict(font=dict(size=9)))

@@ -13,7 +13,8 @@ from src.data import (
 from src.utils import format_display_df, safe_fillna
 
 
-def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_year):
+def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_year,
+           track_name=None):
     """Render the Practice tab."""
     section_header("Practice", race_name)
 
@@ -66,7 +67,12 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
 
     if prac_mode == "Rankings (Heatmap)":
         show_heatmap = st.checkbox("Show heatmap colors", value=True, key="heatmap_toggle")
-        render_practice_heatmap(active_df, show_heatmap=show_heatmap)
+        if track_name:
+            st.caption("Click any driver row for race-by-race history at this track")
+        render_practice_heatmap(
+            active_df, show_heatmap=show_heatmap,
+            series_id=series_id, track_name=track_name,
+        )
 
     elif prac_mode == "Lap Times":
         time_cols = ["Driver", "Car", "Laps", "Overall Avg", "Best Lap",
@@ -74,7 +80,17 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         avail = [c for c in time_cols if c in active_df.columns]
         disp = active_df[avail].copy()
         disp = format_display_df(disp)
-        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
+        if track_name:
+            from src.components import interactive_drill_down_dataframe
+            st.caption("Click any driver row for race-by-race history at this track")
+            interactive_drill_down_dataframe(
+                safe_fillna(disp),
+                key=f"prac_laps_{series_id}_{race_id}",
+                series_id=series_id, track_name=track_name,
+                width="stretch", hide_index=True, height=560,
+            )
+        else:
+            st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
 
     elif prac_mode == "Lap Chart":
         _render_lap_chart_with_data(practice_laps, active_df)

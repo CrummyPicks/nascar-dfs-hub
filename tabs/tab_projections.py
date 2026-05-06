@@ -388,8 +388,12 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
 
 def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
-           odds_data=None, scheduled_laps=0, race_date="", season=2026):
+           odds_data=None, scheduled_laps=0, race_date="", season=None):
     """Render the Projections tab."""
+    if season is None:
+        from datetime import datetime as _dt
+        _t = _dt.now()
+        season = _t.year + 1 if _t.month >= 10 else _t.year
     from src.components import section_header
     section_header("Projections", race_name)
 
@@ -843,8 +847,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                             practice_data, wn, track_name, series_id, dk_df,
                             race_laps, odds_data=None, calibration=None,
                             race_id=None, race_name="", is_prerace=True,
-                            race_date="", season=2026):
+                            race_date="", season=None):
     """Build DFS-aware projections that estimate actual DK point components."""
+    if season is None:
+        from datetime import datetime as _dt
+        _t = _dt.now()
+        season = _t.year + 1 if _t.month >= 10 else _t.year
     if odds_data is None:
         odds_data = {}
     if calibration is None:
@@ -1363,6 +1371,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             "Sig Qual": sig.get("Qual"),
             "Sig Team": sig.get("Team"),
             "Sig Prac": sig.get("Prac"),
+            "Net Sig": sig.get("Net Sig"),
             "Mfr Adj": sig.get("Mfr"),
             "Team Adj": sig.get("Team Adj"),
         })
@@ -1489,8 +1498,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                          "Avg DK (Similar)", "Similar Races"]
                         )
     # Signal detail columns at the end — practice before qualifying
+    # Net Sig is the weighted average of all normalized signals — the value
+    # the engine actually rank-orders on to assign Proj Finish. Useful for
+    # verifying that the aggregation reflects the underlying signals.
     display_cols.extend(["Sig Odds", "Sig Track", "Sig TType",
-                         "Sig Prac", "Sig Qual", "Sig Team", "Team Adj", "Mfr Adj"])
+                         "Sig Prac", "Sig Qual", "Sig Team",
+                         "Net Sig", "Team Adj", "Mfr Adj"])
     avail = [c for c in display_cols if c in proj.columns]
 
     # Auto-save pre-race projections for the Accuracy tab's historical
@@ -1531,11 +1544,17 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             else:
                 st.warning("Could not save projections")
 
-    from src.components import build_projection_column_config
+    from src.components import build_projection_column_config, interactive_drill_down_dataframe
     disp = proj[avail].copy()
     col_config = build_projection_column_config(disp)
-    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550,
-                 column_config=col_config)
+    st.caption("Click any driver row for race-by-race history at this track")
+    interactive_drill_down_dataframe(
+        safe_fillna(disp),
+        key=f"proj_main_{series_id}_{race_id}",
+        series_id=series_id, track_name=track_name,
+        width="stretch", hide_index=False, height=550,
+        column_config=col_config,
+    )
 
     # Chart — all drivers, stacked bar with component breakdown on hover
     import plotly.graph_objects as go

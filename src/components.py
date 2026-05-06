@@ -50,7 +50,7 @@ def build_projection_column_config(df, max_proj_dk=None):
             config[col] = st.column_config.NumberColumn(col, format="%d")
     # Signal columns
     for col in ["Sig Odds", "Sig Track", "Sig TType", "Sig Prac", "Sig Qual",
-                 "Sig Team", "Team Adj", "Mfr Adj"]:
+                 "Sig Team", "Net Sig", "Team Adj", "Mfr Adj"]:
         if col in df.columns:
             config[col] = st.column_config.NumberColumn(col, format="%.1f")
     return config
@@ -120,11 +120,15 @@ def style_heatmap(df: pd.DataFrame, rank_columns: list, max_rank: int = None) ->
     return df.style.apply(apply_colors)
 
 
-def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = True):
+def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = True,
+                              series_id: int = None, track_name: str = None):
     """Render the Practice Summary heatmap table.
 
     Shows rankings with conditional coloring (green=best, red=worst).
     Includes computed Short Run, Long Run, and Average columns.
+
+    If series_id and track_name are provided, the table becomes drill-down
+    enabled — clicking a driver row opens the per-race history popup.
     """
     if lap_averages_df.empty:
         st.info("Practice data not yet available.")
@@ -196,13 +200,32 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
     disp = disp.rename(columns=clean_names)
     avail_rank_display = [c.replace("_r_", "") for c in avail_rank_cols]
 
-    # Apply heatmap styling or plain display
+    # Apply heatmap styling or plain display.
+    # If we have a track context (series + track), make the table drill-down
+    # enabled so the user can click any driver for race-by-race history.
+    drill_args = {}
+    if series_id is not None and track_name:
+        drill_args = dict(key=f"prac_heat_{series_id}_{track_name}",
+                          series_id=series_id, track_name=track_name)
+
     if show_heatmap:
         styled = style_heatmap(disp, avail_rank_display, max_rank=len(disp))
-        st.dataframe(styled, width="stretch", hide_index=True, height=560)
+        if drill_args:
+            interactive_drill_down_dataframe(
+                styled, **drill_args,
+                width="stretch", hide_index=True, height=560,
+            )
+        else:
+            st.dataframe(styled, width="stretch", hide_index=True, height=560)
     else:
         from src.utils import safe_fillna
-        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
+        if drill_args:
+            interactive_drill_down_dataframe(
+                safe_fillna(disp), **drill_args,
+                width="stretch", hide_index=True, height=560,
+            )
+        else:
+            st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
 
 
 def render_driver_race_log(driver_name: str, race_data: list):
@@ -239,3 +262,225 @@ def render_driver_race_log(driver_name: str, race_data: list):
     if "DK Pts" in num_df.columns:
         cols[2].metric("Avg DK Pts", f"{num_df['DK Pts'].mean():.1f}")
     cols[3].metric("Races", len(race_data))
+
+
+# ============================================================
+# DRIVER HISTORY POPUP (@st.dialog)
+# ------------------------------------------------------------
+# Click any driver name in a drill-down-enabled table to open this
+# modal showing their per-race history at the current track or track type.
+# ============================================================
+
+@st.dialog("Driver History", width="large")
+def render_driver_history_dialog(driver_name: str, series_id: int,
+                                  track_name: str = None,
+                                  track_type: str = None,
+                                  season: int = None):
+    """Modal dialog: per-race history for a driver, filtered to track, type,
+    or season.
+
+    Args:
+        driver_name: Driver to look up (must match drivers.full_name in DB)
+        series_id:   1=Cup, 2=O'Reilly, 3=Truck
+        track_name:  Specific track (e.g. "Texas Motor Speedway"), OR
+        track_type:  Track type (e.g. "intermediate"), OR
+        season:      Year (e.g. 2026) — all races that season. Pass exactly one.
+    """
+    # Lazy import to avoid import cycles + keep the global file slim
+    from src.data import query_driver_race_log
+    from src.utils import safe_fillna
+
+    if track_name:
+        scope_label = track_name
+    elif track_type:
+        type_label = {
+            "intermediate": "Intermediate Tracks",
+            "intermediate_worn": "Intermediate (incl. worn)",
+            "short": "Short Tracks",
+            "short_concrete": "Short Tracks (incl. concrete)",
+            "superspeedway": "Superspeedways",
+            "road": "Road Courses",
+        }.get(track_type, track_type.replace("_", " ").title())
+        scope_label = type_label
+    elif season:
+        scope_label = f"{season} Season"
+    else:
+        st.warning("No scope (track / track_type / season) provided.")
+        return
+
+    st.markdown(
+        f'<div style="margin:-0.4rem 0 0.6rem 0;">'
+        f'<span style="color:#94a3b8;font-size:0.85rem;">Race-by-Race at</span> '
+        f'<span style="color:#e2e8f0;font-size:1.0rem;font-weight:700;">{scope_label}</span>'
+        f' &nbsp; <span style="color:#64748b;font-size:0.85rem;">— {driver_name}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    log = query_driver_race_log(
+        driver_name=driver_name,
+        series_id=series_id,
+        track_name=track_name,
+        track_type=track_type,
+        season=season,
+    )
+
+    if not log:
+        st.info(f"No race data found for {driver_name} at {scope_label}.")
+        return
+
+    df = pd.DataFrame(log)
+
+    # ── Aggregated summary metrics (top of dialog) ──
+    finishes = pd.to_numeric(df["Finish"], errors="coerce")
+    starts = pd.to_numeric(df["Start"], errors="coerce")
+    laps_led = pd.to_numeric(df.get("Laps Led", 0), errors="coerce").fillna(0)
+    fast_laps = pd.to_numeric(df.get("Fast Laps", 0), errors="coerce").fillna(0)
+
+    n_races = len(df)
+    n_wins = int((finishes == 1).sum())
+    n_top5 = int((finishes <= 5).sum())
+    n_top10 = int((finishes <= 10).sum())
+    n_top20 = int((finishes <= 20).sum())
+    avg_fin = finishes.mean()
+    avg_st = starts.mean()
+    best = finishes.min()
+    worst = finishes.max()
+    n_dnf = int(df["Status"].astype(str).str.lower().isin(
+        ["accident", "engine", "crash", "dnf", "mechanical", "rear gear",
+         "transmission", "suspension", "overheating", "brakes", "electrical",
+         "fuel pump", "ignition", "vibration"]
+    ).sum()) if "Status" in df.columns else 0
+
+    # Two rows of metrics, 6 cols each — same dark theme via Streamlit defaults
+    row1 = st.columns(6)
+    row1[0].metric("Races", n_races)
+    row1[1].metric("Avg Finish", f"{avg_fin:.1f}" if pd.notna(avg_fin) else "—")
+    row1[2].metric("Avg Start", f"{avg_st:.1f}" if pd.notna(avg_st) else "—")
+    row1[3].metric("Best", f"{int(best)}" if pd.notna(best) else "—")
+    row1[4].metric("Worst", f"{int(worst)}" if pd.notna(worst) else "—")
+    row1[5].metric("DNFs", n_dnf)
+
+    row2 = st.columns(6)
+    row2[0].metric("Wins", n_wins)
+    row2[1].metric("Top 5", n_top5)
+    row2[2].metric("Top 10", n_top10)
+    row2[3].metric("Top 20", n_top20)
+    row2[4].metric("Laps Led", int(laps_led.sum()))
+    row2[5].metric("Fast Laps", int(fast_laps.sum()))
+
+    st.markdown("")  # spacer
+
+    # ── Per-race table ──
+    # Show: Date, Race, Track, Start, Finish, Laps Led, Fast Laps, Avg Run, DK Pts, Status
+    # (Track column is shown only when scope is a track type — single-track view
+    # would otherwise repeat the track name on every row.)
+    show_cols = ["Date", "Race"]
+    if track_type and not track_name:
+        show_cols.append("Track")
+    show_cols.extend(["Start", "Finish", "Laps Led", "Fast Laps",
+                      "Avg Run", "DK Pts", "Status"])
+    show_cols = [c for c in show_cols if c in df.columns]
+
+    disp = df[show_cols].copy()
+    # Compact ints
+    for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce").astype("Int64")
+
+    # Apply finish-position heatmap so the user can scan results at a glance
+    finish_col = "Finish" if "Finish" in disp.columns else None
+    if finish_col:
+        styled = disp.style.apply(
+            lambda col: [_rank_color(v, max_rank=40) if col.name == finish_col
+                         else "" for v in col],
+            axis=0,
+        )
+        st.dataframe(styled, width="stretch", hide_index=True, height=420)
+    else:
+        st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=420)
+
+
+def interactive_drill_down_dataframe(df, *, key, series_id,
+                                      track_name=None, track_type=None,
+                                      season=None,
+                                      driver_col="Driver",
+                                      **dataframe_kwargs):
+    """Wrapper for st.dataframe that adds click-to-view-driver-history.
+
+    Click a row → opens a modal dialog with that driver's per-race history at
+    the current track (track_name), track type (track_type), or season.
+    Pass exactly one scope.
+
+    Args:
+        df:                  DataFrame OR pandas Styler to display
+        key:                 unique session-state key for this table
+        series_id:           1=Cup, 2=O'Reilly, 3=Truck (passed to dialog)
+        track_name:          single-track scope for the dialog
+        track_type:          track-type scope for the dialog
+        season:              season scope for the dialog (e.g. 2026)
+        driver_col:          column containing driver names (default "Driver")
+        dataframe_kwargs:    forwarded to st.dataframe (height, column_config, etc.)
+
+    Returns:
+        The DataFrameSelectionState from st.dataframe (so callers can reuse it
+        if they were already using selection state).
+    """
+    # Resolve underlying frame so we can iloc into it after a click
+    if hasattr(df, "data"):              # pandas Styler
+        underlying_df = df.data
+    else:
+        underlying_df = df
+
+    # Locate the driver column. For MultiIndex columns (Race Data tab uses
+    # ("Driver Info", "Driver")) we match on the LAST level of the tuple.
+    resolved_driver_col = None
+    if isinstance(underlying_df.columns, pd.MultiIndex):
+        for c in underlying_df.columns:
+            if isinstance(c, tuple) and c and c[-1] == driver_col:
+                resolved_driver_col = c
+                break
+    elif driver_col in underlying_df.columns:
+        resolved_driver_col = driver_col
+
+    if resolved_driver_col is None:
+        # Nothing clickable — fall back to plain dataframe
+        return st.dataframe(df, **dataframe_kwargs)
+
+    event = st.dataframe(
+        df,
+        selection_mode="single-row",
+        on_select="rerun",
+        key=key,
+        **dataframe_kwargs,
+    )
+
+    # Defensive: event shape varies by streamlit version
+    selection = getattr(event, "selection", None) if event is not None else None
+    selected_rows = []
+    if selection is not None:
+        selected_rows = getattr(selection, "rows", None) or selection.get("rows", []) \
+            if hasattr(selection, "get") else (selection.rows if hasattr(selection, "rows") else [])
+
+    state_key = f"{key}__last_drilldown_idx"
+
+    if selected_rows:
+        idx = selected_rows[0]
+        if 0 <= idx < len(underlying_df):
+            # Only fire the dialog when a NEW row is clicked. Without this,
+            # a closed dialog would re-open on every script rerun while the
+            # row remains visually "selected".
+            last_idx = st.session_state.get(state_key)
+            if last_idx != idx:
+                st.session_state[state_key] = idx
+                driver = underlying_df.iloc[idx][resolved_driver_col]
+                if pd.notna(driver) and str(driver).strip():
+                    render_driver_history_dialog(
+                        driver_name=str(driver),
+                        series_id=series_id,
+                        track_name=track_name,
+                        track_type=track_type,
+                        season=season,
+                    )
+
+    return event

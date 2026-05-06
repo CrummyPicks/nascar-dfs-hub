@@ -232,7 +232,15 @@ with nav_cols[0]:
     series_id = SERIES_OPTIONS[series_name]
 
 with nav_cols[1]:
-    selected_year = st.selectbox("Season", [2026, 2025, 2024, 2023, 2022], key="year_select",
+    # Build the year list dynamically so the app rolls over to a new season
+    # automatically. We always include the current year as default; we also
+    # include next year because NASCAR posts the upcoming schedule in
+    # Oct/Nov of the prior year. History goes back to 2022 (Next Gen era).
+    _today = datetime.now()
+    _current_year = _today.year
+    _next_year = _current_year + 1 if _today.month >= 10 else _current_year
+    _year_options = list(range(_next_year, 2021, -1))   # newest first
+    selected_year = st.selectbox("Season", _year_options, key="year_select",
                                  label_visibility="collapsed")
 
 # Fetch race list
@@ -816,6 +824,7 @@ with tab_practice:
         lap_averages_df=lap_averages_df, feed=feed,
         race_name=race_name, series_id=series_id,
         race_id=race_id, selected_year=selected_year,
+        track_name=track_name,
     )
 
 with tab_history:

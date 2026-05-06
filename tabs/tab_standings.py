@@ -3,7 +3,7 @@
 import pandas as pd
 import streamlit as st
 
-from src.components import section_header
+from src.components import section_header, interactive_drill_down_dataframe
 from src.data import fetch_season_standings
 from src.utils import format_display_df, safe_fillna
 
@@ -31,21 +31,31 @@ def render(*, series_id, series_name, selected_year):
                     horizontal=True, label_visibility="collapsed", key="standings_view")
 
     if view == "Driver":
-        _render_driver_standings(driver_df, races_df)
+        _render_driver_standings(driver_df, races_df,
+                                  series_id=series_id, season=selected_year)
     elif view == "Manufacturer":
         _render_manufacturer_standings(mfr_df)
     elif view == "Owner":
         _render_owner_standings(owner_df)
 
 
-def _render_driver_standings(driver_df, races_df):
+def _render_driver_standings(driver_df, races_df, series_id=None, season=None):
     """Render driver points standings with race-by-race detail."""
     if driver_df.empty:
         st.info("No driver standings data available.")
         return
 
     display = format_display_df(driver_df)
-    st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=600)
+    if series_id is not None and season is not None:
+        st.caption(f"Click any driver row for race-by-race history across the {season} season")
+        interactive_drill_down_dataframe(
+            safe_fillna(display),
+            key=f"stand_drv_{series_id}_{season}",
+            series_id=series_id, season=season,
+            width="stretch", hide_index=True, height=600,
+        )
+    else:
+        st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=600)
 
     # Points progression chart
     if not races_df.empty:

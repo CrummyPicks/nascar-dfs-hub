@@ -58,7 +58,12 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     with st.expander("Filters", expanded=False):
         f_cols = st.columns(4)
         with f_cols[0]:
-            year_options = ["All Years", 2026, 2025, 2024, 2023, 2022]
+            # Build year list dynamically so it rolls over with the calendar.
+            # Earliest is 2022 (Next Gen era — no historical data before this).
+            from datetime import datetime as _dt
+            _today = _dt.now()
+            _cy = _today.year + 1 if _today.month >= 10 else _today.year
+            year_options = ["All Years"] + list(range(_cy, 2021, -1))
             default_year_idx = year_options.index(selected_year) if selected_year in year_options else 1
             ra_year_selection = st.selectbox("Year", year_options,
                                             index=default_year_idx, key="ra_year")
@@ -93,7 +98,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
 
     # Build completed races based on filters
     if ra_year_selection == "All Years":
-        years_to_fetch = [2022, 2023, 2024, 2025, 2026]
+        years_to_fetch = list(range(2022, _cy + 1))
     else:
         years_to_fetch = [ra_year_selection]
 
@@ -231,7 +236,9 @@ def _load_race_results(race, series_id, year=None):
         try:
             year = int(rd[:4])
         except Exception:
-            year = 2026
+            from datetime import datetime as _dt
+            _t = _dt.now()
+            year = _t.year + 1 if _t.month >= 10 else _t.year
     rc_feed = fetch_weekend_feed(series_id, rc_id, year)
     rc_laps = fetch_lap_times(series_id, rc_id, year)
     if not rc_feed:
@@ -251,7 +258,9 @@ def _get_race_year(race):
     try:
         return int(rd[:4])
     except Exception:
-        return 2026
+        from datetime import datetime as _dt
+        _t = _dt.now()
+        return _t.year + 1 if _t.month >= 10 else _t.year
 
 
 def _build_season_data(completed_races, series_id, years_to_fetch):

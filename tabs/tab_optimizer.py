@@ -590,6 +590,37 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     # Keep expander open if user was interacting with player pool
     pool_expanded = st.session_state.pop("opt_pool_expanded", False)
     with st.expander(pool_label, expanded=pool_expanded):
+        # Driver-history quick-lookup. The pool's row-by-row layout uses
+        # checkboxes/inputs and isn't an st.dataframe (so row-click won't
+        # work), but we can still offer the popup via a selectbox that
+        # opens the dialog.
+        from src.components import render_driver_history_dialog
+        _lookup_cols = st.columns([1, 4])
+        with _lookup_cols[0]:
+            st.markdown('<div style="padding-top:0.4rem;color:#94a3b8;font-size:0.85rem;">'
+                        'View driver history</div>', unsafe_allow_html=True)
+        with _lookup_cols[1]:
+            _lookup_drivers = ["—"] + pool["Driver"].tolist()
+            _lookup_pick = st.selectbox(
+                "View driver history", _lookup_drivers,
+                key=f"opt_lookup_{race_id}",
+                label_visibility="collapsed",
+                help="Open a popup with that driver's race-by-race history at this track",
+            )
+            _lookup_state_key = f"opt_lookup_last_{race_id}"
+            if _lookup_pick and _lookup_pick != "—":
+                if st.session_state.get(_lookup_state_key) != _lookup_pick:
+                    st.session_state[_lookup_state_key] = _lookup_pick
+                    render_driver_history_dialog(
+                        driver_name=_lookup_pick,
+                        series_id=series_id,
+                        track_name=track_name,
+                    )
+            else:
+                # Reset state when user clears the picker so the same driver
+                # can be re-opened later without first picking a different one
+                st.session_state.pop(_lookup_state_key, None)
+
         pool_display = pool.copy()
         lineup_drivers = {d["Driver"] for d in st.session_state.opt_lineup} if st.session_state.opt_lineup else set()
 
@@ -748,10 +779,15 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     pool.loc[mask, "Proj Score"] = pts
                     sal = pool.loc[mask, "DK Salary"].values[0]
                     pool.loc[mask, "Value"] = round(pts / (sal / 1000), 2) if sal > 0 else 0
+            # Recompute locked/excluded from CURRENT session state — the pool
+            # checkboxes we just rendered may have modified opt_locked/opt_excluded
+            # for THIS driver, so the `excluded` computed earlier is stale.
+            _fresh_locked = list(st.session_state.opt_locked)
+            _fresh_excluded = (set(st.session_state.opt_excluded) | _salary_filtered) - set(_fresh_locked)
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
-                locked=list(st.session_state.opt_locked),
-                excluded=excluded)
+                locked=_fresh_locked,
+                excluded=_fresh_excluded)
             # Keep player pool open so user can continue making changes
             st.session_state.opt_pool_expanded = True
             st.rerun()
@@ -947,14 +983,26 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
         if lineup_needs_rebuild:
             # Clear swap and player pool widget keys so they re-init
-            # from session state values (opt_locked/opt_excluded) on rerun
+            # from session state values (opt_locked/opt_excluded) on rerun.
+            # We deliberately do NOT clear lu_lock_* keys — clicking "L" in
+            # the lineup card already syncs into opt_locked, and on rerun
+            # the same driver might still be in the lineup.
             for k in list(st.session_state.keys()):
                 if k.startswith(("swap_", "pp_lock_", "pp_excl_")):
                     del st.session_state[k]
+            # Recompute excluded from CURRENT session state — the lineup card
+            # click just modified opt_excluded/opt_locked, so the `excluded`
+            # variable computed earlier in the script run is now stale.
+            # Without this, the pool checkboxes update on rerun (because we
+            # cleared their widget keys above) BUT the lineup itself was
+            # rebuilt with stale data — resulting in the bug where excluding
+            # from the lineup card didn't actually remove the driver.
+            _fresh_locked = list(st.session_state.opt_locked)
+            _fresh_excluded = (set(st.session_state.opt_excluded) | _salary_filtered) - set(_fresh_locked)
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
-                locked=list(st.session_state.opt_locked),
-                excluded=excluded)
+                locked=_fresh_locked,
+                excluded=_fresh_excluded)
             st.rerun()
 
     else:
@@ -1014,7 +1062,13 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     "DK Salary": match.iloc[0]["DK Salary"] if not match.empty else 0,
                 })
             exp_df = format_display_df(pd.DataFrame(exp_rows))
-            st.dataframe(safe_fillna(exp_df), use_container_width=True, hide_index=True, height=350)
+            from src.components import interactive_drill_down_dataframe
+            interactive_drill_down_dataframe(
+                safe_fillna(exp_df),
+                key=f"opt_exposure_{race_id}",
+                series_id=series_id, track_name=track_name,
+                use_container_width=True, hide_index=True, height=350,
+            )
 
         # Lineup cards
         for i, lu in enumerate(multi_lineups):
@@ -1031,7 +1085,13 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     "Proj Score": round(d["Proj Score"], 1),
                     "Value": round(d.get("Value", 0), 2),
                 } for d in sorted(lu, key=lambda x: x["Proj Score"], reverse=True)])
-                st.dataframe(lu_df, use_container_width=True, hide_index=True)
+                from src.components import interactive_drill_down_dataframe
+                interactive_drill_down_dataframe(
+                    lu_df,
+                    key=f"opt_lineup_{race_id}_{i}",
+                    series_id=series_id, track_name=track_name,
+                    use_container_width=True, hide_index=True,
+                )
 
         # Export
         st.divider()

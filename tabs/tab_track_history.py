@@ -1,5 +1,7 @@
 """Tab 3: Track History."""
 
+from datetime import datetime as _dt
+
 import pandas as pd
 import streamlit as st
 
@@ -7,9 +9,19 @@ from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 from src.data import (
     query_track_type_stats, query_season_stats, query_db_track_history,
 )
+
+
+def _current_season() -> int:
+    """Active season label for the 'YYYY Season' view tab.
+
+    Pre-October: stay on the current calendar year (we're mid-season).
+    October+: start surfacing next year (NASCAR posts the new schedule).
+    """
+    _t = _dt.now()
+    return _t.year + 1 if _t.month >= 10 else _t.year
 from src.charts import track_history_bar, arp_vs_finish_scatter, finish_distribution_box
 from src.utils import format_display_df, safe_fillna
-from src.components import section_header
+from src.components import section_header, interactive_drill_down_dataframe
 
 
 # Track type badge colors
@@ -89,7 +101,9 @@ def render(*, track_name, track_type, series_id):
             if desc_tracks:
                 st.caption(f"**{_format_type_label(type_filter)}**: {', '.join(desc_tracks)}")
 
-    hist_view = st.radio("View", ["Next Gen (2022+)", "By Track Type", "2026 Season"],
+    _cy = _current_season()
+    _season_view_label = f"{_cy} Season"
+    hist_view = st.radio("View", ["Next Gen (2022+)", "By Track Type", _season_view_label],
                          horizontal=True, label_visibility="collapsed")
 
     if type_filter != "This Track":
@@ -102,9 +116,14 @@ def render(*, track_name, track_type, series_id):
         with st.spinner(f"Loading history at {track_name}..."):
             hist_df = query_db_track_history(track_name, series_id, min_season=2022)
         if not hist_df.empty:
-            st.caption(f"Next Gen era (2022+) — {track_name} — Source: database")
+            st.caption(f"Next Gen era (2022+) — {track_name} — Source: database  •  Click any driver row for race-by-race history")
             display = format_display_df(hist_df)
-            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+            interactive_drill_down_dataframe(
+                safe_fillna(display),
+                key=f"th_nextgen_{series_id}_{track_name}",
+                series_id=series_id, track_name=track_name,
+                width="stretch", hide_index=True, height=550,
+            )
 
             fig = track_history_bar(hist_df, track_name)
             if fig:
@@ -133,7 +152,12 @@ def render(*, track_name, track_type, series_id):
         tt_df = query_track_type_stats(track_type, series_id=series_id)
         if not tt_df.empty:
             display = format_display_df(tt_df)
-            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+            interactive_drill_down_dataframe(
+                safe_fillna(display),
+                key=f"th_bytype_{series_id}_{track_type}",
+                series_id=series_id, track_type=track_type,
+                width="stretch", hide_index=True, height=550,
+            )
         else:
             # Try parent type as fallback
             if track_type != parent_type:
@@ -141,25 +165,37 @@ def render(*, track_name, track_type, series_id):
                 parent_df = query_track_type_stats(parent_type, series_id=series_id)
                 if not parent_df.empty:
                     display = format_display_df(parent_df)
-                    st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+                    interactive_drill_down_dataframe(
+                        safe_fillna(display),
+                        key=f"th_byparent_{series_id}_{parent_type}",
+                        series_id=series_id, track_type=parent_type,
+                        width="stretch", hide_index=True, height=550,
+                    )
                 else:
                     st.info(f"No track-type data in database. Run `python refresh_data.py` to populate race data.")
             else:
                 st.info(f"No track-type data in database. Run `python refresh_data.py` to populate race data.")
 
-    elif hist_view == "2026 Season":
-        st.caption(f"Aggregated from 2026 races at {track_name}")
-        season_df = query_season_stats(track_name=track_name, season=2026,
+    elif hist_view == _season_view_label:
+        st.caption(f"Aggregated from {_cy} races at {track_name}  •  Click any driver row for race-by-race history")
+        season_df = query_season_stats(track_name=track_name, season=_cy,
                                        series_id=series_id)
         if not season_df.empty:
             display = format_display_df(season_df)
-            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+            interactive_drill_down_dataframe(
+                safe_fillna(display),
+                key=f"th_season_{_cy}_{series_id}_{track_name}",
+                series_id=series_id, track_name=track_name,
+                width="stretch", hide_index=True, height=550,
+            )
         else:
-            st.info(f"No 2026 data at {track_name}. Data appears after races are completed and synced.")
+            st.info(f"No {_cy} data at {track_name}. Data appears after races are completed and synced.")
 
 
 def _render_track_type_filtered(track_type_filter, hist_view, series_id):
     """Render filtered view for a specific track type across all tracks."""
+    _cy = _current_season()
+    _season_view_label = f"{_cy} Season"
     # Get all tracks of this type
     # Handle "All Short", "All Intermediate" etc. parent type filters
     if track_type_filter.startswith("All "):
@@ -201,7 +237,16 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
                 agg = combined.groupby("Driver").agg(agg_dict).reset_index()
                 agg = agg.sort_values("Avg Finish", na_position="last")
                 display = format_display_df(agg)
-                st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+                # Resolve a track type to use for drill-down — strip "All " prefix
+                _drill_type = (track_type_filter.replace("All ", "").lower()
+                               if track_type_filter.startswith("All ")
+                               else track_type_filter)
+                interactive_drill_down_dataframe(
+                    safe_fillna(display),
+                    key=f"th_filt_{series_id}_{track_type_filter}",
+                    series_id=series_id, track_type=_drill_type,
+                    width="stretch", hide_index=True, height=550,
+                )
             else:
                 st.dataframe(safe_fillna(format_display_df(combined)),
                              width="stretch", hide_index=True, height=550)
@@ -215,18 +260,34 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id):
         tt_df = query_track_type_stats(track_type_filter, series_id=series_id)
         if not tt_df.empty:
             display = format_display_df(tt_df)
-            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+            _drill_type = (track_type_filter.replace("All ", "").lower()
+                           if track_type_filter.startswith("All ")
+                           else track_type_filter)
+            interactive_drill_down_dataframe(
+                safe_fillna(display),
+                key=f"th_filtbt_{series_id}_{track_type_filter}",
+                series_id=series_id, track_type=_drill_type,
+                width="stretch", hide_index=True, height=550,
+            )
         else:
             st.info(f"No data for {_format_type_label(track_type_filter)} in database. "
                     f"Run `python refresh_data.py` to populate race data.")
 
-    elif hist_view == "2026 Season":
-        st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks (2026 only)")
-        # Use track type query to filter season data to this type AND 2026 only
-        season_df = query_track_type_stats(track_type_filter, season=2026, series_id=series_id)
+    elif hist_view == _season_view_label:
+        st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks ({_cy} only)")
+        # Use track type query to filter season data to this type AND current season only
+        season_df = query_track_type_stats(track_type_filter, season=_cy, series_id=series_id)
         if not season_df.empty:
             display = format_display_df(season_df)
-            st.dataframe(safe_fillna(display), width="stretch", hide_index=True, height=550)
+            _drill_type = (track_type_filter.replace("All ", "").lower()
+                           if track_type_filter.startswith("All ")
+                           else track_type_filter)
+            interactive_drill_down_dataframe(
+                safe_fillna(display),
+                key=f"th_filtseason_{_cy}_{series_id}_{track_type_filter}",
+                series_id=series_id, track_type=_drill_type,
+                width="stretch", hide_index=True, height=550,
+            )
         else:
             st.info(f"No season data for {_format_type_label(track_type_filter)}. "
                     f"Run `python refresh_data.py` to populate race data.")

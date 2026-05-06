@@ -185,7 +185,9 @@ def _get_race_year(race):
     try:
         return int(rd[:4])
     except Exception:
-        return 2026
+        from datetime import datetime as _dt
+        _t = _dt.now()
+        return _t.year + 1 if _t.month >= 10 else _t.year
 
 
 def _load_actual_results(race, series_id):

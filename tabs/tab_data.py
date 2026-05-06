@@ -4,10 +4,11 @@ import pandas as pd
 import streamlit as st
 
 from src.config import SERIES_LABELS
-from src.components import section_header
+from src.components import section_header, interactive_drill_down_dataframe
 from src.data import (
     scrape_track_history, query_db_track_history, query_driver_dk_points_at_track,
     compute_fastest_laps, compute_avg_running_position, load_arp_from_db,
+    query_driver_finishes_by_track_type,
 )
 from src.utils import (
     calc_dk_points, calc_fd_points, safe_fillna, format_display_df,
@@ -320,15 +321,118 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     field_count = len(display_df)
     status = "Post-race" if not is_prerace else "Pre-race"
-    st.caption(f"{field_count} drivers  •  {status}")
+    st.caption(f"{field_count} drivers  •  {status}  •  Click any driver row for race-by-race history")
 
-    st.dataframe(safe_fillna(display_df), width="stretch", hide_index=True, height=600)
+    interactive_drill_down_dataframe(
+        safe_fillna(display_df),
+        key=f"data_main_{series_id}_{race_id}",
+        series_id=series_id, track_name=track_name,
+        width="stretch", hide_index=True, height=600,
+    )
 
     # Export
     if not master.empty:
         csv_data = master[avail].to_csv(index=False).encode("utf-8")
         st.download_button("Export CSV", csv_data,
                            f"{race_name.replace(' ', '_')}_data.csv", "text/csv", key="export_data")
+
+    # ── Track-Type Recent History (per-driver finish-position grid) ──
+    # Each row is a driver, each column is one of the most recent races at
+    # this track type. Cells show finish position. Newest race on the LEFT.
+    # Folding rules (handled in query):
+    #   - short_concrete includes regular short tracks
+    #   - intermediate / intermediate_worn include each other
+    if track_type and not master.empty:
+        _render_track_type_history(
+            master_df=master, track_type=track_type, series_id=series_id,
+            track_name=track_name,
+        )
+
+
+def _render_track_type_history(master_df, track_type, series_id, track_name=""):
+    """Render the 'Recent finishes at <track_type>' grid table."""
+    drivers = master_df["Driver"].dropna().unique().tolist()
+    if not drivers:
+        return
+
+    # Pull recent races at this track type for these drivers. We over-fetch
+    # per-driver (last 15) so we have enough fill density when we cap columns
+    # at the 10 most recent races across the whole field.
+    meta, finishes = query_driver_finishes_by_track_type(
+        track_type, series_id=series_id, drivers=drivers, last_n=15,
+    )
+    if not meta or not finishes:
+        return
+
+    # Cap at the 10 most-recent races across the field, then reverse so newest
+    # is on the LEFT (most-recent-first as user requested).
+    meta_newest_first = list(reversed(meta))[:10]
+
+    # Build the display DataFrame: rows = drivers in master order, cols = race labels
+    rows = []
+    for d in drivers:
+        f_map = finishes.get(d, {})
+        if not f_map:
+            continue
+        row = {"Driver": d}
+        for m in meta_newest_first:
+            row[m["label"]] = f_map.get(m["race_id"])
+        rows.append(row)
+
+    if not rows:
+        return
+
+    grid_df = pd.DataFrame(rows)
+
+    # Drop columns that have NO data for any driver in the field (some races
+    # might exist in DB but no included driver entered them — rare but possible)
+    race_cols = [c for c in grid_df.columns if c != "Driver"]
+    keep_cols = ["Driver"] + [c for c in race_cols
+                              if grid_df[c].notna().any()]
+    grid_df = grid_df[keep_cols]
+
+    # Sort: drivers with the most recent-track-type races first, then by
+    # average finish across the visible cells (best to worst)
+    race_only = grid_df.drop(columns=["Driver"])
+    grid_df["_n"] = race_only.notna().sum(axis=1)
+    grid_df["_avg"] = race_only.mean(axis=1, skipna=True)
+    grid_df = grid_df.sort_values(["_n", "_avg"],
+                                   ascending=[False, True],
+                                   na_position="last")
+    grid_df = grid_df.drop(columns=["_n", "_avg"]).reset_index(drop=True)
+
+    # Heatmap-color the finish-position cells (1 = green, 40 = red)
+    from src.components import style_heatmap
+    rank_cols = [c for c in grid_df.columns if c != "Driver"]
+    # Cast to nullable int for clean display ("23" not "23.0")
+    for c in rank_cols:
+        grid_df[c] = pd.to_numeric(grid_df[c], errors="coerce").astype("Int64")
+
+    type_label = {
+        "intermediate": "Intermediate",
+        "intermediate_worn": "Intermediate (incl. worn)",
+        "short": "Short Track",
+        "short_concrete": "Short Track (incl. concrete)",
+        "superspeedway": "Superspeedway",
+        "road": "Road Course",
+    }.get(track_type, track_type.title())
+
+    st.markdown("---")
+    section_header(
+        f"Recent Finishes at {type_label}",
+        f"Last {len(rank_cols)} races per driver  •  newest left → oldest right  •  Click any driver row for full history",
+    )
+
+    styled = style_heatmap(grid_df, rank_cols, max_rank=40)
+    # Plus-one each finish cell rendered in compact format
+    fmt_map = {c: "{:.0f}" for c in rank_cols}
+    styled = styled.format(fmt_map, na_rep="—")
+    interactive_drill_down_dataframe(
+        styled,
+        key=f"data_tt_recent_{series_id}_{track_type}",
+        series_id=series_id, track_type=track_type,
+        width="stretch", hide_index=True, height=560,
+    )
 
 
 def _render_charts_view(completed_races, series_id, selected_year,

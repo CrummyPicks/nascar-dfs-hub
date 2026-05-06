@@ -5,10 +5,10 @@ Run this script locally to populate the database with race results,
 fastest laps, and DFS points. This replaces the in-app admin buttons.
 
 Usage:
-    python refresh_data.py                  # Fetch all new races for Cup 2026
+    python refresh_data.py                  # Fetch all new races for Cup, current year
     python refresh_data.py --series 2       # Fetch Xfinity series
     python refresh_data.py --year 2025      # Fetch 2025 season
-    python refresh_data.py --all            # Fetch all series, all years
+    python refresh_data.py --all            # Fetch all series, 2022 -> current year
     python refresh_data.py --race 5596      # Fetch a specific race ID
 """
 
@@ -22,6 +22,15 @@ from src.data import (
     fetch_nascar_odds, save_odds_to_db,
     fetch_dk_salaries_live, sync_dk_salaries_to_db,
 )
+
+
+# Active season for default behavior. Computed once at module import time.
+# After Oct 1 we start defaulting to NEXT year because NASCAR posts the
+# upcoming schedule then — running the script in November should pull the
+# new year's races, not last year's already-completed ones.
+_TODAY = datetime.now()
+CURRENT_SEASON = _TODAY.year + 1 if _TODAY.month >= 10 else _TODAY.year
+EARLIEST_SEASON = 2022   # Next Gen era — no historical data is loaded before this
 
 
 SERIES_MAP = {
@@ -84,8 +93,10 @@ def fetch_season(series_id: int, year: int):
     return stored
 
 
-def fetch_single_race(race_id: int, series_id: int = 1, year: int = 2026):
+def fetch_single_race(race_id: int, series_id: int = 1, year: int = None):
     """Fetch a single race by ID."""
+    if year is None:
+        year = CURRENT_SEASON
     print(f"\nFetching race {race_id}...")
     result = fetch_and_store_race(series_id, race_id, year)
     if result.get("status") == "success":
@@ -335,7 +346,7 @@ def scrape_sbd_odds(race_name: str, track_name: str, race_date: str):
             f"https://www.sportsbettingdime.com/news/racing/nascar-{race_slug}-predictions-odds-start-time-{track_slug}-saturday-{mon_str}-{day_str}/"
         )
     patterns.append(
-        f"https://www.sportsbettingdime.com/news/racing/{race_slug}-predictions-odds-picks-{date_parts[0] if date_parts else '2026'}/"
+        f"https://www.sportsbettingdime.com/news/racing/{race_slug}-predictions-odds-picks-{date_parts[0] if date_parts else str(CURRENT_SEASON)}/"
     )
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -458,12 +469,14 @@ def import_odds_csv(csv_path: str):
         print(f"  Error importing CSV: {e}")
 
 
-def _prepopulate_upcoming_races(year=2026):
+def _prepopulate_upcoming_races(year=None):
     """Ensure all races from the API schedule exist in the DB.
 
     The API has the full season schedule. Without this, upcoming races
     won't have DB entries and odds/salary imports will silently fail.
     """
+    if year is None:
+        year = CURRENT_SEASON
     import sqlite3
     from src.config import DB_PATH
     from src.data import fetch_race_list
@@ -524,10 +537,10 @@ def main():
     parser = argparse.ArgumentParser(description="NASCAR DFS Hub — Data Refresh")
     parser.add_argument("--series", type=str, default="cup",
                         help="Series: cup, xfinity, truck (or 1, 2, 3)")
-    parser.add_argument("--year", type=int, default=2026,
-                        help="Season year (default: 2026)")
+    parser.add_argument("--year", type=int, default=CURRENT_SEASON,
+                        help=f"Season year (default: {CURRENT_SEASON})")
     parser.add_argument("--all", action="store_true",
-                        help="Fetch all series and years (2022-2026)")
+                        help=f"Fetch all series and years ({EARLIEST_SEASON}-{CURRENT_SEASON})")
     parser.add_argument("--race", type=int, default=None,
                         help="Fetch a specific race ID")
     parser.add_argument("--odds", action="store_true",
@@ -558,7 +571,7 @@ def main():
     elif args.all:
         total = 0
         for sid in [1, 2, 3]:
-            for year in [2022, 2023, 2024, 2025, 2026]:
+            for year in range(EARLIEST_SEASON, CURRENT_SEASON + 1):
                 total += fetch_season(sid, year)
         print(f"\n{'='*60}")
         print(f"  TOTAL: {total} races stored across all series/years")

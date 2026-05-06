@@ -273,16 +273,32 @@ def compute_projections(
 
         finish_signals = []
         signal_weights = []
+        raw_signals_for_d = raw_signals.get(d, {})
         for sig_name in norm:
             finish_signals.append(norm[sig_name])
             signal_weights.append(weights.get(sig_name, 0))
-            sig_detail[SIG_DISPLAY.get(sig_name, sig_name)] = round(norm[sig_name], 1)
+            # Display: for "team" we show the RAW team_signal value (in finish-position
+            # units, comparable to other Sig columns) — not the rank-normalized value
+            # which would be unintelligible mixed with the others. The rank-normalized
+            # value is still what feeds into the weighted average internally.
+            if sig_name == "team" and sig_name in raw_signals_for_d:
+                sig_detail[SIG_DISPLAY.get(sig_name, sig_name)] = round(raw_signals_for_d[sig_name], 1)
+            else:
+                sig_detail[SIG_DISPLAY.get(sig_name, sig_name)] = round(norm[sig_name], 1)
 
         if finish_signals and sum(signal_weights) > 0:
             total_w = sum(signal_weights)
             raw_finish = sum(f * w for f, w in zip(finish_signals, signal_weights)) / total_w
         else:
             raw_finish = field_size * 0.75
+
+        # Net Sig: the weighted-average finish position that drives proj_finish
+        # rank-ordering. This is what ALL the signal weights net out to before
+        # any low-info penalty / mfr / DNF adjustments. Lower = better projected
+        # finish. Useful for sanity-checking that the aggregation isn't being
+        # skewed by any one signal — e.g. if Sig Track says P5 and Sig Odds
+        # says P5 but Net Sig comes out at P15, something is wrong.
+        sig_detail["Net Sig"] = round(raw_finish, 1)
 
         # Low-information penalty: when a driver has few quality *driver-specific*
         # signals, blend the projection toward back-of-field proportional to how

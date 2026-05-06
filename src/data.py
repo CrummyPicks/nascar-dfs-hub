@@ -54,9 +54,24 @@ def _clean_api_name(name: str) -> str:
 # NASCAR API FETCHES
 # ============================================================
 
+def _default_active_year() -> int:
+    """Default 'current season' for year-defaulted helpers in this module.
+
+    Uses datetime.now() each call so the value rolls over automatically; from
+    October onward we advance to the upcoming season because NASCAR posts
+    next-year schedules in October. Callers should still pass `year` explicitly
+    whenever the year is known — these defaults are defensive only.
+    """
+    from datetime import datetime
+    _t = datetime.now()
+    return _t.year + 1 if _t.month >= 10 else _t.year
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_race_list(series_id: int, year: int = 2026) -> list:
+def fetch_race_list(series_id: int, year: int = None) -> list:
     """Fetch race list from NASCAR API."""
+    if year is None:
+        year = _default_active_year()
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/race_list_basic.json", timeout=15)
         return r.json() if r.status_code == 200 else []
@@ -302,8 +317,10 @@ def sync_all_schedules(years: list = None, verbose: bool = False) -> dict:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_weekend_feed(series_id: int, race_id: int, year: int = 2026) -> Optional[dict]:
+def fetch_weekend_feed(series_id: int, race_id: int, year: int = None) -> Optional[dict]:
     """Fetch weekend feed (entry list, qualifying, practice, results)."""
+    if year is None:
+        year = _default_active_year()
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/weekend-feed.json", timeout=15)
         return r.json() if r.status_code == 200 else None
@@ -312,8 +329,10 @@ def fetch_weekend_feed(series_id: int, race_id: int, year: int = 2026) -> Option
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_lap_times(series_id: int, race_id: int, year: int = 2026) -> Optional[dict]:
+def fetch_lap_times(series_id: int, race_id: int, year: int = None) -> Optional[dict]:
     """Fetch lap-by-lap timing data."""
+    if year is None:
+        year = _default_active_year()
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-times.json", timeout=30)
         return r.json() if r.status_code == 200 else None
@@ -354,11 +373,13 @@ def _parse_lap_avg_session(session: dict) -> pd.DataFrame:
     return df
 
 
-def fetch_lap_averages(series_id: int, race_id: int, year: int = 2026) -> pd.DataFrame:
+def fetch_lap_averages(series_id: int, race_id: int, year: int = None) -> pd.DataFrame:
     """Fetch practice lap averages (Overall, 5/10/15/20/25/30 lap consecutive averages).
 
     Returns data from the last practice session (combined/overall view).
     """
+    if year is None:
+        year = _default_active_year()
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-averages.json", timeout=15)
         if r.status_code != 200:
@@ -371,12 +392,14 @@ def fetch_lap_averages(series_id: int, race_id: int, year: int = 2026) -> pd.Dat
         return pd.DataFrame()
 
 
-def fetch_all_practice_sessions(series_id: int, race_id: int, year: int = 2026) -> list:
+def fetch_all_practice_sessions(series_id: int, race_id: int, year: int = None) -> list:
     """Fetch ALL practice sessions from lap-averages endpoint.
 
     Returns list of (session_label, DataFrame) tuples.
     Session labels are like "Group 1", "Group 2", etc.
     """
+    if year is None:
+        year = _default_active_year()
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-averages.json", timeout=15)
         if r.status_code != 200:
@@ -823,6 +846,256 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         return result
     except Exception:
         return {}
+
+
+def query_driver_race_log(
+    driver_name: str,
+    series_id: int,
+    track_name: str = None,
+    track_type: str = None,
+    season: int = None,
+    min_season: int = 2022,
+    before_date: str = None,
+) -> list:
+    """Per-race log for a single driver, filtered to a track OR a track type
+    OR an entire season.
+
+    Returns a list of dicts (newest first), one per race, suitable for
+    `render_driver_race_log` in components.py:
+        {"Date": str, "Race": str, "Track": str,
+         "Start": int, "Finish": int, "Laps Led": int, "Fast Laps": int,
+         "Avg Run": float, "DK Pts": float, "Status": str}
+
+    Specify EITHER track_name (single-track view), track_type (track-type
+    folded view — short_concrete pulls in short, intermediate ↔ intermediate_worn),
+    OR season (all races in a single year — used by the Standings tab).
+    """
+    if not DB_PATH.exists() or not driver_name:
+        return []
+    if not track_name and not track_type and not season:
+        return []
+
+    from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+
+    where = ["d.full_name = ?", "r.series_id = ?"]
+    params = [driver_name, series_id]
+
+    # Season filter mode: ONLY this season (no min_season floor)
+    if season is not None:
+        where.append("r.season = ?")
+        params.append(season)
+    else:
+        where.append("r.season >= ?")
+        params.append(min_season)
+
+    if track_name:
+        where.append("t.name = ?")
+        params.append(track_name)
+    elif track_type:
+        # Same family-folding rules used elsewhere
+        parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+        include_types = {track_type}
+        for tt, p in TRACK_TYPE_PARENT.items():
+            if tt == track_type or p == parent:
+                include_types.add(tt)
+        if track_type == "short_concrete":
+            include_types.add("short")
+        matching_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt in include_types]
+        if not matching_tracks:
+            return []
+        placeholders = ",".join("?" for _ in matching_tracks)
+        where.append(f"t.name IN ({placeholders})")
+        params.extend(matching_tracks)
+
+    if before_date:
+        where.append("r.race_date < ?")
+        params.append(before_date)
+
+    where_clause = " AND ".join(where)
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(f'''
+            SELECT r.race_date, r.race_name, t.name as track,
+                   rr.start_pos, rr.finish_pos,
+                   rr.laps_led, rr.fastest_laps,
+                   rr.avg_running_position, rr.status
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r   ON r.id = rr.race_id
+            JOIN tracks t  ON t.id = r.track_id
+            WHERE {where_clause} AND rr.finish_pos IS NOT NULL
+            ORDER BY r.race_date DESC, r.id DESC
+        ''', params).fetchall()
+        conn.close()
+    except Exception:
+        return []
+
+    if not rows:
+        return []
+
+    from src.utils import calc_dk_points
+    out = []
+    for rdate, rname, track, start, finish, ll, fl, arp, status in rows:
+        ll_v = ll or 0
+        fl_v = fl or 0
+        try:
+            dk = calc_dk_points(finish, start or 0, ll_v, fl_v) if (start is not None and finish) else None
+        except Exception:
+            dk = None
+        # Trim ISO time off the date for display
+        date_str = (str(rdate) or "")[:10]
+        out.append({
+            "Date": date_str,
+            "Race": rname,
+            "Track": track,
+            "Start": start,
+            "Finish": finish,
+            "Laps Led": ll_v,
+            "Fast Laps": fl_v,
+            "Avg Run": round(arp, 1) if arp is not None else None,
+            "DK Pts": round(dk, 1) if dk is not None else None,
+            "Status": status,
+        })
+    return out
+
+
+def query_driver_finishes_by_track_type(
+    track_type: str,
+    series_id: int,
+    drivers: list = None,
+    last_n: int = 10,
+    before_date: str = None,
+) -> tuple:
+    """Per-driver per-race finish positions at recent races of this track type.
+
+    Track-type matching follows the same parent-aware logic as `query_team_stats`:
+      - "short_concrete" pulls in all "short" tracks (Bristol/Dover + Martinsville/etc.)
+      - "intermediate_worn" pulls in all "intermediate" tracks
+      - All other types match exactly
+
+    Returns (race_meta, driver_finishes) where:
+      race_meta: list of dicts in chronological order (oldest -> newest), each
+        {"race_id": int, "track": str, "short_name": str, "race_date": str,
+         "label": str}  -- label is e.g. "Vegas (3/2)"
+      driver_finishes: {driver_name: {race_id: finish_pos}}
+
+    Args:
+        track_type: e.g. "intermediate", "short_concrete", "intermediate_worn"
+        series_id: 1=Cup, 2=O'Reilly, 3=Truck
+        drivers: optional list of driver names to filter to
+        last_n: max number of recent races to return per driver (default 10)
+        before_date: if set, only races before this date (YYYY-MM-DD)
+    """
+    if not DB_PATH.exists() or not track_type:
+        return ([], {})
+
+    from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+    # Build the family of types to include. Default uses parent-aware folding
+    # (intermediate_worn folds into intermediate). For short_concrete we also
+    # pull regular short tracks so Bristol/Dover races include comparable
+    # short-track form.
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    include_types = {track_type}
+    for tt, p in TRACK_TYPE_PARENT.items():
+        if tt == track_type or p == parent:
+            include_types.add(tt)
+    if track_type == "short_concrete":
+        include_types.add("short")
+    matching_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt in include_types]
+    if not matching_tracks:
+        return ([], {})
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        placeholders = ",".join("?" for _ in matching_tracks)
+        where = (
+            f"WHERE t.name IN ({placeholders}) AND r.series_id = ? "
+            f"AND rr.finish_pos IS NOT NULL"
+        )
+        params = list(matching_tracks) + [series_id]
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+
+        rows = conn.execute(f'''
+            SELECT d.full_name, r.id, r.race_date, t.name, t.short_name,
+                   rr.finish_pos
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            {where}
+            ORDER BY r.race_date DESC, r.id DESC
+        ''', params).fetchall()
+        conn.close()
+    except Exception:
+        return ([], {})
+
+    if not rows:
+        return ([], {})
+
+    # Per-driver: keep only the most-recent N races
+    driver_filter = set(drivers) if drivers else None
+    per_driver = {}                # name -> [(race_id, finish, date, track, short)]
+    for name, race_id, rdate, track, short, finish in rows:
+        if driver_filter and name not in driver_filter:
+            continue
+        if name not in per_driver:
+            per_driver[name] = []
+        if len(per_driver[name]) < last_n:
+            per_driver[name].append((race_id, finish, rdate, track, short))
+
+    # Build the global race set across the filtered drivers (union of races
+    # any included driver participated in within their last-N window)
+    race_meta = {}  # race_id -> {race_id, track, short_name, race_date}
+    driver_finishes = {}
+    for name, races in per_driver.items():
+        finishes = {}
+        for race_id, finish, rdate, track, short in races:
+            finishes[race_id] = int(finish)
+            if race_id not in race_meta:
+                race_meta[race_id] = {
+                    "race_id": race_id,
+                    "track": track,
+                    "short_name": short,
+                    "race_date": rdate,
+                }
+        driver_finishes[name] = finishes
+
+    # Order chronologically (oldest -> newest, so columns read left=old, right=new
+    # → caller can reverse for newest-first display)
+    meta_list = sorted(race_meta.values(),
+                       key=lambda m: (m["race_date"] or "", m["race_id"]))
+
+    # Build short labels: prefer tracks.short_name, else first word(s) of track,
+    # plus M/D date. e.g. "Vegas (3/2)" / "Charlotte (5/24)"
+    def _abbreviate(track_name, short):
+        if short and len(short) > 0:
+            return short
+        # Strip "Speedway"/"Motor Speedway"/"International Speedway"/"Raceway"
+        for suffix in [" International Speedway", " Motor Speedway",
+                       " Speedway", " Raceway", " Course"]:
+            if track_name and track_name.endswith(suffix):
+                return track_name[:-len(suffix)]
+        return track_name or "?"
+
+    def _fmt_date(d):
+        if not d:
+            return ""
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(str(d).split("T")[0])
+            return f"{dt.month}/{dt.day}"
+        except Exception:
+            return str(d)[:5]
+
+    for m in meta_list:
+        abbr = _abbreviate(m["track"], m["short_name"])
+        date_str = _fmt_date(m["race_date"])
+        m["label"] = f"{abbr} ({date_str})" if date_str else abbr
+
+    return (meta_list, driver_finishes)
 
 
 def query_driver_dk_points_by_track_type(
@@ -2780,7 +3053,7 @@ def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> d
             "error": None}
 
 
-def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict:
+def fetch_and_store_race(series_id: int, race_id: int, year: int = None) -> dict:
     """Fetch race results + lap times from the NASCAR API and populate the DB.
 
     Steps:
@@ -2794,6 +3067,9 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
     Returns dict with {"drivers": int, "race_name": str, "status": str, "error": str|None}.
     """
     from src.config import DB_PATH, TRACK_TYPE_MAP
+
+    if year is None:
+        year = _default_active_year()
 
     # -- 1. Fetch data from API ----------------------------------------
     # Use __wrapped__ to bypass st.cache_data when available, else call directly
@@ -3020,10 +3296,26 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = 2026) -> dict
 # CSV PARSING
 # ============================================================
 
+def _read_csv_with_fallback(file) -> pd.DataFrame:
+    """Read a CSV trying multiple encodings (DK/FD exports often ship as cp1252
+    when the race name contains characters like 'ü' in 'Würth')."""
+    for enc in ("utf-8", "cp1252", "latin-1"):
+        try:
+            if hasattr(file, "seek"):
+                file.seek(0)
+            return pd.read_csv(file, encoding=enc)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except Exception:
+            # Non-encoding errors: re-raise so caller's except still catches
+            raise
+    return pd.DataFrame()
+
+
 def parse_dk_csv(file) -> pd.DataFrame:
     """Parse DraftKings CSV export."""
     try:
-        df = pd.read_csv(file)
+        df = _read_csv_with_fallback(file)
         if "Name" in df.columns and "Salary" in df.columns:
             result = df[["Name", "Salary"]].copy()
             result.columns = ["Driver", "DK Salary"]
@@ -3037,7 +3329,7 @@ def parse_dk_csv(file) -> pd.DataFrame:
 def parse_fd_csv(file) -> pd.DataFrame:
     """Parse FanDuel CSV export."""
     try:
-        df = pd.read_csv(file)
+        df = _read_csv_with_fallback(file)
         name_col = next((c for c in df.columns if c.lower() in ["nickname", "name", "player"]), None)
         sal_col = next((c for c in df.columns if c.lower() == "salary"), None)
         if name_col and sal_col:
@@ -3151,12 +3443,14 @@ def query_lapping_profile(track_type: str, series_id: int = 1,
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_season_standings(series_id: int, year: int = 2026, _v: int = 2) -> dict:
+def fetch_season_standings(series_id: int, year: int = None, _v: int = 2) -> dict:
     """Fetch season standings by aggregating results from all completed races.
 
     Returns dict with keys: "driver", "manufacturer", "owner", each a DataFrame.
     Uses points_earned from the API (includes stage points in total).
     """
+    if year is None:
+        year = _default_active_year()
     races = fetch_race_list(series_id, year)
     if not races:
         return {"driver": pd.DataFrame(), "manufacturer": pd.DataFrame(), "owner": pd.DataFrame()}
