@@ -211,6 +211,34 @@ def _filter_and_sort_history(df: pd.DataFrame, *, active_drivers: set,
     return out
 
 
+def _build_history_format_map(df: pd.DataFrame) -> dict:
+    """Per-column format strings for the track-history table.
+
+    Used when wrapping the DataFrame in a Styler — Streamlit's plain
+    st.dataframe auto-formats floats sensibly, but a Styler renders them
+    with full precision (6 decimals) unless we explicitly format. This
+    mirrors the rules used by src.utils.format_display_df.
+    """
+    INT_COLS = {"Races", "Wins", "Top 5", "Top 10", "Top 20",
+                "Laps Led", "Fast Laps", "Fastest Laps", "DNF"}
+    ONE_DEC_COLS = {"Avg Finish", "Avg Start", "Avg Run Pos",
+                    "Avg DFS", "Best DFS", "Worst DFS",
+                    "Avg Laps Led", "Avg Fastest Laps", "Avg Fast Laps",
+                    "Avg DK", "Best DK", "Worst DK"}
+    TWO_DEC_COLS = {"Value", "DFS Value"}
+
+    fmt = {}
+    for c in df.columns:
+        col_name = c[-1] if isinstance(c, tuple) else c
+        if col_name in INT_COLS:
+            fmt[c] = "{:.0f}"
+        elif col_name in ONE_DEC_COLS:
+            fmt[c] = "{:.1f}"
+        elif col_name in TWO_DEC_COLS:
+            fmt[c] = "{:.2f}"
+    return fmt
+
+
 def _render_history_table(display_df: pd.DataFrame, *, key: str, series_id: int,
                            track_name: str = None, track_type: str = None,
                            active_drivers: set):
@@ -235,6 +263,11 @@ def _render_history_table(display_df: pd.DataFrame, *, key: str, series_id: int,
                     "color: #e0f2fe; font-weight: 600"] * len(row)
         return [""] * len(row)
     styled = fillna_df.style.apply(_row_style, axis=1)
+    # Streamlit doesn't auto-format floats inside a Styler — without this
+    # every numeric cell renders with 6 trailing zeros (5.000000).
+    fmt_map = _build_history_format_map(fillna_df)
+    if fmt_map:
+        styled = styled.format(fmt_map, na_rep="")
     interactive_drill_down_dataframe(
         styled, key=key,
         series_id=series_id, track_name=track_name, track_type=track_type,
