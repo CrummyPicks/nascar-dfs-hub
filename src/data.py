@@ -757,8 +757,10 @@ def query_db_track_history(track_name: str, series_id: int = 1,
                             min_season: int = 2022) -> pd.DataFrame:
     """Query per-driver track history from DB (Next Gen era, 2022+).
 
-    Returns clean DataFrame with: Driver, Races, Avg Finish, Avg Start,
-    Avg Run Pos, Laps Led, Wins, Top 5, Top 10, DNF.
+    Returns full column set so it can be displayed alongside the by-type
+    aggregation: Driver, Races, Avg Finish, Avg Start, Avg Run Pos,
+    Avg DFS, Best DFS, Wins, Top 5, Top 10, Laps Led, Avg Laps Led,
+    Fast Laps, Avg Fastest Laps, DNF.
     """
     if not DB_PATH.exists():
         return pd.DataFrame()
@@ -770,17 +772,23 @@ def query_db_track_history(track_name: str, series_id: int = 1,
                    ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
                    ROUND(AVG(rr.start_pos), 1) as "Avg Start",
                    COALESCE(ROUND(AVG(rr.avg_running_position), 1), 99) as "Avg Run Pos",
-                   SUM(rr.laps_led) as "Laps Led",
-                   SUM(rr.fastest_laps) as "Fast Laps",
+                   ROUND(AVG(dp.dfs_score), 1) as "Avg DFS",
+                   ROUND(MAX(dp.dfs_score), 1) as "Best DFS",
                    SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                    SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
                    SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+                   SUM(rr.laps_led) as "Laps Led",
+                   ROUND(AVG(rr.laps_led), 1) as "Avg Laps Led",
+                   SUM(rr.fastest_laps) as "Fast Laps",
+                   ROUND(AVG(rr.fastest_laps), 1) as "Avg Fastest Laps",
                    SUM(CASE WHEN LOWER(COALESCE(rr.status,'running'))
                         NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
+            LEFT JOIN dfs_points dp ON dp.race_id = rr.race_id
+                AND dp.driver_id = rr.driver_id AND dp.platform = 'DraftKings'
             WHERE t.name LIKE ?
               AND r.series_id = ?
               AND r.season >= ?
@@ -917,6 +925,7 @@ def query_driver_race_log(
         conn = sqlite3.connect(str(DB_PATH))
         rows = conn.execute(f'''
             SELECT r.race_date, r.race_name, t.name as track,
+                   rr.car_number, rr.team,
                    rr.start_pos, rr.finish_pos,
                    rr.laps_led, rr.fastest_laps,
                    rr.avg_running_position, rr.status
@@ -936,7 +945,7 @@ def query_driver_race_log(
 
     from src.utils import calc_dk_points
     out = []
-    for rdate, rname, track, start, finish, ll, fl, arp, status in rows:
+    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status in rows:
         ll_v = ll or 0
         fl_v = fl or 0
         try:
@@ -949,12 +958,14 @@ def query_driver_race_log(
             "Date": date_str,
             "Race": rname,
             "Track": track,
+            "Car": car,
+            "Team": team,
             "Start": start,
             "Finish": finish,
             "Laps Led": ll_v,
             "Fast Laps": fl_v,
             "Avg Run": round(arp, 1) if arp is not None else None,
-            "DK Pts": round(dk, 1) if dk is not None else None,
+            "DK Pts": round(dk, 2) if dk is not None else None,
             "Status": status,
         })
     return out
@@ -1544,12 +1555,18 @@ def query_track_type_stats(track_type: str, season: int = None,
                    COUNT(DISTINCT rr.race_id) as Races,
                    ROUND(AVG(rr.finish_pos),1) as "Avg Finish",
                    ROUND(AVG(rr.start_pos),1) as "Avg Start",
+                   COALESCE(ROUND(AVG(rr.avg_running_position),1), 99) as "Avg Run Pos",
                    ROUND(AVG(dp.dfs_score),1) as "Avg DFS",
                    ROUND(MAX(dp.dfs_score),1) as "Best DFS",
+                   SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                    SUM(CASE WHEN rr.finish_pos<=5 THEN 1 ELSE 0 END) as "Top 5",
                    SUM(CASE WHEN rr.finish_pos<=10 THEN 1 ELSE 0 END) as "Top 10",
+                   SUM(rr.laps_led) as "Laps Led",
                    ROUND(AVG(rr.laps_led),1) as "Avg Laps Led",
-                   ROUND(AVG(rr.fastest_laps),1) as "Avg Fastest Laps"
+                   SUM(rr.fastest_laps) as "Fast Laps",
+                   ROUND(AVG(rr.fastest_laps),1) as "Avg Fastest Laps",
+                   SUM(CASE WHEN LOWER(COALESCE(rr.status,'running'))
+                        NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
             FROM race_results rr
             JOIN drivers d ON d.id=rr.driver_id
             LEFT JOIN dfs_points dp ON dp.race_id=rr.race_id
@@ -1568,7 +1585,7 @@ def query_track_type_stats(track_type: str, season: int = None,
         query += """
             GROUP BY d.full_name
             HAVING Races >= 1
-            ORDER BY "Avg DFS" DESC
+            ORDER BY "Avg Finish" ASC
         """
 
         df = pd.read_sql_query(query, conn, params=params)

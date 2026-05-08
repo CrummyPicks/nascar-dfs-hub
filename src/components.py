@@ -372,13 +372,14 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     st.markdown("")  # spacer
 
     # ── Per-race table ──
-    # Show: Date, Race, Track, Start, Finish, Laps Led, Fast Laps, Avg Run, DK Pts, Status
-    # (Track column is shown only when scope is a track type — single-track view
-    # would otherwise repeat the track name on every row.)
+    # Show: Date, Race, Track, Car, Team, Start, Finish, Laps Led, Fast Laps,
+    # Avg Run, DK Pts, Status. Track column is shown only when scope is a
+    # track type — single-track view would otherwise repeat it on every row.
     show_cols = ["Date", "Race"]
     if track_type and not track_name:
         show_cols.append("Track")
-    show_cols.extend(["Start", "Finish", "Laps Led", "Fast Laps",
+    show_cols.extend(["Car", "Team",
+                      "Start", "Finish", "Laps Led", "Fast Laps",
                       "Avg Run", "DK Pts", "Status"])
     show_cols = [c for c in show_cols if c in df.columns]
 

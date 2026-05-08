@@ -830,6 +830,7 @@ with tab_practice:
 with tab_history:
     tth.render(
         track_name=track_name, track_type=track_type, series_id=series_id,
+        entry_list_df=entry_list_df,
     )
 
 with tab_race_analyzer:
