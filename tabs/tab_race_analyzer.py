@@ -226,6 +226,90 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
     st.download_button("Export Race CSV", csv,
                        f"race_{race.get('race_id', '')}.csv", "text/csv", key="ra_single_export")
 
+    # Optimal post-race lineup (only when DK salaries exist for the race)
+    _render_optimal_postrace_lineup(results, series_id, race.get("race_id", ""))
+
+
+def _render_optimal_postrace_lineup(results: pd.DataFrame, series_id: int,
+                                     race_id_for_key: str):
+    """Render the optimal DK lineup for this race using actual scored points.
+
+    Truck series: 5-driver, $50k. Cup/O'Reilly: 6-driver, $50k.
+    Skips silently when no DK salaries are available for the race.
+    """
+    from src.config import SALARY_CAP
+    from tabs.tab_optimizer import _build_optimal_lineup
+    from src.components import section_header
+
+    if "DK Salary" not in results.columns:
+        return
+    pool_src = results[results["DK Salary"].notna() & (results["DK Salary"] > 0)].copy()
+    if pool_src.empty:
+        st.divider()
+        st.caption("No DK salaries on record for this race — optimal lineup unavailable.")
+        return
+
+    roster_size = 5 if series_id == 3 else 6
+
+    # Build pool with actual scored points as the score the optimizer ranks on
+    pool = pd.DataFrame({
+        "Driver": pool_src["Driver"].astype(str),
+        "DK Salary": pd.to_numeric(pool_src["DK Salary"], errors="coerce").fillna(0),
+        "Proj Score": pd.to_numeric(pool_src["DK Pts"], errors="coerce").fillna(0),
+    })
+    # Negative-scoring drivers (rare — only happens with very bad place-diff)
+    # could break the solver's optimism heuristic, so floor at 0 for the
+    # candidacy check. Display still uses the real points.
+    pool_display = pool.copy()
+    pool["Proj Score"] = pool["Proj Score"].clip(lower=0)
+
+    optimal = _build_optimal_lineup(pool, SALARY_CAP, roster_size)
+    if not optimal:
+        st.divider()
+        st.caption("Could not build a valid lineup within the salary cap.")
+        return
+
+    # Restore real (uncapped) DK Pts from pool_display for display
+    real_pts = pool_display.set_index("Driver")["Proj Score"].to_dict()
+
+    lineup_rows = []
+    total_sal = 0
+    total_pts = 0.0
+    for d in sorted(optimal, key=lambda x: x["DK Salary"], reverse=True):
+        drv = d["Driver"]
+        sal = int(d["DK Salary"])
+        pts = float(real_pts.get(drv, d.get("Proj Score", 0)))
+        total_sal += sal
+        total_pts += pts
+        lineup_rows.append({
+            "Driver": drv,
+            "DK Salary": sal,
+            "DK Pts": round(pts, 2),
+            "Value": round(pts / (sal / 1000), 2) if sal else 0.0,
+        })
+
+    st.divider()
+    series_label = {1: "Cup", 2: "O'Reilly", 3: "Truck"}.get(series_id, "Cup")
+    section_header(
+        f"Optimal DK Lineup",
+        f"{roster_size}-driver, ${SALARY_CAP:,} cap  •  {series_label} scoring",
+    )
+
+    head_cols = st.columns(4)
+    head_cols[0].metric("Total Pts", f"{total_pts:.2f}")
+    head_cols[1].metric("Salary Used", f"${total_sal:,}")
+    head_cols[2].metric("Salary Left", f"${SALARY_CAP - total_sal:,}")
+    head_cols[3].metric("Avg Value", f"{(total_pts / (total_sal/1000)):.2f}"
+                                       if total_sal else "—")
+
+    lineup_df = pd.DataFrame(lineup_rows)
+    fmt_lineup = lineup_df.copy()
+    fmt_lineup["DK Salary"] = fmt_lineup["DK Salary"].apply(lambda v: f"${v:,}")
+    fmt_lineup["DK Pts"] = fmt_lineup["DK Pts"].apply(lambda v: f"{v:.2f}")
+    fmt_lineup["Value"] = fmt_lineup["Value"].apply(lambda v: f"{v:.2f}")
+    st.dataframe(fmt_lineup, width="stretch", hide_index=True,
+                 key=f"ra_optimal_{race_id_for_key}")
+
 
 def _load_race_results(race, series_id, year=None):
     """Load full results for a single completed race."""
