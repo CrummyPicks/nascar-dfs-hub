@@ -522,7 +522,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         hist_max_fl = calibration["max_fastest_laps"]
         avg_top = calibration.get("avg_top_leader", hist_max_ll)
         avg_leaders = calibration.get("avg_n_leaders", 6)
-        dom_ceiling = avg_top * 0.25 + hist_max_fl * 0.45
+        # Cap historical maxima at this week's race lap count for display.
+        # When per-track data is sparse, calibration falls back to the
+        # series's track-type aggregate (all Truck road races, etc.) and
+        # those numbers can come from longer races. Showing "max: 99" for
+        # a 72-lap race is logically impossible from the user's perspective.
+        display_max_ll = min(hist_max_ll, race_laps)
+        display_avg_top = min(avg_top, race_laps)
+        dom_ceiling = display_avg_top * 0.25 + min(hist_max_fl, race_laps) * 0.45
 
         info_cols = st.columns(4)
         info_cols[0].metric("Race Laps", f"{race_laps}")
@@ -533,8 +540,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
             f"Laps led = 0.25 pts/lap | Fastest laps = 0.45 pts/lap | "
             f"Place diff = \u00b11.0 pts/pos | {race_laps} total laps | "
-            f"Avg {avg_leaders:.0f} leaders, Avg Race Lap Leader leads {avg_top:.0f} laps "
-            f"(max: {hist_max_ll})</p>",
+            f"Avg {avg_leaders:.0f} leaders, Avg Race Lap Leader leads {display_avg_top:.0f} laps "
+            f"(max: {display_max_ll:.0f})</p>",
             unsafe_allow_html=True,
         )
 
