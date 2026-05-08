@@ -713,6 +713,50 @@ if not is_prerace and feed and race_id:
         except Exception:
             pass  # never block the app if auto-save fails
 
+
+# Once-per-session-per-(series, season) backfill of completed races whose
+# results never made it into the DB. The single-race auto-save above only
+# fires for the race currently being viewed — so if the user never clicks
+# into St. Petersburg, its results stay missing and that whole road race
+# is invisible to track-type aggregations / Track History / projections.
+# We scan the schedule and ingest any race that's: completed (date <=
+# today), has an api_race_id, and has 0 race_results rows. Cap at 25 to
+# bound the wait on first load, and gate by session_state.
+_season_backfill_key = f"season_backfilled_{series_id}_{selected_year}"
+if _season_backfill_key not in st.session_state:
+    try:
+        import sqlite3 as _sql
+        _today_iso = datetime.now().date().isoformat()
+        _conn = _sql.connect(str(DB_PATH))
+        _gap_rows = _conn.execute("""
+            SELECT r.api_race_id, r.race_name
+            FROM races r
+            LEFT JOIN race_results rr ON rr.race_id = r.id
+            WHERE r.series_id = ?
+              AND r.season = ?
+              AND r.race_date IS NOT NULL
+              AND substr(r.race_date, 1, 10) <= ?
+              AND r.api_race_id IS NOT NULL
+            GROUP BY r.id
+            HAVING COUNT(rr.id) = 0
+            ORDER BY r.race_date
+            LIMIT 25
+        """, (series_id, selected_year, _today_iso)).fetchall()
+        _conn.close()
+        if _gap_rows:
+            from src.data import fetch_and_store_race as _fetch_store
+            _fn = getattr(_fetch_store, "__wrapped__", _fetch_store)
+            with st.spinner(f"Backfilling {len(_gap_rows)} completed race(s) from API..."):
+                for _api_rid, _rname in _gap_rows:
+                    try:
+                        _fn(series_id, _api_rid, selected_year)
+                    except Exception:
+                        pass  # individual failures shouldn't kill the loop
+        st.session_state[_season_backfill_key] = True
+    except Exception:
+        # Never block app load on backfill problems
+        st.session_state[_season_backfill_key] = True
+
 qualifying_df = extract_qualifying(feed) if feed else pd.DataFrame()
 entry_list_df = extract_entry_list(feed) if feed else pd.DataFrame()
 
