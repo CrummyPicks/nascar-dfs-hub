@@ -1504,7 +1504,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             proj_finish=_proj_finish_dict,
             track_type=track_type,
             field_size=field_size,
-            roster_size=6 if series_id != 3 else 5,  # Truck DK is 5-driver rosters
+            roster_size=6,  # DK NASCAR contests are 6-driver across all series
         )
         proj["Proj Own %"] = proj["Driver"].map(_own_map).round(1)
         # Leverage = points per ownership point (higher = better GPP play)

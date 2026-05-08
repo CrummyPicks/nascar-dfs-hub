@@ -279,7 +279,10 @@ def _render_optimal_postrace_lineup(results: pd.DataFrame, series_id: int,
         st.caption("No DK salaries on record for this race — optimal lineup unavailable.")
         return
 
-    roster_size = 5 if series_id == 3 else 6
+    # DraftKings NASCAR contests are 6-driver, $50k cap across all three
+    # series (Cup, Xfinity/O'Reilly, Truck). A previous version incorrectly
+    # hard-coded Trucks to 5 — that's why some lineups looked short.
+    roster_size = 6
 
     # Build pool with actual scored points as the score the optimizer ranks on
     pool = pd.DataFrame({
