@@ -103,10 +103,15 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         avg_n_fl_leaders: average number of drivers who get fastest laps per race
         concentration: exponent for score distribution
 
-    Per-track data is used when the track has >= MIN_RACES_TRACK_CAL
-    historical races (to avoid noisy single-race calibration). For tracks
-    with fewer samples, we fall back to track-type defaults which are
-    stable averages across similar tracks.
+    Calibration source priority:
+        1. Per-track history (if races >= MIN_RACES_TRACK_CAL at this track)
+        2. Track-type history for the SAME series (e.g. for Watkins Glen
+           Truck without enough race history, query all Truck road races)
+        3. Hardcoded track-type defaults (Cup-scaled fallback)
+
+    Without #2, sparse per-track Truck/O'Reilly data fell through to the
+    Cup-scaled defaults — producing nonsense like "avg leader leads 80 laps"
+    for a 72-lap Truck road race.
     """
     MIN_RACES_TRACK_CAL = 3  # below this, per-track numbers are too noisy
 
@@ -120,8 +125,16 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
 
     type_defaults = TRACK_TYPE_DOM_DEFAULTS.get(track_type, {"max_ll": 150, "max_fl": 60})
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    # avg_top_leader hardcoded default scales by track type so a missing
+    # series-specific fallback at least uses a number tied to the track type
+    # rather than the same 80 (Cup intermediate-ish) for everything.
+    AVG_TOP_LEADER_DEFAULT = {
+        "superspeedway": 35, "road": 25, "intermediate": 80,
+        "intermediate_worn": 80, "short": 100, "short_concrete": 110,
+    }
     defaults = {
-        "avg_top_leader": 80,
+        "avg_top_leader": AVG_TOP_LEADER_DEFAULT.get(track_type,
+                            AVG_TOP_LEADER_DEFAULT.get(parent, 60)),
         "max_laps_led": type_defaults["max_ll"],
         "max_fastest_laps": type_defaults["max_fl"],
         "avg_n_leaders": FALLBACK_N_LEADERS.get(track_type,
@@ -133,14 +146,47 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
     if not os.path.exists(PROJ_DB):
         return defaults
 
+    # Resolve the set of tracks to consider for the track-type fallback —
+    # use the same family-folding logic as query_team_stats so e.g. road
+    # courses pull in road, short_concrete pulls in short, etc.
+    type_family = {track_type, parent}
+    for tt, p in TRACK_TYPE_PARENT.items():
+        if tt == track_type or p == parent:
+            type_family.add(tt)
+    if track_type == "short_concrete":
+        type_family.add("short")
+    family_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt in type_family]
+
+    def _summarize(rows):
+        """Reduce a list of (top_led, n_leaders, top_fl, n_fl) per-race rows
+        to a calibration-style summary."""
+        if not rows:
+            return None
+        top_leaders = [r[0] for r in rows if r[0] and r[0] > 0]
+        n_leaders_list = [r[1] for r in rows if r[1] and r[1] > 0]
+        top_fl = [r[2] for r in rows if r[2] and r[2] > 0]
+        n_fl_list = [r[3] for r in rows if r[3] and r[3] > 0]
+        out = {}
+        if top_leaders:
+            out["avg_top_leader"] = float(np.mean(top_leaders))
+            out["max_laps_led"] = int(max(top_leaders))
+        if n_leaders_list:
+            out["avg_n_leaders"] = float(np.mean(n_leaders_list))
+        if top_fl:
+            out["max_fastest_laps"] = int(max(top_fl))
+        if n_fl_list:
+            out["avg_n_fl_leaders"] = float(np.mean(n_fl_list))
+        return out
+
     try:
         conn = sqlite3.connect(PROJ_DB)
-        # Get per-race stats: max laps led, number of leaders, max fastest laps, number with FL
+
+        # Step 1: per-track history
         series_filter = "AND r.series_id = ?" if series_id else ""
         params = [f"%{track_name}%"]
         if series_id:
             params.append(series_id)
-        race_stats = conn.execute(f'''
+        per_track_rows = conn.execute(f'''
             SELECT MAX(rr.laps_led) as top_led,
                    COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
                    MAX(rr.fastest_laps) as top_fl,
@@ -152,31 +198,42 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             {series_filter}
             GROUP BY r.id
         ''', params).fetchall()
-        conn.close()
 
         result = dict(defaults)
+        per_track_summary = _summarize(per_track_rows) if per_track_rows else None
 
-        # Only override defaults with per-track data when we have enough races.
-        # Single-race tracks (Road America, Mexico City, etc.) produce noisy
-        # calibration that's less reliable than the track-type average.
-        n_races = len(race_stats)
-        use_per_track = n_races >= MIN_RACES_TRACK_CAL
+        # Step 2: track-type history for the same series (used as fallback when
+        # per-track is too sparse, AND as the source for any fields the per-track
+        # query couldn't fill in)
+        type_summary = None
+        if family_tracks and series_id:
+            placeholders = ",".join("?" for _ in family_tracks)
+            type_rows = conn.execute(f'''
+                SELECT MAX(rr.laps_led) as top_led,
+                       COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
+                       MAX(rr.fastest_laps) as top_fl,
+                       COUNT(CASE WHEN rr.fastest_laps > 0 THEN 1 END) as n_fl
+                FROM race_results rr
+                JOIN races r ON r.id = rr.race_id
+                JOIN tracks t ON t.id = r.track_id
+                WHERE t.name IN ({placeholders})
+                  AND r.series_id = ?
+                GROUP BY r.id
+            ''', list(family_tracks) + [series_id]).fetchall()
+            type_summary = _summarize(type_rows)
 
-        if race_stats and use_per_track:
-            top_leaders = [r[0] for r in race_stats if r[0] and r[0] > 0]
-            n_leaders_list = [r[1] for r in race_stats if r[1] and r[1] > 0]
-            top_fl = [r[2] for r in race_stats if r[2] and r[2] > 0]
-            n_fl_list = [r[3] for r in race_stats if r[3] and r[3] > 0]
+        conn.close()
 
-            if top_leaders:
-                result["avg_top_leader"] = np.mean(top_leaders)
-                result["max_laps_led"] = max(top_leaders)
-            if n_leaders_list:
-                result["avg_n_leaders"] = np.mean(n_leaders_list)
-            if top_fl:
-                result["max_fastest_laps"] = max(top_fl)
-            if n_fl_list:
-                result["avg_n_fl_leaders"] = np.mean(n_fl_list)
+        # Use per-track when it has enough races; otherwise fall through to
+        # track-type-for-series; otherwise stay on the (track-type-scaled) defaults.
+        n_per_track = len(per_track_rows) if per_track_rows else 0
+        use_per_track = (n_per_track >= MIN_RACES_TRACK_CAL) and per_track_summary
+
+        if use_per_track:
+            result.update(per_track_summary)
+        elif type_summary:
+            result.update(type_summary)
+        # else: result stays on defaults
 
         return result
 
