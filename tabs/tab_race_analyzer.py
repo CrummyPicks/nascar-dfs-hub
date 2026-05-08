@@ -122,6 +122,36 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                     pass
         ra_completed.extend(yr_completed)
 
+    # Strip out races that don't actually have results in the DB. Without
+    # this, races scheduled for TODAY get classified as "completed" by the
+    # main app (since `today <= today`) and end up at the top of the picker
+    # with empty results. Use DB results count as the source of truth — a
+    # race is analyzable only when it actually has finishing positions.
+    try:
+        import sqlite3 as _sql
+        from src.config import DB_PATH as _DB
+        if _DB.exists():
+            _conn = _sql.connect(str(_DB))
+            _api_ids = [r.get("race_id") for _, r in ra_completed if r.get("race_id")]
+            if _api_ids:
+                placeholders = ",".join("?" for _ in _api_ids)
+                rows = _conn.execute(f"""
+                    SELECT r.api_race_id, COUNT(rr.id) as n
+                    FROM races r
+                    LEFT JOIN race_results rr ON rr.race_id = r.id
+                    WHERE r.api_race_id IN ({placeholders})
+                      AND r.series_id = ?
+                    GROUP BY r.id
+                """, list(_api_ids) + [ra_series_id]).fetchall()
+                _result_counts = {row[0]: row[1] for row in rows}
+                ra_completed = [
+                    (i, r) for i, r in ra_completed
+                    if _result_counts.get(r.get("race_id"), 0) > 0
+                ]
+            _conn.close()
+    except Exception:
+        pass  # if DB check fails, fall through to the original list
+
     # Filter by track type if selected
     if ra_track_type != "All Types":
         if ra_track_type.startswith("All "):
