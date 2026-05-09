@@ -1,10 +1,41 @@
 """NASCAR DFS Hub — Utility Functions."""
 
+import re
 import unicodedata
 
 import pandas as pd
 import numpy as np
 from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES
+
+
+def parse_american_odds(value) -> int | None:
+    """Parse a single American-odds value into a signed integer.
+
+    Handles all the formats sportsbooks ship in:
+        +350, -150, 350           -> 350, -150, 350
+        " +350 ", "  -150  "      -> 350, -150  (whitespace tolerated)
+        EVEN, even, Even, EV, PK  -> 100  (pick'em / evens = +100)
+        None, "", "—", "N/A"      -> None
+
+    Used by the manual-paste parser, the live-odds fetcher, the ownership
+    model, and the accuracy backtest — anywhere a raw odds string needs to
+    become a number.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.upper() in {"NONE", "NULL", "N/A", "NA", "—", "-", ""}:
+        return None
+    # Pick-em / evens: every book uses one of these spellings
+    if s.upper() in {"EVEN", "EVENS", "EV", "PK", "PICK", "PICK'EM", "PICKEM"}:
+        return 100
+    # Strip optional + sign and any embedded whitespace, then parse
+    cleaned = s.replace("+", "").strip()
+    try:
+        # Allow decimal odds files like "350.0" by going via float
+        return int(float(cleaned))
+    except (ValueError, TypeError):
+        return None
 
 
 def calc_dk_points(finish, start, laps_led, fastest_laps):

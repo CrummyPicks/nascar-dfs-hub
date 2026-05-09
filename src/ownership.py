@@ -26,12 +26,13 @@ from typing import Iterable
 
 
 def _american_to_prob(odds_str) -> float:
-    """Convert American odds string/int to implied probability [0, 1]."""
-    if odds_str is None:
-        return 0.0
-    try:
-        v = int(str(odds_str).replace("+", ""))
-    except (ValueError, TypeError):
+    """Convert American odds string/int to implied probability [0, 1].
+
+    Accepts EVEN / EV / PK in addition to numeric forms (e.g. +350, -150).
+    """
+    from src.utils import parse_american_odds
+    v = parse_american_odds(odds_str)
+    if v is None:
         return 0.0
     if v > 0:
         return 100.0 / (v + 100.0)

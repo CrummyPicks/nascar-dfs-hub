@@ -577,19 +577,19 @@ def _generate_race_projections(race, series_id, weights=None):
         clean_odds = {k: v for k, v in saved_odds.items()
                       if v is not None and str(v).strip() not in ("", "None", "null", "N/A")}
 
+        from src.utils import parse_american_odds as _amer
         odds_probs = {}
         for name, odds_str in clean_odds.items():
-            try:
-                odds_val = int(str(odds_str).replace("+", ""))
-                if odds_val > 0:
-                    prob = 100 / (odds_val + 100)
-                elif odds_val < 0:
-                    prob = abs(odds_val) / (abs(odds_val) + 100)
-                else:
-                    continue
-                odds_probs[name] = prob
-            except (ValueError, TypeError):
+            odds_val = _amer(odds_str)
+            if odds_val is None:
                 continue
+            if odds_val > 0:
+                prob = 100 / (odds_val + 100)
+            elif odds_val < 0:
+                prob = abs(odds_val) / (abs(odds_val) + 100)
+            else:
+                continue
+            odds_probs[name] = prob
 
         if len(odds_probs) >= field_size * 0.3:
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
@@ -608,23 +608,22 @@ def _generate_race_projections(race, series_id, weights=None):
 
         # Build odds display dict (for dominator scoring)
         for name, odds_str in clean_odds.items():
-            try:
-                oval = int(str(odds_str).replace("+", ""))
-                if oval > 0:
-                    impl = 100 / (oval + 100) * 100
-                elif oval < 0:
-                    impl = abs(oval) / (abs(oval) + 100) * 100
-                else:
-                    continue
-                matched = fuzzy_match_name(name, drivers)
-                if matched:
-                    # Preserve raw odds — sportsbook already posts clean values
-                    driver_odds_display[matched] = {
-                        "odds_str": oval,
-                        "impl_pct": round(impl, 1),
-                    }
-            except (ValueError, TypeError):
+            oval = _amer(odds_str)
+            if oval is None:
                 continue
+            if oval > 0:
+                impl = 100 / (oval + 100) * 100
+            elif oval < 0:
+                impl = abs(oval) / (abs(oval) + 100) * 100
+            else:
+                continue
+            matched = fuzzy_match_name(name, drivers)
+            if matched:
+                # Preserve raw odds — sportsbook already posts clean values
+                driver_odds_display[matched] = {
+                    "odds_str": oval,
+                    "impl_pct": round(impl, 1),
+                }
 
     # ── 8. DNF risk data: per-track preferred, blend with career ──
     from src.data import query_driver_track_dnf

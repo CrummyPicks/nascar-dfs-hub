@@ -491,6 +491,7 @@ with st.expander("Settings & Data Upload", expanded=False):
         # Parse manual odds — supports copy-paste and CSV formats
         if odds_text.strip():
             import re as _re
+            from src.utils import parse_american_odds as _parse_amer
             # Lines to skip: race name headers, dates, times, section labels
             _skip_patterns = _re.compile(
                 r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
@@ -498,31 +499,43 @@ with st.expander("Settings & Data Upload", expanded=False):
                 r'|\d{1,2}:\d{2}\s*(am|pm)?'    # times like 2:30 PM
                 r')$', _re.IGNORECASE
             )
+            # Odds tail: a signed/unsigned integer OR the string EVEN/EV/PK
+            # (case-insensitive). Used to detect the odds part of each line.
+            _ODDS_RE = r'(?:[+-]?\d+|even|evens|ev|pk|pick(?:\'?em)?)'
+            _has_odds_re = _re.compile(_ODDS_RE, _re.IGNORECASE)
+            _csv_odds_re = _re.compile(rf'^{_ODDS_RE}$', _re.IGNORECASE)
+            _trail_odds_re = _re.compile(rf'^(.+?)\s*({_ODDS_RE})$', _re.IGNORECASE)
+
+            def _store(name: str, raw_odds: str):
+                """Normalize the odds string to "+N"/"-N" form for downstream."""
+                val = _parse_amer(raw_odds)
+                if val is None:
+                    return False
+                odds_data[name] = f"+{val}" if val >= 0 else str(val)
+                return True
+
             for line in odds_text.strip().split("\n"):
                 line = line.strip()
                 if not line:
                     continue
                 if _skip_patterns.match(line):
                     continue
-                if not _re.search(r'[+-]\d+', line):
+                if not _has_odds_re.search(line):
                     continue
-                # Format 1: comma-separated "Driver Name, +350"
+                # Format 1: comma-separated "Driver Name, +350"  (or ", EVEN")
                 if "," in line:
                     parts = [p.strip() for p in line.split(",", 1)]
-                    if len(parts) == 2 and parts[0] and _re.match(r'^[+-]?\d+$', parts[1]):
-                        odds_data[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
-                        continue
-                # Format 2: copy-paste "DriverName+300" (no space before odds)
-                m = _re.match(r'^(.+?)([+-]\d+)$', line)
+                    if len(parts) == 2 and parts[0] and _csv_odds_re.match(parts[1]):
+                        if _store(parts[0], parts[1]):
+                            continue
+                # Format 2: trailing odds with optional whitespace —
+                # handles both "Driver Name +350" and "DriverName+300"
+                # plus "Connor Zilisch EVEN".
+                m = _trail_odds_re.match(line)
                 if m:
-                    name = m.group(1).strip()
+                    name = m.group(1).strip().rstrip(",")
                     if name:
-                        odds_data[name] = m.group(2)
-                        continue
-                # Format 3: space-separated "Driver Name +350"
-                m = _re.match(r'^(.+?)\s+([+-]\d+)$', line)
-                if m:
-                    odds_data[m.group(1).strip()] = m.group(2)
+                        _store(name, m.group(2))
             if odds_data:
                 odds_source = "manual"
                 st.success(f"Parsed {len(odds_data)} drivers from pasted odds")

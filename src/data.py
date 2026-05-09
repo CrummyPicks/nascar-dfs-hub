@@ -2729,6 +2729,7 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
     driver_names = list(name_to_id.keys())
 
     # Build top3/top5/top10 lookup by driver_id (fuzzy matched)
+    from src.utils import parse_american_odds as _amer
     t3_by_id = {}
     t5_by_id = {}
     t10_by_id = {}
@@ -2736,20 +2737,19 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
         if not prop_data:
             continue
         for name, odds_str in prop_data.items():
-            try:
-                val = float(str(odds_str).replace("+", ""))
-                matched = fuzzy_match_name(name, driver_names)
-                if matched:
-                    target_dict[name_to_id[matched]] = val
-            except (ValueError, TypeError):
+            val = _amer(odds_str)
+            if val is None:
                 continue
+            matched = fuzzy_match_name(name, driver_names)
+            if matched:
+                target_dict[name_to_id[matched]] = float(val)
 
     count = 0
     for name, odds_str in odds_data.items():
-        try:
-            odds_val = float(str(odds_str).replace("+", ""))
-        except (ValueError, TypeError):
+        odds_val = _amer(odds_str)
+        if odds_val is None:
             continue
+        odds_val = float(odds_val)
 
         matched = fuzzy_match_name(name, driver_names)
         if not matched:

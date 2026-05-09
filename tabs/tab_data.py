@@ -86,14 +86,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     # rounded odds; re-bucketing here was corrupting the user's paste,
     # e.g. +550 → +600)
     if odds_data:
-        from src.utils import normalize_driver_name
-        def _parse_odds(v):
-            if v is None or str(v).strip() in ("", "None", "null"):
-                return None
-            try:
-                return int(float(str(v).replace("+", "")))
-            except (ValueError, TypeError):
-                return None
+        from src.utils import normalize_driver_name, parse_american_odds as _parse_odds
         # Use normalized + fuzzy matching to handle name format differences
         # (Jr. vs Jr, Suárez vs Suarez, A.J. vs AJ, etc.)
         odds_keys = list(odds_data.keys())
