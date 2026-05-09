@@ -329,10 +329,20 @@ def import_odds():
     # Check for existing
     existing = check_existing_odds(race_id, series_id)
     if existing:
-        confirm = input(f"\n  {existing} odds already saved for this race. Overwrite? (y/N): ").strip().lower()
-        if confirm != "y":
-            print("  Skipped.")
+        print(f"\n  {existing} odds already saved for this race.")
+        print(f"    [r] Replace — clear existing, then save new (use this if Cup odds")
+        print(f"        were accidentally saved to an O'Reilly slot, etc.)")
+        print(f"    [m] Merge — keep existing, only update overlapping drivers")
+        print(f"    [n] Cancel")
+        choice = input(f"  How should we handle? (r/m/n) [r]: ").strip().lower() or "r"
+        if choice == "n":
+            print("  Cancelled.")
             return None
+        if choice == "r":
+            from src.data import clear_race_odds
+            n_cleared = clear_race_odds(race_id, series_id=series_id)
+            print(f"  Cleared {n_cleared} stale odds rows.")
+        # else: 'm' falls through to merge (current save_odds_to_db behavior)
 
     # Save to DB
     count = save_odds_to_db(odds_data, race_id, sportsbook="import", series_id=series_id)
@@ -344,6 +354,41 @@ def import_odds():
         print(f"  The race may not have resolved to a DB entry.")
         print(f"  Try running: python refresh_data.py")
         return None
+
+
+def clear_odds():
+    """Standalone flow to wipe odds for a race. Useful when odds were
+    saved to the wrong race / series and need to be removed entirely.
+
+    Returns (race_name, count, "odds-cleared") or None.
+    """
+    from src.data import clear_race_odds
+
+    series_id, series_name = pick_series()
+    selected = pick_race(series_id, series_name, check_type="odds")
+    if not selected:
+        return None
+
+    race_id = selected.get("race_id")
+    race_name = selected.get("race_name", "Unknown")
+
+    existing = check_existing_odds(race_id, series_id)
+    if existing == 0:
+        print(f"\n  No odds saved for {race_name} — nothing to clear.")
+        return None
+
+    print(f"\n  {existing} odds rows currently saved for: {race_name}")
+    confirm = input(f"  Permanently delete all of them? (y/N): ").strip().lower()
+    if confirm != "y":
+        print("  Cancelled.")
+        return None
+
+    n = clear_race_odds(race_id, series_id=series_id)
+    if n > 0:
+        print(f"\n  Cleared {n} odds rows for {race_name}.")
+        return race_name, n, "odds-cleared"
+    print(f"\n  Nothing was deleted (race resolution may have failed).")
+    return None
 
 
 def import_salary(recent_files):
@@ -423,13 +468,14 @@ def main():
     imported = []
 
     while True:
-        print(f"\n  What would you like to import?")
-        print(f"    [1] DK/FD Salaries (from CSV)")
-        print(f"    [2] Sportsbook Odds (paste from website)")
-        print(f"    [3] Both (salaries + odds for same race)")
+        print(f"\n  What would you like to do?")
+        print(f"    [1] Import DK/FD Salaries (from CSV)")
+        print(f"    [2] Import Sportsbook Odds (paste from website)")
+        print(f"    [3] Import Both (salaries + odds for same race)")
+        print(f"    [4] Clear odds for a race (wrong race / wrong series)")
         print(f"    [q] Done — commit & push")
 
-        choice = input(f"\n  Select (1/2/3/q) [1]: ").strip().lower()
+        choice = input(f"\n  Select (1/2/3/4/q) [1]: ").strip().lower()
 
         if choice in ("q", "quit", "exit", "done"):
             break
@@ -448,6 +494,10 @@ def main():
             odds_result = import_odds()
             if odds_result:
                 imported.append(odds_result)
+        elif choice == "4":
+            result = clear_odds()
+            if result:
+                imported.append(result)
         else:
             result = import_salary(recent_files)
             if result:
@@ -497,13 +547,18 @@ def main():
             parts = []
             sal_races = [name for name, _, dtype in imported if dtype == "salaries"]
             odds_races = [name for name, _, dtype in imported if dtype == "odds"]
+            cleared_races = [name for name, _, dtype in imported if dtype == "odds-cleared"]
             if sal_races:
                 safe = ", ".join(r.replace('"', '').replace("'", "") for r in sal_races)
                 parts.append(f"salaries: {safe}")
             if odds_races:
                 safe = ", ".join(r.replace('"', '').replace("'", "") for r in odds_races)
                 parts.append(f"odds: {safe}")
-            commit_msg = "Add " + "; ".join(parts)
+            if cleared_races:
+                safe = ", ".join(r.replace('"', '').replace("'", "") for r in cleared_races)
+                parts.append(f"cleared odds: {safe}")
+            verb = "Update" if cleared_races and not (sal_races or odds_races) else "Add"
+            commit_msg = f"{verb} " + "; ".join(parts)
         else:
             commit_msg = "Update nascar.db"
 

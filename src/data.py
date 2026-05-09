@@ -2829,6 +2829,45 @@ def load_race_odds(race_id: int, series_id: int = None) -> dict:
     return result
 
 
+def clear_race_odds(race_id: int, series_id: int = None,
+                    sportsbook: str = None) -> int:
+    """Wipe all odds rows for a race. Returns number of rows deleted.
+
+    Used by the import script's "Clear odds" menu and by the import flow's
+    "Overwrite?" path — without an explicit clear, re-importing odds for a
+    race only updates rows for drivers that appear in the new dataset and
+    leaves stale rows for drivers that don't (e.g. when Cup odds were
+    accidentally saved to an O'Reilly race).
+
+    Args:
+        race_id: NASCAR API race ID (resolved to internal DB id)
+        series_id: series filter to prevent cross-series resolution
+        sportsbook: optional — only delete rows from this sportsbook source.
+                    None (default) deletes ALL odds rows for the race.
+    """
+    if not DB_PATH.exists() or not race_id:
+        return 0
+    db_race_id = _resolve_db_race_id_with_fallback(race_id, series_id)
+    if not db_race_id:
+        return 0
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        if sportsbook:
+            cur = conn.execute(
+                "DELETE FROM odds WHERE race_id = ? AND sportsbook = ?",
+                (db_race_id, sportsbook),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM odds WHERE race_id = ?",
+                (db_race_id,),
+            )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        conn.close()
+
+
 def load_race_prop_odds(race_id: int, series_id: int = None) -> dict:
     """Load top3/top5/top10 finish odds for a race from the DB.
 
