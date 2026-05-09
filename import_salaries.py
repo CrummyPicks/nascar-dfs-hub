@@ -206,9 +206,12 @@ def parse_odds(text):
         Corey Heim+300          (no-space direct copy)
         Kyle Larson, -115       (comma-separated)
         Chase Elliott +1200     (space-separated)
+        Connor Zilisch EVEN     (pick'em — also EV / PK)
 
     Auto-skips header lines (race name, date, time, "Outright", etc.)
     """
+    from src.utils import parse_american_odds
+
     odds = {}
     skip_patterns = re.compile(
         r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
@@ -216,6 +219,19 @@ def parse_odds(text):
         r'|\d{1,2}:\d{2}\s*(am|pm)?'
         r')$', re.IGNORECASE
     )
+    # Odds tail: signed/unsigned integer OR "EVEN"/"EV"/"PK"/"Pick'em"
+    ODDS_RE = r'(?:[+-]?\d+|even|evens|ev|pk|pick(?:\'?em)?)'
+    has_odds_re = re.compile(ODDS_RE, re.IGNORECASE)
+    csv_odds_re = re.compile(rf'^{ODDS_RE}$', re.IGNORECASE)
+    trail_odds_re = re.compile(rf'^(.+?)\s*({ODDS_RE})$', re.IGNORECASE)
+
+    def _store(name, raw):
+        """Normalize the parsed odds string to "+N"/"-N" form."""
+        v = parse_american_odds(raw)
+        if v is None:
+            return False
+        odds[name] = f"+{v}" if v >= 0 else str(v)
+        return True
 
     for line in text.strip().split("\n"):
         line = line.strip()
@@ -223,24 +239,21 @@ def parse_odds(text):
             continue
         if skip_patterns.match(line):
             continue
-        # Skip lines without odds
-        if not re.search(r'[+-]\d+', line):
+        if not has_odds_re.search(line):
             continue
-        # Comma-separated: "Driver Name, +350"
+        # Comma-separated: "Driver Name, +350"  (or ", EVEN")
         if "," in line:
             parts = [p.strip() for p in line.split(",", 1)]
-            if len(parts) == 2 and parts[0] and re.match(r'^[+-]?\d+$', parts[1]):
-                odds[parts[0]] = parts[1] if parts[1].startswith(('+', '-')) else f"+{parts[1]}"
-                continue
-        # No-space format: "DriverName+300"
-        m = re.match(r'^(.+?)([+-]\d+)$', line)
-        if m and m.group(1).strip():
-            odds[m.group(1).strip()] = m.group(2)
-            continue
-        # Space-separated: "Driver Name +350"
-        m = re.match(r'^(.+?)\s+([+-]\d+)$', line)
+            if len(parts) == 2 and parts[0] and csv_odds_re.match(parts[1]):
+                if _store(parts[0], parts[1]):
+                    continue
+        # Trailing odds with optional whitespace — handles
+        # "Driver Name +350", "DriverName+300", and "Connor Zilisch EVEN".
+        m = trail_odds_re.match(line)
         if m:
-            odds[m.group(1).strip()] = m.group(2)
+            name = m.group(1).strip().rstrip(",")
+            if name:
+                _store(name, m.group(2))
 
     return odds
 
@@ -288,8 +301,13 @@ def import_odds():
 
     # Show parsed results
     print(f"\n  Parsed {len(odds_data)} drivers:")
-    # Sort by odds value for display
-    sorted_odds = sorted(odds_data.items(), key=lambda x: float(x[1].replace("+", "")))
+    # Sort by odds value (lowest = favorite first). parse_american_odds
+    # returns None for unparseable values; sort those to the back.
+    from src.utils import parse_american_odds
+    def _sortkey(item):
+        v = parse_american_odds(item[1])
+        return (v is None, v if v is not None else 0)
+    sorted_odds = sorted(odds_data.items(), key=_sortkey)
     for name, odds_val in sorted_odds[:10]:
         print(f"    {name:30s} {odds_val}")
     if len(sorted_odds) > 10:
