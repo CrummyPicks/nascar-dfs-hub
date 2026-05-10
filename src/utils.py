@@ -2,13 +2,14 @@
 
 import re
 import unicodedata
+from typing import Optional
 
 import pandas as pd
 import numpy as np
 from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES
 
 
-def compute_practice_rank_signal(rank_row, field_size: int = None) -> float | None:
+def compute_practice_rank_signal(rank_row, field_size: int = None) -> Optional[float]:
     """Practice-rank signal: simple mean of the lap-window ranks the driver
     actually ran.
 
@@ -48,7 +49,7 @@ def compute_practice_rank_signal(rank_row, field_size: int = None) -> float | No
     return sum(vals) / len(vals)
 
 
-def parse_american_odds(value) -> int | None:
+def parse_american_odds(value) -> Optional[int]:
     """Parse a single American-odds value into a signed integer.
 
     Handles all the formats sportsbooks ship in:
