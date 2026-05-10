@@ -798,27 +798,42 @@ if odds_data and not entry_list_df.empty:
 # use different spellings than the entry list (e.g. "John H. Nemechek" vs
 # "John Hunter Nemechek"), so we normalize + fuzzy-match each key to the
 # canonical entry-list name before storing. Mirrors the odds remap above.
-if not lap_averages_df.empty and "Overall Rank" in lap_averages_df.columns and not practice_data:
-    from src.utils import normalize_driver_name, fuzzy_match_name
-    _entry_drivers = entry_list_df["Driver"].tolist() if not entry_list_df.empty else []
-    _norm_entry = {normalize_driver_name(d): d for d in _entry_drivers}
-    for _, row in lap_averages_df.iterrows():
-        driver = row.get("Driver")
-        rank = row.get("Overall Rank")
-        if not driver or rank is None or pd.isna(rank):
-            continue
-        key = driver
-        if _entry_drivers and driver not in _entry_drivers:
-            # Try normalized match
-            norm_key = normalize_driver_name(driver)
-            if norm_key in _norm_entry:
-                key = _norm_entry[norm_key]
-            else:
-                # Fuzzy fallback
-                matched = fuzzy_match_name(driver, _entry_drivers)
-                if matched:
-                    key = matched
-        practice_data[key] = int(rank)
+#
+# Signal = simple mean of the lap-window ranks the driver actually ran
+# (1L, 5L, 10L, 15L, 20L, 25L, 30L). This matches the "Average" column
+# shown in the in-app practice heatmap. We deliberately do NOT use
+# NASCAR's "Overall Rank" — it averages lap *times*, which rewards
+# drivers who ran 3 fast laps and parked it over drivers who completed
+# a real long run with falloff.
+if not lap_averages_df.empty and not practice_data:
+    _has_rank_cols = any(c in lap_averages_df.columns
+                         for c in ["1 Lap Rank", "5 Lap Rank", "10 Lap Rank",
+                                   "15 Lap Rank", "20 Lap Rank", "25 Lap Rank",
+                                   "30 Lap Rank"])
+    if _has_rank_cols:
+        from src.utils import (normalize_driver_name, fuzzy_match_name,
+                               compute_practice_rank_signal)
+        _entry_drivers = entry_list_df["Driver"].tolist() if not entry_list_df.empty else []
+        _norm_entry = {normalize_driver_name(d): d for d in _entry_drivers}
+        for _, row in lap_averages_df.iterrows():
+            driver = row.get("Driver")
+            if not driver:
+                continue
+            signal = compute_practice_rank_signal(row)
+            if signal is None:
+                continue
+            key = driver
+            if _entry_drivers and driver not in _entry_drivers:
+                # Try normalized match
+                norm_key = normalize_driver_name(driver)
+                if norm_key in _norm_entry:
+                    key = _norm_entry[norm_key]
+                else:
+                    # Fuzzy fallback
+                    matched = fuzzy_match_name(driver, _entry_drivers)
+                    if matched:
+                        key = matched
+            practice_data[key] = signal
 
 # Parse salary CSVs — priority: CSV upload > saved DB
 if dk_file:

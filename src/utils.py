@@ -8,6 +8,46 @@ import numpy as np
 from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES
 
 
+def compute_practice_rank_signal(rank_row, field_size: int = None) -> float | None:
+    """Practice-rank signal: simple mean of the lap-window ranks the driver
+    actually ran.
+
+    Replaces blind use of NASCAR's "Overall Rank", which has a real-world
+    bug for DFS purposes: it averages whatever lap *times* a driver turned,
+    so a driver who ran 3 fast laps and parked it gets a better Overall Avg
+    (and therefore better Overall Rank) than a driver who completed a 15-lap
+    run with realistic falloff. The user's example: Byron at WG had 1-Lap=8,
+    5-Lap=29, no data past that — yet NASCAR's Overall Rank put him 3rd.
+
+    Instead, we treat each lap-window rank (1L, 5L, 10L, 15L, 20L, 25L, 30L)
+    equally and take the mean of whatever's available. This matches the
+    "Average" column shown in the in-app practice heatmap, so the projection
+    signal lines up with what the user sees.
+
+    Args:
+        rank_row:   dict-like with keys "1 Lap Rank", "5 Lap Rank", ...,
+                    "30 Lap Rank". Missing/NaN values are skipped.
+        field_size: unused; kept for backwards compatibility.
+
+    Returns:
+        Average rank as a float, OR None if the row has no usable ranks.
+    """
+    RANK_KEYS = ["1 Lap Rank", "5 Lap Rank", "10 Lap Rank", "15 Lap Rank",
+                 "20 Lap Rank", "25 Lap Rank", "30 Lap Rank"]
+    vals = []
+    for col in RANK_KEYS:
+        v = rank_row.get(col) if hasattr(rank_row, "get") else None
+        try:
+            if v is None or pd.isna(v):
+                continue
+            vals.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
 def parse_american_odds(value) -> int | None:
     """Parse a single American-odds value into a signed integer.
 
