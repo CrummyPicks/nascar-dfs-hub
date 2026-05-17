@@ -230,7 +230,14 @@ ROSTER_SIZE = 6
 # ----------------------------
 # EXHIBITION RACE FILTER KEYWORDS
 # ----------------------------
-EXHIBITION_KEYWORDS = ["clash", "duel", "all-star", "all star", "exhibition", "open"]
+# Race-name fragments that should be excluded from the race picker /
+# refresh script. The All-Star RACE is intentionally NOT in this list —
+# it's a valid DK DFS event and we want it surfaced systematically every
+# year. The All-Star OPEN (the heat race that feeds into it) is still
+# excluded via the generic "open" keyword. The Standings tab filters
+# separately on race_type_id == 1, so the All-Star Race won't pollute
+# points standings even though it now flows through filter_point_races.
+EXHIBITION_KEYWORDS = ["clash", "duel", "exhibition", "open"]
 
 # ----------------------------
 # PROJECTION DEFAULTS
