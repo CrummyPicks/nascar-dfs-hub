@@ -492,7 +492,16 @@ def interactive_drill_down_dataframe(df, *, key, series_id,
             if last_idx != idx:
                 st.session_state[state_key] = idx
                 driver = underlying_df.iloc[idx][resolved_driver_col]
-                if pd.notna(driver) and str(driver).strip():
+                if pd.notna(driver) and str(driver).strip() and _claim_dialog_slot():
+                    # _claim_dialog_slot() ensures only ONE driver-history
+                    # dialog opens per script run. Streamlit derives a
+                    # dialog's element id from its title, so opening a second
+                    # "Driver History" dialog in the same run (st.tabs renders
+                    # every tab's tables each run) raises
+                    # StreamlitDuplicateElementId. The guard lets the first
+                    # newly-clicked table win and silently skips the rest;
+                    # their selection state is already recorded above so they
+                    # won't re-fire next run.
                     render_driver_history_dialog(
                         driver_name=str(driver),
                         series_id=series_id,
@@ -502,3 +511,32 @@ def interactive_drill_down_dataframe(df, *, key, series_id,
                     )
 
     return event
+
+
+_DIALOG_CLAIM_KEY = "_drv_dialog_claimed_this_run"
+
+
+def reset_driver_dialog_guard():
+    """Clear the per-run driver-history dialog guard.
+
+    Call once at the very top of the main app script (every rerun) so the
+    first drill-down table that has a newly-clicked row can open the dialog.
+    """
+    st.session_state[_DIALOG_CLAIM_KEY] = False
+
+
+def _claim_dialog_slot() -> bool:
+    """Reserve the single per-run driver-history dialog slot.
+
+    Returns True for the first caller in a given script run and False for any
+    subsequent caller, so we never open two @st.dialog elements (which share
+    an element id by title) in the same run → StreamlitDuplicateElementId.
+
+    If the guard was never initialized (reset_driver_dialog_guard not wired
+    up), the .get() default of False still lets the first caller through and
+    blocks the rest, which is the desired behavior.
+    """
+    if st.session_state.get(_DIALOG_CLAIM_KEY, False):
+        return False
+    st.session_state[_DIALOG_CLAIM_KEY] = True
+    return True

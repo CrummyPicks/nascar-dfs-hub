@@ -863,6 +863,13 @@ if fd_file and not fd_df.empty:
 # ============================================================
 # TABS
 # ============================================================
+# st.tabs renders EVERY tab's content on each run (they're just CSS-hidden),
+# so multiple drill-down tables can try to open the driver-history dialog in
+# one run. Streamlit only allows one @st.dialog per run (shared element id),
+# so reset the per-run guard here — the first newly-clicked table wins.
+from src.components import reset_driver_dialog_guard
+reset_driver_dialog_guard()
+
 tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj, tab_optimizer, tab_acc, tab_standings, tab_dbhealth = st.tabs([
     "Race Data", "Practice", "Track History", "Race Analyzer", "Projections", "Optimizer", "Accuracy", "Standings", "DB Health"
 ])
