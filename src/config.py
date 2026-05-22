@@ -206,6 +206,7 @@ NICKNAME_MAP = {
     "vic":    "victor",
     "vince":  "vincent",
     "vinnie": "vincent",
+    "gio":    "giovanni",
 }
 
 # ----------------------------
