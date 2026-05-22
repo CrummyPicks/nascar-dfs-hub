@@ -132,11 +132,19 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         "superspeedway": 35, "road": 25, "intermediate": 80,
         "intermediate_worn": 80, "short": 100, "short_concrete": 110,
     }
+    # Default avg fastest-laps for the per-race FL leader, scaled by track type
+    # (≈55-60% of the max). Used as the FL projection ceiling anchor.
+    AVG_FL_LEADER_DEFAULT = {
+        "superspeedway": 18, "road": 14, "intermediate": 45,
+        "intermediate_worn": 40, "short": 55, "short_concrete": 55,
+    }
     defaults = {
         "avg_top_leader": AVG_TOP_LEADER_DEFAULT.get(track_type,
                             AVG_TOP_LEADER_DEFAULT.get(parent, 60)),
         "max_laps_led": type_defaults["max_ll"],
         "max_fastest_laps": type_defaults["max_fl"],
+        "avg_fl_leader": AVG_FL_LEADER_DEFAULT.get(track_type,
+                            AVG_FL_LEADER_DEFAULT.get(parent, 40)),
         "avg_n_leaders": FALLBACK_N_LEADERS.get(track_type,
                                                   FALLBACK_N_LEADERS.get(parent, 6)),
         "avg_n_fl_leaders": FALLBACK_FL_CAL.get(track_type,
@@ -174,6 +182,7 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             out["avg_n_leaders"] = float(np.mean(n_leaders_list))
         if top_fl:
             out["max_fastest_laps"] = int(max(top_fl))
+            out["avg_fl_leader"] = float(np.mean(top_fl))
         if n_fl_list:
             out["avg_n_fl_leaders"] = float(np.mean(n_fl_list))
         return out
@@ -307,22 +316,7 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     avg_top = cal.get("avg_top_leader", race_laps * 0.40)
     max_laps = min(race_laps * 0.75, avg_top * 1.40)  # 40% headroom over average
 
-    # Iteratively cap and redistribute until all laps are allocated
-    for _ in range(10):
-        deficit = race_laps - sum(result.values())
-        if abs(deficit) < 0.5:
-            break
-        for d in result:
-            if result[d] > max_laps:
-                result[d] = max_laps
-        deficit = race_laps - sum(result.values())
-        if deficit > 0.5:
-            uncapped = {d: s for d, s in result.items() if s < max_laps}
-            uncapped_total = sum(uncapped.values())
-            if uncapped_total > 0:
-                for d in uncapped:
-                    result[d] += deficit * (uncapped[d] / uncapped_total)
-
+    result = _cap_and_redistribute(result, max_laps, race_laps)
     return result
 
 
@@ -418,26 +412,47 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     # Every lap has a fastest lap — distribute ALL race laps
     result = {d: (s / total) * race_laps for d, s in powered.items()}
 
-    # Per-driver cap based on historical max fastest laps (with headroom)
+    # Per-driver cap. Anchor on the historical FL LEADER's average (the
+    # typical most-fastest-laps driver) with modest headroom, not the
+    # all-time max — even a dominant car rarely exceeds the leader average
+    # by much (Charlotte: leader avg ~59, all-time max 70). Hard ceiling at
+    # the all-time max so we never project above what's ever happened.
+    avg_fl_leader = cal.get("avg_fl_leader")
     hist_max_fl = cal.get("max_fastest_laps", race_laps * 0.25)
-    max_fl = min(race_laps * 0.40, hist_max_fl * 1.25)
+    if avg_fl_leader:
+        max_fl = min(hist_max_fl, avg_fl_leader * 1.30)
+    else:
+        max_fl = min(race_laps * 0.30, hist_max_fl)
 
-    # Iteratively cap and redistribute
-    for _ in range(10):
-        deficit = race_laps - sum(result.values())
-        if abs(deficit) < 0.5:
-            break
+    result = _cap_and_redistribute(result, max_fl, race_laps)
+    return result
+
+
+def _cap_and_redistribute(result: dict, max_per_driver: float,
+                          total_to_allocate: float) -> dict:
+    """Cap any driver above max_per_driver and redistribute the excess to
+    uncapped drivers, repeating until stable.
+
+    Replaces the previous in-line loops which were dead code: they checked
+    `deficit = total - sum(result)` first and broke immediately because the
+    initial allocation already summed to the total — so the per-driver cap
+    never ran and top drivers could be allocated above the historical max.
+    """
+    result = dict(result)
+    for _ in range(25):
+        excess = 0.0
         for d in result:
-            if result[d] > max_fl:
-                result[d] = max_fl
-        deficit = race_laps - sum(result.values())
-        if deficit > 0.5:
-            uncapped = {d: s for d, s in result.items() if s < max_fl}
-            uncapped_total = sum(uncapped.values())
-            if uncapped_total > 0:
-                for d in uncapped:
-                    result[d] += deficit * (uncapped[d] / uncapped_total)
-
+            if result[d] > max_per_driver:
+                excess += result[d] - max_per_driver
+                result[d] = max_per_driver
+        if excess < 0.5:
+            break
+        uncapped = {d: s for d, s in result.items() if s < max_per_driver - 1e-9}
+        uncapped_total = sum(uncapped.values())
+        if uncapped_total <= 0:
+            break  # everyone is at the cap — can't redistribute further
+        for d in uncapped:
+            result[d] += excess * (uncapped[d] / uncapped_total)
     return result
 
 
@@ -553,6 +568,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         display_avg_top = min(avg_top, race_laps)
         dom_ceiling = display_avg_top * 0.25 + min(hist_max_fl, race_laps) * 0.45
 
+        # Fastest-laps history (parallel to laps-led): the per-race FL leader's
+        # average + the all-time single-driver max. Capped at race_laps for display.
+        avg_fl_leader = calibration.get("avg_fl_leader", hist_max_fl * 0.85)
+        display_avg_fl = min(avg_fl_leader, race_laps)
+        display_max_fl = min(hist_max_fl, race_laps)
+
         info_cols = st.columns(4)
         info_cols[0].metric("Race Laps", f"{race_laps}")
         info_cols[1].metric("Max Laps Led Pts", f"{race_laps * 0.25:.1f}")
@@ -561,9 +582,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         st.markdown(
             f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
             f"Laps led = 0.25 pts/lap | Fastest laps = 0.45 pts/lap | "
-            f"Place diff = \u00b11.0 pts/pos | {race_laps} total laps | "
-            f"Avg {avg_leaders:.0f} leaders, Avg Race Lap Leader leads {display_avg_top:.0f} laps "
-            f"(max: {display_max_ll:.0f})</p>",
+            f"Place diff = \u00b11.0 pts/pos | {race_laps} total laps</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
+            f"Avg {avg_leaders:.0f} leaders &nbsp;|&nbsp; "
+            f"Avg Race Lap Leader leads {display_avg_top:.0f} laps (max: {display_max_ll:.0f}) &nbsp;|&nbsp; "
+            f"Avg Fastest-Lap Leader gets {display_avg_fl:.0f} fast laps (max: {display_max_fl:.0f})</p>",
             unsafe_allow_html=True,
         )
 
