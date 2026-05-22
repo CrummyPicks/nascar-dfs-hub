@@ -592,6 +592,11 @@ def _generate_race_projections(race, series_id, weights=None):
             odds_probs[name] = prob
 
         if len(odds_probs) >= field_size * 0.3:
+            # Realistic expected-finish anchors (mirror tab_projections) — odds
+            # do not imply the favorite finishes 1st, and the full-range mapping
+            # over-weighted odds vs the clamped track/ttype signals.
+            _best_anchor = max(2.0, field_size * 0.13)
+            _worst_anchor = field_size * 0.82
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
             log_probs = {name: math.log(prob) for name, prob in ranked}
             max_lp = max(log_probs.values())
@@ -602,7 +607,7 @@ def _generate_race_projections(race, series_id, weights=None):
                 if matched:
                     if lp_range > 0:
                         t = 1 - (log_probs[name] - min_lp) / lp_range
-                        odds_finish[matched] = 1 + (field_size - 1) * t
+                        odds_finish[matched] = _best_anchor + (_worst_anchor - _best_anchor) * t
                     else:
                         odds_finish[matched] = mid_field
 
@@ -1762,6 +1767,9 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 except (ValueError, TypeError):
                     continue
             if len(odds_probs) >= field_size * 0.3:
+                # Realistic expected-finish anchors (mirror tab_projections).
+                _best_anchor = max(2.0, field_size * 0.13)
+                _worst_anchor = field_size * 0.82
                 ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
                 log_probs = {name: math.log(prob) for name, prob in ranked}
                 max_lp = max(log_probs.values())
@@ -1772,7 +1780,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     if matched:
                         if lp_range > 0:
                             t = 1 - (log_probs[name] - min_lp) / lp_range
-                            odds_finish[matched] = 1 + (field_size - 1) * t
+                            odds_finish[matched] = _best_anchor + (_worst_anchor - _best_anchor) * t
                         else:
                             odds_finish[matched] = mid_field
             for name, odds_str in clean_odds.items():

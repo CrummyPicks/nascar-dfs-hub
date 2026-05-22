@@ -43,7 +43,17 @@ def compute_projections(
         cross_th_lookup = {}
 
     mid_field = field_size * 0.5
-    MIN_RACES_FULL_TRUST = 5
+    # Track history reaches full trust at 1 race. Most ovals run only once a
+    # year, so requiring 5 races meant "5 years" before a driver's own track
+    # results were trusted — far too punitive. A driver with 0 track races
+    # gets no track signal at all (track-type takes over); with 1+ they're
+    # trusted on their actual history.
+    MIN_RACES_TRACK = 1
+    # Track type is a broader signal (aggregates many tracks) and usually has
+    # plenty of races, so keep a small regression for genuinely thin samples.
+    MIN_RACES_TTYPE = 3
+    # Back-compat alias (still referenced by dominator/laps-led code below).
+    MIN_RACES_FULL_TRUST = MIN_RACES_TRACK
 
     # Count how many drivers in the field have Vegas odds quoted. Used for the
     # "absent from Vegas" penalty: if Vegas quoted 15+ drivers but skipped this
@@ -75,7 +85,7 @@ def compute_projections(
             cross = cross_th_lookup.get(d)
             cross_races = cross["races"] if cross and cross.get("races") else 0
             effective_races = races + cross_races * 0.5
-            trust = min(1.0, effective_races / MIN_RACES_FULL_TRUST)
+            trust = min(1.0, effective_races / MIN_RACES_TRACK)
             if th.get("_cross_series_only"):
                 trust *= 0.8
 
@@ -99,7 +109,7 @@ def compute_projections(
 
         if tt and tt_weight > 0:
             tt_races = tt.get("races", 1) if isinstance(tt, dict) and "races" in tt else 3
-            tt_trust = min(1.0, tt_races / MIN_RACES_FULL_TRUST)
+            tt_trust = min(1.0, tt_races / MIN_RACES_TTYPE)
             if isinstance(tt, dict) and tt.get("_cross_series_only"):
                 tt_trust *= 0.8
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None

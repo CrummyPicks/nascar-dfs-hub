@@ -22,9 +22,9 @@
   },
   "B Mid1": {
     "diff_pts": 2,
-    "fast_laps": 32,
+    "fast_laps": 31,
     "laps_led": 37,
-    "proj_dk": 65.7,
+    "proj_dk": 65.2,
     "proj_finish": 4
   },
   "B Mid2": {
@@ -35,11 +35,11 @@
     "proj_finish": 5
   },
   "B Mid3": {
-    "diff_pts": 6,
+    "diff_pts": 5,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 42.0,
-    "proj_finish": 8
+    "proj_dk": 40.0,
+    "proj_finish": 9
   },
   "B Mid4": {
     "diff_pts": 6,
@@ -91,11 +91,11 @@
     "proj_finish": 6
   },
   "E Rookie2": {
-    "diff_pts": 13,
+    "diff_pts": 14,
     "fast_laps": 0,
     "laps_led": 5,
-    "proj_dk": 49.2,
-    "proj_finish": 9
+    "proj_dk": 51.2,
+    "proj_finish": 8
   },
   "F LongShot": {
     "diff_pts": 12,

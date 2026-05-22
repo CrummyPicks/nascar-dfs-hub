@@ -474,17 +474,39 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_type, TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"])
 
+    # Weight slider widget keys. Namespaced by track type so switching races
+    # with a different track type starts from that type's defaults rather than
+    # carrying over the last race's manual edits.
+    _wkeys = {
+        "odds":  f"pw_odds_{parent_type}",
+        "track": f"pw_track_{parent_type}",
+        "ttype": f"pw_ttype_{parent_type}",
+        "prac":  f"pw_prac_{parent_type}",
+        "team":  f"pw_team_{parent_type}",
+        "qual":  f"pw_qual_{parent_type}",
+    }
+    # Honor a pending reset (set by the button on the previous run) by clearing
+    # the widget-state keys BEFORE the number_inputs are instantiated, so they
+    # fall back to the track-type defaults.
+    if st.session_state.pop(f"pw_reset_{parent_type}", False):
+        for k in _wkeys.values():
+            st.session_state.pop(k, None)
+
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
         st.caption(f"Defaults tuned for **{parent_type}** tracks. "
                    "Adjust weights — auto-normalizes to 100%.")
+        if st.button("Reset to defaults", key=f"pw_reset_btn_{parent_type}",
+                     help=f"Restore the tuned default weights for {parent_type} tracks"):
+            st.session_state[f"pw_reset_{parent_type}"] = True
+            st.rerun()
         w_cols = st.columns(6)
-        w_odds = w_cols[0].number_input("Odds", 0, 100, defaults["odds"], 5, key="pw_odds")
-        w_track = w_cols[1].number_input("Track History", 0, 100, defaults["track"], 5, key="pw_track")
-        w_ttype = w_cols[2].number_input("Track Type", 0, 100, defaults["ttype"], 5, key="pw_ttype")
-        w_prac = w_cols[3].number_input("Practice", 0, 100, defaults["prac"], 5, key="pw_prac")
-        w_team = w_cols[4].number_input("Team", 0, 100, defaults["team"], 5, key="pw_team")
-        w_qual = w_cols[5].number_input("Qualifying", 0, 100, defaults["qual"], 5, key="pw_qual")
+        w_odds = w_cols[0].number_input("Odds", 0, 100, defaults["odds"], 5, key=_wkeys["odds"])
+        w_track = w_cols[1].number_input("Track History", 0, 100, defaults["track"], 5, key=_wkeys["track"])
+        w_ttype = w_cols[2].number_input("Track Type", 0, 100, defaults["ttype"], 5, key=_wkeys["ttype"])
+        w_prac = w_cols[3].number_input("Practice", 0, 100, defaults["prac"], 5, key=_wkeys["prac"])
+        w_team = w_cols[4].number_input("Team", 0, 100, defaults["team"], 5, key=_wkeys["team"])
+        w_qual = w_cols[5].number_input("Qualifying", 0, 100, defaults["qual"], 5, key=_wkeys["qual"])
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
@@ -1282,7 +1304,20 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             # (e.g. -100 = 53% leaves everyone else in 26-38 range).
             # Log scale preserves the favorite's advantage while differentiating
             # the rest of the field meaningfully.
+            #
+            # IMPORTANT — scale to a realistic EXPECTED-FINISH range, not the
+            # full 1..field_size. Win odds do not imply the favorite finishes
+            # 1st: even a strong favorite averages ~5th-8th over a season
+            # because anyone can wreck. Mapping the favorite to 1.0 (a) is
+            # unrealistic and (b) gave the odds signal ~3x the spread of the
+            # track/track-type signals (which clamp to their natural ~8-20
+            # range), so odds dominated the weighted average far beyond its
+            # nominal weight. Anchoring to [field*0.13, field*0.82] keeps the
+            # favorite clearly best (~5 for a 38-car field) without letting
+            # odds steamroll the other signals.
             import math
+            best_anchor = max(2.0, field_size * 0.13)
+            worst_anchor = field_size * 0.82
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
             log_probs = {name: math.log(prob) for name, prob in ranked}
             max_lp = max(log_probs.values())
@@ -1293,7 +1328,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 if matched:
                     if lp_range > 0:
                         t = 1 - (log_probs[name] - min_lp) / lp_range  # 0=best, 1=worst
-                        odds_finish[matched] = 1 + (field_size - 1) * t
+                        odds_finish[matched] = best_anchor + (worst_anchor - best_anchor) * t
                     else:
                         odds_finish[matched] = mid_field
         elif odds_probs:
