@@ -225,15 +225,59 @@ def _match_keys(name: str) -> list:
     return keys
 
 
+def _first_names_compatible(a: str, b: str) -> bool:
+    """True if two first-name tokens plausibly belong to the same driver:
+    identical, an initial of the other ("A" ↔ "Austin"), or nickname-equivalent
+    (Nick ↔ Nicholas). Different real first names (Austin vs Timmy, Chandler vs
+    Zane, Ed vs Erik) return False."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if (len(a) == 1 and b.startswith(a)) or (len(b) == 1 and a.startswith(b)):
+        return True
+    return _nickname_canonical(a) == _nickname_canonical(b)
+
+
+def _surnames_compatible(a: str, b: str) -> bool:
+    """True if two surname tokens plausibly belong to the same driver:
+    identical, one a prefix of the other (truncated source), or high typo
+    similarity (>=0.88). Different surnames (Butcher vs Custer) return False."""
+    from difflib import SequenceMatcher
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if (len(a) >= 3 and b.startswith(a)) or (len(b) >= 3 and a.startswith(b)):
+        return True
+    # Typo tolerance. Safe at this level because the caller ALSO requires the
+    # first names to be compatible, so same-surname/different-driver pairs
+    # (Smith, Jones, Gilliland...) are already blocked by the first-name check.
+    return SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
 def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> str:
-    """Find best fuzzy match for a driver name in a list of candidates.
+    """Find the match for a driver name in a list of candidates.
 
     Matching passes (first hit wins):
-      1. Exact normalized match (Suárez↔Suarez, periods stripped, aliases)
-      2. Nickname equivalence (Nick↔Nicholas via NICKNAME_MAP)
-      3. Middle-initial optional (Jason M White↔Jason White)
-      4. Last-name match — only if that last name is unique in candidates
-      5. SequenceMatcher fuzzy ratio (threshold default 0.75)
+      1-3. Shared normalized key — exact (Suárez↔Suarez, periods/aliases),
+           nickname (Nick↔Nicholas), or middle-initial (Jason M White↔Jason White).
+      4.   Component-wise compatibility — BOTH the first name AND the surname
+           must independently be compatible (see helpers). This is the only
+           "fuzzy" path and it is deliberately strict: it will NOT merge two
+           distinct drivers who happen to share one name component or have a
+           high whole-string similarity. Examples it correctly REJECTS:
+             Austin Hill ↔ Timmy Hill      (same surname, diff first)
+             Cole Butcher ↔ Cole Custer    (same first, diff surname)
+             Chandler Smith ↔ Zane Smith   (same surname, diff first)
+             David Gilliland ↔ Todd Gilliland, Ed Jones ↔ Erik Jones
+           Examples it correctly ACCEPTS:
+             A Hill ↔ Austin Hill          (initial)
+             Ryan Blany ↔ Ryan Blaney      (surname typo)
+             Nick Sanchez ↔ Nicholas Sanchez (nickname)
+
+    The `threshold` arg is retained for backward compatibility but the
+    component-wise logic supersedes the old whole-string ratio cutoff.
     """
     from difflib import SequenceMatcher
 
@@ -241,77 +285,35 @@ def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> st
         return None
 
     name_keys = set(_match_keys(name))
-    # Pre-compute all match keys for each candidate (stored as a tuple of keys)
     norm_candidates = [(c, _match_keys(c)) for c in candidates]
 
-    # Pass 1-3: any shared key between name and candidate = match
+    # Pass 1-3: any shared normalized key = same driver
     for candidate, cand_keys in norm_candidates:
         if name_keys & set(cand_keys):
             return candidate
 
-    # Pass 4: last-name match — only if unique AND the first names are
-    # compatible. Compatible = identical, OR one is an initial of the other
-    # (e.g. "A Hill" ↔ "Austin Hill"), OR nickname-equivalent. Without the
-    # first-name check this matched ANY two drivers sharing a surname when
-    # only one candidate had it — e.g. "Austin Hill" → "Timmy Hill",
-    # "Kurt Busch" → "Kyle Busch". NASCAR has many shared-surname pairs, so
-    # a bare last-name match is unsafe.
+    # Pass 4: component-wise compatibility (first AND surname must both match).
     primary_norm = normalize_driver_name(name)
     name_parts = primary_norm.split()
-    last_name = name_parts[-1] if name_parts else ""
-    name_first = name_parts[0] if len(name_parts) > 1 else ""
-
-    def _first_names_compatible(a: str, b: str) -> bool:
-        if not a or not b:
-            return False
-        if a == b:
-            return True
-        # Initial of the other (single-letter first name)
-        if (len(a) == 1 and b.startswith(a)) or (len(b) == 1 and a.startswith(b)):
-            return True
-        # Nickname-equivalent (Nick ↔ Nicholas, etc.)
-        return _nickname_canonical(a) == _nickname_canonical(b)
-
-    if last_name and name_first:
-        last_name_matches = [
-            (c, ck) for c, ck in norm_candidates
-            if ck[0].split() and ck[0].split()[-1] == last_name
-        ]
-        if len(last_name_matches) == 1:
-            cand_parts = last_name_matches[0][1][0].split()
-            cand_first = cand_parts[0] if len(cand_parts) > 1 else ""
-            if _first_names_compatible(name_first, cand_first):
-                return last_name_matches[0][0]
-
-    # Pass 5: fuzzy SequenceMatcher — but only accept a match whose SURNAME is
-    # compatible. Two distinct drivers can have a high whole-string similarity
-    # when they share a first name and have similar-length last names
-    # (e.g. "Cole Butcher" vs "Cole Custer" = 0.78, "Cole Custer" vs
-    # "Cody Ware"...). Without the surname guard, the 0.75 ratio threshold
-    # silently merges them. A genuine fuzzy case (typo/format drift) keeps the
-    # same surname, so requiring surname compatibility is safe.
-    def _surnames_compatible(a_norm: str, b_norm: str) -> bool:
-        a_parts, b_parts = a_norm.split(), b_norm.split()
-        if not a_parts or not b_parts:
-            return False
-        a_last, b_last = a_parts[-1], b_parts[-1]
-        if a_last == b_last:
-            return True
-        # Initial / prefix (e.g. truncated surname in one source)
-        if (len(a_last) >= 3 and b_last.startswith(a_last)) or \
-           (len(b_last) >= 3 and a_last.startswith(b_last)):
-            return True
-        # Typo tolerance — high surname similarity only
-        return SequenceMatcher(None, a_last, b_last).ratio() >= 0.85
+    if len(name_parts) < 2:
+        return None  # single-token name — too ambiguous to fuzzy-match safely
+    name_first, name_last = name_parts[0], name_parts[-1]
 
     best_match, best_score = None, 0.0
     for candidate, cand_keys in norm_candidates:
-        score = SequenceMatcher(None, primary_norm, cand_keys[0]).ratio()
-        if score > best_score and _surnames_compatible(primary_norm, cand_keys[0]):
-            best_score = score
-            best_match = candidate
+        cand_parts = cand_keys[0].split()
+        if len(cand_parts) < 2:
+            continue
+        cand_first, cand_last = cand_parts[0], cand_parts[-1]
+        if (_first_names_compatible(name_first, cand_first)
+                and _surnames_compatible(name_last, cand_last)):
+            # Tie-break among compatible candidates by whole-string similarity
+            score = SequenceMatcher(None, primary_norm, cand_keys[0]).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = candidate
 
-    return best_match if best_score >= threshold else None
+    return best_match
 
 
 _NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
