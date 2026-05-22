@@ -187,6 +187,52 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             out["avg_n_fl_leaders"] = float(np.mean(n_fl_list))
         return out
 
+    def _fl_curve(conn, where_sql, where_params):
+        """Empirical fastest-laps-by-rank distribution from history.
+
+        For each race matching the filter, sort drivers by fastest_laps
+        descending and record each rank's fractional share of that race's
+        total FL. Average the fractions across races, normalize to sum to 1.
+        Returns a list [frac_rank1, frac_rank2, ...] or None if too few races.
+
+        Using FRACTIONS (not absolute counts) makes the shape robust to
+        differing race lengths / caution-shortened FL totals between years.
+        Only races with a meaningful FL total are included so empty future
+        rows and tiny exhibition heats don't distort the curve.
+        """
+        rows = conn.execute(f'''
+            SELECT r.id, rr.fastest_laps
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE {where_sql} AND rr.fastest_laps IS NOT NULL
+            ORDER BY r.id, rr.fastest_laps DESC
+        ''', where_params).fetchall()
+        if not rows:
+            return None
+        per_race = {}
+        for rid, fl in rows:
+            per_race.setdefault(rid, []).append(fl or 0)
+        rank_fracs = {}
+        n_races = 0
+        for rid, fls in per_race.items():
+            total = sum(fls)
+            if total < 30:   # skip races with negligible FL data (future/heats)
+                continue
+            n_races += 1
+            for rank, fl in enumerate(fls):
+                rank_fracs.setdefault(rank, []).append(fl / total)
+        if n_races < 2:
+            return None
+        # Average the fraction at each rank, then normalize to sum to 1.0
+        curve = []
+        for rank in sorted(rank_fracs.keys()):
+            curve.append(float(np.mean(rank_fracs[rank])))
+        s = sum(curve)
+        if s <= 0:
+            return None
+        return [c / s for c in curve]
+
     try:
         conn = sqlite3.connect(PROJ_DB)
 
@@ -215,8 +261,9 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         # per-track is too sparse, AND as the source for any fields the per-track
         # query couldn't fill in)
         type_summary = None
+        type_placeholders = None
         if family_tracks and series_id:
-            placeholders = ",".join("?" for _ in family_tracks)
+            type_placeholders = ",".join("?" for _ in family_tracks)
             type_rows = conn.execute(f'''
                 SELECT MAX(rr.laps_led) as top_led,
                        COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
@@ -225,11 +272,21 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
                 FROM race_results rr
                 JOIN races r ON r.id = rr.race_id
                 JOIN tracks t ON t.id = r.track_id
-                WHERE t.name IN ({placeholders})
+                WHERE t.name IN ({type_placeholders})
                   AND r.series_id = ?
                 GROUP BY r.id
             ''', list(family_tracks) + [series_id]).fetchall()
             type_summary = _summarize(type_rows)
+
+        # Empirical FL-by-rank distribution: prefer per-track, fall back to
+        # track-type-for-series. Stored on the calibration so the allocator
+        # can map projected FL order onto the real historical shape.
+        fl_dist = _fl_curve(conn, f"t.name = ? {series_filter}", params)
+        if fl_dist is None and type_placeholders:
+            fl_dist = _fl_curve(conn, f"t.name IN ({type_placeholders}) AND r.series_id = ?",
+                                list(family_tracks) + [series_id])
+        if fl_dist:
+            result["fl_rank_distribution"] = fl_dist
 
         conn.close()
 
@@ -243,6 +300,7 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         elif type_summary:
             result.update(type_summary)
         # else: result stays on defaults
+        # (fl_rank_distribution was set above regardless and survives .update)
 
         return result
 
@@ -335,6 +393,23 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     cal = calibration or {}
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
 
+    # ── Preferred path: map our projected FL order onto the EMPIRICAL
+    # historical FL-by-rank shape (track -> track-type fallback, computed in
+    # the calibration). Our model only decides WHO is fastest; the real
+    # historical curve decides HOW MANY fast laps each rank gets. This fixes
+    # the over-concentration the parametric exponent produced (e.g. 70/70/47
+    # at Charlotte vs the real 59/40/31 shape). ──
+    fl_dist = cal.get("fl_rank_distribution")
+    if fl_dist:
+        sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
+        result = {}
+        for rank, (d, _score) in enumerate(sorted_drivers):
+            frac = fl_dist[rank] if rank < len(fl_dist) else 0.0
+            result[d] = race_laps * frac
+        return result
+
+    # ── Fallback path (no historical FL data for this track or track type):
+    # parametric exponent-based concentration. ──
     # Number of drivers with fastest laps — calibrated from historical Cup
     # data (2022+). Captures ~90-97% of real FL distribution at each
     # track type while avoiding over-dilution to drivers who realistically
