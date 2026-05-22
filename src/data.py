@@ -862,17 +862,46 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         return {}
 
 
+def query_driver_tracks_raced(driver_name: str, series_id: int,
+                              min_season: int = 2022) -> list:
+    """Distinct tracks a driver has raced in a series (most-raced first).
+
+    Used by the driver-history popup's "Pick Track" tab so the user can drill
+    into any specific track for that driver.
+    """
+    if not DB_PATH.exists() or not driver_name:
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT t.name, COUNT(*) as n
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r   ON r.id = rr.race_id
+            JOIN tracks t  ON t.id = r.track_id
+            WHERE d.full_name = ? AND r.series_id = ? AND r.season >= ?
+              AND rr.finish_pos IS NOT NULL
+            GROUP BY t.name
+            ORDER BY n DESC, t.name ASC
+        ''', (driver_name, series_id, min_season)).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
 def query_driver_race_log(
     driver_name: str,
     series_id: int,
     track_name: str = None,
     track_type: str = None,
     season: int = None,
+    all_tracks: bool = False,
     min_season: int = 2022,
     before_date: str = None,
 ) -> list:
     """Per-race log for a single driver, filtered to a track OR a track type
-    OR an entire season.
+    OR an entire season — or ALL races (all_tracks=True).
 
     Returns a list of dicts (newest first), one per race, suitable for
     `render_driver_race_log` in components.py:
@@ -882,11 +911,13 @@ def query_driver_race_log(
 
     Specify EITHER track_name (single-track view), track_type (track-type
     folded view — short_concrete pulls in short, intermediate ↔ intermediate_worn),
-    OR season (all races in a single year — used by the Standings tab).
+    season (all races in a single year — used by the Standings tab), OR
+    all_tracks=True (every race in the series since min_season — the popup's
+    "All-Time" tab).
     """
     if not DB_PATH.exists() or not driver_name:
         return []
-    if not track_name and not track_type and not season:
+    if not track_name and not track_type and not season and not all_tracks:
         return []
 
     from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT

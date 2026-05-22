@@ -753,6 +753,13 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
 
     matches = matches.sort_values("Date")
 
+    # ── Full-history popup (tabbed: season / pick-a-track / all-time) ──
+    from src.components import render_driver_history_dialog
+    if st.button(f"📊 Open {driver_pick} history popup",
+                 key="ra_driver_popup", type="secondary",
+                 help="Tabbed view: this season, any specific track, and all-time"):
+        render_driver_history_dialog(driver_pick, series_id)
+
     # ── Summary Stats Row ──────────────────────────────────────────────────
     m = matches
     m_cols = st.columns(6)
@@ -871,13 +878,18 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
         return
 
     all_drivers = sorted(season_df["Driver"].unique())
+    from src.components import render_driver_history_dialog
 
     comp_cols = st.columns(2)
     with comp_cols[0]:
         driver_a = st.selectbox("Driver A", all_drivers, index=0, key="ra_comp_a")
+        if st.button(f"📊 {driver_a} history", key="ra_comp_a_popup", type="secondary"):
+            render_driver_history_dialog(driver_a, series_id)
     with comp_cols[1]:
         default_b = min(1, len(all_drivers) - 1)
         driver_b = st.selectbox("Driver B", all_drivers, index=default_b, key="ra_comp_b")
+        if st.button(f"📊 {driver_b} history", key="ra_comp_b_popup", type="secondary"):
+            render_driver_history_dialog(driver_b, series_id)
 
     if driver_a == driver_b:
         st.warning("Select two different drivers to compare.")

@@ -271,88 +271,48 @@ def render_driver_race_log(driver_name: str, race_data: list):
 # modal showing their per-race history at the current track or track type.
 # ============================================================
 
-@st.dialog("Driver History", width="large")
-def render_driver_history_dialog(driver_name: str, series_id: int,
-                                  track_name: str = None,
-                                  track_type: str = None,
-                                  season: int = None):
-    """Modal dialog: per-race history for a driver, filtered to track, type,
-    or season.
+_TRACK_TYPE_LABELS = {
+    "intermediate": "Intermediate",
+    "intermediate_worn": "Intermediate (incl. worn)",
+    "short": "Short Tracks",
+    "short_concrete": "Short (incl. concrete)",
+    "superspeedway": "Superspeedways",
+    "road": "Road Courses",
+}
 
-    Args:
-        driver_name: Driver to look up (must match drivers.full_name in DB)
-        series_id:   1=Cup, 2=O'Reilly, 3=Truck
-        track_name:  Specific track (e.g. "Texas Motor Speedway"), OR
-        track_type:  Track type (e.g. "intermediate"), OR
-        season:      Year (e.g. 2026) — all races that season. Pass exactly one.
-    """
-    # Lazy import to avoid import cycles + keep the global file slim
+
+def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
+                                  track_type=None, season=None, all_tracks=False,
+                                  show_track_col=False):
+    """Render one scope's worth of a driver's history: summary metrics + the
+    per-race table with the finish-position heatmap. Used by each tab of the
+    driver-history dialog."""
     from src.data import query_driver_race_log
-    from src.utils import safe_fillna
-
-    if track_name:
-        scope_label = track_name
-    elif track_type:
-        type_label = {
-            "intermediate": "Intermediate Tracks",
-            "intermediate_worn": "Intermediate (incl. worn)",
-            "short": "Short Tracks",
-            "short_concrete": "Short Tracks (incl. concrete)",
-            "superspeedway": "Superspeedways",
-            "road": "Road Courses",
-        }.get(track_type, track_type.replace("_", " ").title())
-        scope_label = type_label
-    elif season:
-        scope_label = f"{season} Season"
-    else:
-        st.warning("No scope (track / track_type / season) provided.")
-        return
-
-    st.markdown(
-        f'<div style="margin:-0.4rem 0 0.6rem 0;">'
-        f'<span style="color:#94a3b8;font-size:0.85rem;">Race-by-Race at</span> '
-        f'<span style="color:#e2e8f0;font-size:1.0rem;font-weight:700;">{scope_label}</span>'
-        f' &nbsp; <span style="color:#64748b;font-size:0.85rem;">— {driver_name}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
 
     log = query_driver_race_log(
-        driver_name=driver_name,
-        series_id=series_id,
-        track_name=track_name,
-        track_type=track_type,
-        season=season,
+        driver_name=driver_name, series_id=series_id,
+        track_name=track_name, track_type=track_type, season=season,
+        all_tracks=all_tracks,
     )
-
     if not log:
-        st.info(f"No race data found for {driver_name} at {scope_label}.")
+        st.info("No race data for this view.")
         return
 
     df = pd.DataFrame(log)
-
-    # ── Aggregated summary metrics (top of dialog) ──
     finishes = pd.to_numeric(df["Finish"], errors="coerce")
     starts = pd.to_numeric(df["Start"], errors="coerce")
     laps_led = pd.to_numeric(df.get("Laps Led", 0), errors="coerce").fillna(0)
     fast_laps = pd.to_numeric(df.get("Fast Laps", 0), errors="coerce").fillna(0)
 
     n_races = len(df)
-    n_wins = int((finishes == 1).sum())
-    n_top5 = int((finishes <= 5).sum())
-    n_top10 = int((finishes <= 10).sum())
-    n_top20 = int((finishes <= 20).sum())
-    avg_fin = finishes.mean()
-    avg_st = starts.mean()
-    best = finishes.min()
-    worst = finishes.max()
+    avg_fin, avg_st = finishes.mean(), starts.mean()
+    best, worst = finishes.min(), finishes.max()
     n_dnf = int(df["Status"].astype(str).str.lower().isin(
         ["accident", "engine", "crash", "dnf", "mechanical", "rear gear",
          "transmission", "suspension", "overheating", "brakes", "electrical",
          "fuel pump", "ignition", "vibration"]
     ).sum()) if "Status" in df.columns else 0
 
-    # Two rows of metrics, 6 cols each — same dark theme via Streamlit defaults
     row1 = st.columns(6)
     row1[0].metric("Races", n_races)
     row1[1].metric("Avg Finish", f"{avg_fin:.1f}" if pd.notna(avg_fin) else "—")
@@ -362,61 +322,121 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     row1[5].metric("DNFs", n_dnf)
 
     row2 = st.columns(6)
-    row2[0].metric("Wins", n_wins)
-    row2[1].metric("Top 5", n_top5)
-    row2[2].metric("Top 10", n_top10)
-    row2[3].metric("Top 20", n_top20)
+    row2[0].metric("Wins", int((finishes == 1).sum()))
+    row2[1].metric("Top 5", int((finishes <= 5).sum()))
+    row2[2].metric("Top 10", int((finishes <= 10).sum()))
+    row2[3].metric("Top 20", int((finishes <= 20).sum()))
     row2[4].metric("Laps Led", int(laps_led.sum()))
     row2[5].metric("Fast Laps", int(fast_laps.sum()))
+    st.markdown("")
 
-    st.markdown("")  # spacer
-
-    # ── Per-race table ──
-    # Show: Date, Race, Track, Car, Team, Start, Finish, Laps Led, Fast Laps,
-    # Avg Run, DK Pts, Status. Track column is shown only when scope is a
-    # track type — single-track view would otherwise repeat it on every row.
+    # Per-race table. Show the Track column for any multi-track view.
     show_cols = ["Date", "Race"]
-    if track_type and not track_name:
+    if show_track_col:
         show_cols.append("Track")
-    show_cols.extend(["Car", "Team",
-                      "Start", "Finish", "Laps Led", "Fast Laps",
-                      "Avg Run", "DK Pts", "Status"])
+    show_cols.extend(["Car", "Team", "Start", "Finish", "Laps Led",
+                      "Fast Laps", "Avg Run", "DK Pts", "Status"])
     show_cols = [c for c in show_cols if c in df.columns]
-
     disp = df[show_cols].copy()
-    # Compact ints
     for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce").astype("Int64")
-    # Floats — coerce so the Styler.format() below has clean numerics to work
-    # with (otherwise NaN/strings can leak through and trip up the format spec)
     for c in ["Avg Run", "DK Pts"]:
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce")
-
-    # Per-column display format. Avg Run = 1 decimal, DK Pts = 2 decimals.
     fmt_map = {}
     if "Avg Run" in disp.columns:
         fmt_map["Avg Run"] = "{:.1f}"
     if "DK Pts" in disp.columns:
         fmt_map["DK Pts"] = "{:.2f}"
 
-    # Apply finish-position heatmap so the user can scan results at a glance
     finish_col = "Finish" if "Finish" in disp.columns else None
     if finish_col:
         styled = disp.style.apply(
             lambda col: [_rank_color(v, max_rank=40) if col.name == finish_col
-                         else "" for v in col],
-            axis=0,
-        )
-        if fmt_map:
-            styled = styled.format(fmt_map, na_rep="—")
-        st.dataframe(styled, width="stretch", hide_index=True, height=420)
+                         else "" for v in col], axis=0)
     else:
         styled = disp.style
-        if fmt_map:
-            styled = styled.format(fmt_map, na_rep="—")
-        st.dataframe(styled, width="stretch", hide_index=True, height=420)
+    if fmt_map:
+        styled = styled.format(fmt_map, na_rep="—")
+    st.dataframe(styled, width="stretch", hide_index=True, height=380)
+
+
+@st.dialog("Driver History", width="large")
+def render_driver_history_dialog(driver_name: str, series_id: int,
+                                  track_name: str = None,
+                                  track_type: str = None,
+                                  season: int = None):
+    """Modal dialog: a driver's race history with TABS for different scopes.
+
+    The caller passes whatever scope it knows (the current track, a track type,
+    or a season). The dialog derives the rest (track_type from track_name, the
+    current season) and presents tabs so the user can drill into any view for
+    that driver from one place:
+        [This Track] [Track Type] [YYYY Season] [Pick a Track] [All-Time]
+    The first tab is whichever scope the caller considered primary.
+    """
+    from src.config import TRACK_TYPE_MAP
+    from src.data import query_driver_tracks_raced
+
+    # Derive missing context
+    if track_name and not track_type:
+        track_type = TRACK_TYPE_MAP.get(track_name)
+    if season is None:
+        from datetime import datetime as _dt
+        _t = _dt.now()
+        season = _t.year + 1 if _t.month >= 10 else _t.year
+
+    st.markdown(
+        f'<div style="margin:-0.4rem 0 0.6rem 0;">'
+        f'<span style="color:#e2e8f0;font-size:1.05rem;font-weight:700;">{driver_name}</span>'
+        f' &nbsp;<span style="color:#64748b;font-size:0.82rem;">— race history</span>'
+        f'</div>', unsafe_allow_html=True)
+
+    # Build tab specs: (label, render-callable). Primary scope first.
+    def _abbrev(tn):
+        for suf in [" International Speedway", " Motor Speedway", " Superspeedway",
+                    " Speedway", " Raceway", " Course"]:
+            if tn and tn.endswith(suf):
+                return tn[:-len(suf)]
+        return tn or "Track"
+
+    specs = []  # list of (label, kwargs_for_scope)
+    if track_name:
+        specs.append((_abbrev(track_name), dict(track_name=track_name)))
+    if track_type:
+        specs.append((_TRACK_TYPE_LABELS.get(track_type, track_type.replace("_", " ").title()),
+                      dict(track_type=track_type, show_track_col=True)))
+    specs.append((f"{season} Season", dict(season=season, show_track_col=True)))
+    specs.append(("Pick a Track", dict(_picker=True)))
+    specs.append(("All-Time", dict(_alltime=True, show_track_col=True)))
+
+    # De-duplicate labels (e.g. picker-less edge cases) while preserving order
+    seen, uniq = set(), []
+    for label, kw in specs:
+        if label in seen:
+            continue
+        seen.add(label)
+        uniq.append((label, kw))
+
+    tabs = st.tabs([label for label, _ in uniq])
+    for tab, (label, kw) in zip(tabs, uniq):
+        with tab:
+            if kw.get("_picker"):
+                tracks = query_driver_tracks_raced(driver_name, series_id)
+                if not tracks:
+                    st.info("No tracks on record for this driver.")
+                    continue
+                pick = st.selectbox("Track", tracks,
+                                    key=f"drvhist_pick_{series_id}_{driver_name}")
+                if pick:
+                    _render_driver_history_scope(driver_name, series_id, track_name=pick)
+            elif kw.get("_alltime"):
+                # All races in this series (min_season floor inside the query)
+                _render_driver_history_scope(driver_name, series_id,
+                                             all_tracks=True, show_track_col=True)
+            else:
+                _render_driver_history_scope(driver_name, series_id, **kw)
 
 
 def interactive_drill_down_dataframe(df, *, key, series_id,
