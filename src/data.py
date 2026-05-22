@@ -789,13 +789,13 @@ def query_db_track_history(track_name: str, series_id: int = 1,
             JOIN tracks t ON t.id = r.track_id
             LEFT JOIN dfs_points dp ON dp.race_id = rr.race_id
                 AND dp.driver_id = rr.driver_id AND dp.platform = 'DraftKings'
-            WHERE t.name LIKE ?
+            WHERE t.name = ?
               AND r.series_id = ?
               AND r.season >= ?
             GROUP BY d.id
             HAVING COUNT(*) >= 1
             ORDER BY "Avg Finish" ASC
-        ''', conn, params=[f"%{track_name}%", series_id, min_season])
+        ''', conn, params=[track_name, series_id, min_season])
         conn.close()
         return df
     except Exception:
@@ -815,7 +815,7 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
     try:
         conn = sqlite3.connect(str(DB_PATH))
         where_extra = ""
-        params = [f"%{track_name}%", series_id, min_season]
+        params = [track_name, series_id, min_season]
         if before_date:
             where_extra = " AND r.race_date < ?"
             params.append(before_date)
@@ -827,7 +827,7 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
-            WHERE t.name LIKE ?
+            WHERE t.name = ?
               AND r.series_id = ?
               AND r.season >= ?
               {where_extra}
@@ -1700,7 +1700,7 @@ def query_driver_track_history_by_team(track_name: str, series_id: int,
         return {}
 
     conn = sqlite3.connect(str(DB_PATH))
-    params = [f"%{track_name}%", series_id]
+    params = [track_name, series_id]
     date_filter = ""
     if before_date:
         date_filter = "AND r.race_date < ?"
@@ -1712,7 +1712,7 @@ def query_driver_track_history_by_team(track_name: str, series_id: int,
         JOIN drivers d ON d.id = rr.driver_id
         JOIN races r ON r.id = rr.race_id
         JOIN tracks t ON t.id = r.track_id
-        WHERE t.name LIKE ? AND r.series_id = ?
+        WHERE t.name = ? AND r.series_id = ?
           AND rr.team IS NOT NULL AND rr.team != ''
           {date_filter}
         ORDER BY d.full_name, r.race_date

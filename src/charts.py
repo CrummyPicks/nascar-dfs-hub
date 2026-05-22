@@ -471,8 +471,8 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
-            WHERE t.name LIKE ? AND r.series_id = ? AND r.season >= 2022
-        ''', conn, params=[f"%{track_name}%", series_id])
+            WHERE t.name = ? AND r.series_id = ? AND r.season >= 2022
+        ''', conn, params=[track_name, series_id])
         conn.close()
     except Exception:
         return None
@@ -518,9 +518,9 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
-            WHERE t.name LIKE ? AND r.series_id = ? AND r.season >= 2022
+            WHERE t.name = ? AND r.series_id = ? AND r.season >= 2022
               AND rr.finish_pos IS NOT NULL
-        ''', [f"%{track_name}%", series_id]).fetchall()
+        ''', [track_name, series_id]).fetchall()
         conn.close()
     except Exception:
         return None

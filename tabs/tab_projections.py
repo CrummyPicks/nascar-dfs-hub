@@ -183,7 +183,7 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
 
         # Step 1: per-track history
         series_filter = "AND r.series_id = ?" if series_id else ""
-        params = [f"%{track_name}%"]
+        params = [track_name]
         if series_id:
             params.append(series_id)
         per_track_rows = conn.execute(f'''
@@ -194,7 +194,7 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             FROM race_results rr
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
-            WHERE t.name LIKE ?
+            WHERE t.name = ?
             {series_filter}
             GROUP BY r.id
         ''', params).fetchall()
@@ -599,12 +599,12 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
 
     def _run_query(conn, sid_list):
         if len(sid_list) == 1:
-            where = "WHERE t.name LIKE ? AND r.series_id = ?"
-            params = [f"%{track_name}%", sid_list[0]]
+            where = "WHERE t.name = ? AND r.series_id = ?"
+            params = [track_name, sid_list[0]]
         else:
             placeholders = ",".join("?" for _ in sid_list)
-            where = f"WHERE t.name LIKE ? AND r.series_id IN ({placeholders})"
-            params = [f"%{track_name}%"] + sid_list
+            where = f"WHERE t.name = ? AND r.series_id IN ({placeholders})"
+            params = [track_name] + sid_list
         if exclude_race_id:
             where += " AND r.id != ?"
             params.append(exclude_race_id)
@@ -785,8 +785,8 @@ def _query_races_to_subtract(track_name, series_id, race_date, db_race_id=None):
     # Use SUBSTR to truncate datetime strings to just the date portion
     # and pick one result per driver per date to avoid double-counting
     # from duplicate DB race entries.
-    where = "WHERE t.name LIKE ? AND r.series_id = ? AND SUBSTR(r.race_date, 1, 10) >= ?"
-    params = [f"%{track_name}%", series_id, race_date[:10]]
+    where = "WHERE t.name = ? AND r.series_id = ? AND SUBSTR(r.race_date, 1, 10) >= ?"
+    params = [track_name, series_id, race_date[:10]]
 
     rows = conn.execute(f'''
         SELECT d.full_name, rr.finish_pos, rr.start_pos, rr.laps_led,
