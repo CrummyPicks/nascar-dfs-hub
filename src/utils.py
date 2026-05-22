@@ -283,11 +283,31 @@ def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> st
             if _first_names_compatible(name_first, cand_first):
                 return last_name_matches[0][0]
 
-    # Pass 5: fuzzy SequenceMatcher
+    # Pass 5: fuzzy SequenceMatcher — but only accept a match whose SURNAME is
+    # compatible. Two distinct drivers can have a high whole-string similarity
+    # when they share a first name and have similar-length last names
+    # (e.g. "Cole Butcher" vs "Cole Custer" = 0.78, "Cole Custer" vs
+    # "Cody Ware"...). Without the surname guard, the 0.75 ratio threshold
+    # silently merges them. A genuine fuzzy case (typo/format drift) keeps the
+    # same surname, so requiring surname compatibility is safe.
+    def _surnames_compatible(a_norm: str, b_norm: str) -> bool:
+        a_parts, b_parts = a_norm.split(), b_norm.split()
+        if not a_parts or not b_parts:
+            return False
+        a_last, b_last = a_parts[-1], b_parts[-1]
+        if a_last == b_last:
+            return True
+        # Initial / prefix (e.g. truncated surname in one source)
+        if (len(a_last) >= 3 and b_last.startswith(a_last)) or \
+           (len(b_last) >= 3 and a_last.startswith(b_last)):
+            return True
+        # Typo tolerance — high surname similarity only
+        return SequenceMatcher(None, a_last, b_last).ratio() >= 0.85
+
     best_match, best_score = None, 0.0
     for candidate, cand_keys in norm_candidates:
         score = SequenceMatcher(None, primary_norm, cand_keys[0]).ratio()
-        if score > best_score:
+        if score > best_score and _surnames_compatible(primary_norm, cand_keys[0]):
             best_score = score
             best_match = candidate
 
