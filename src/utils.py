@@ -249,16 +249,39 @@ def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> st
         if name_keys & set(cand_keys):
             return candidate
 
-    # Pass 4: last-name match — only if unique
+    # Pass 4: last-name match — only if unique AND the first names are
+    # compatible. Compatible = identical, OR one is an initial of the other
+    # (e.g. "A Hill" ↔ "Austin Hill"), OR nickname-equivalent. Without the
+    # first-name check this matched ANY two drivers sharing a surname when
+    # only one candidate had it — e.g. "Austin Hill" → "Timmy Hill",
+    # "Kurt Busch" → "Kyle Busch". NASCAR has many shared-surname pairs, so
+    # a bare last-name match is unsafe.
     primary_norm = normalize_driver_name(name)
-    last_name = primary_norm.split()[-1] if primary_norm.split() else ""
-    if last_name:
+    name_parts = primary_norm.split()
+    last_name = name_parts[-1] if name_parts else ""
+    name_first = name_parts[0] if len(name_parts) > 1 else ""
+
+    def _first_names_compatible(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        # Initial of the other (single-letter first name)
+        if (len(a) == 1 and b.startswith(a)) or (len(b) == 1 and a.startswith(b)):
+            return True
+        # Nickname-equivalent (Nick ↔ Nicholas, etc.)
+        return _nickname_canonical(a) == _nickname_canonical(b)
+
+    if last_name and name_first:
         last_name_matches = [
             (c, ck) for c, ck in norm_candidates
             if ck[0].split() and ck[0].split()[-1] == last_name
         ]
         if len(last_name_matches) == 1:
-            return last_name_matches[0][0]
+            cand_parts = last_name_matches[0][1][0].split()
+            cand_first = cand_parts[0] if len(cand_parts) > 1 else ""
+            if _first_names_compatible(name_first, cand_first):
+                return last_name_matches[0][0]
 
     # Pass 5: fuzzy SequenceMatcher
     best_match, best_score = None, 0.0
