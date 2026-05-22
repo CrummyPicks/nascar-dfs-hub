@@ -182,16 +182,22 @@ def merge_duplicate_drivers(verbose: bool = False) -> dict:
 
     Returns {"groups_merged": int, "drivers_deleted": int, "rows_rekeyed": int}.
     """
-    from src.utils import normalize_driver_name, _nickname_canonical, _stripped_middle
+    from src.utils import normalize_driver_name, _nickname_canonical
     summary = {"groups_merged": 0, "drivers_deleted": 0, "rows_rekeyed": 0}
     if not DB_PATH.exists():
         return summary
 
     def _canonical_group_key(name):
-        """Fully canonicalized key: normalize + nickname expand + strip middle."""
+        """Canonicalized grouping key: normalize + nickname expand.
+
+        Deliberately does NOT strip middle initials: a middle initial present
+        in one name but absent in another marks DIFFERENT drivers (Austin Hill
+        vs Austin J Hill, Jason White vs Jason M White), so they must land in
+        separate groups and never be merged. Only true duplicates — same name
+        modulo accents/periods/nicknames — share a key.
+        """
         n = normalize_driver_name(name)
         n = _nickname_canonical(n)
-        n = _stripped_middle(n)
         return n
 
     conn = sqlite3.connect(str(DB_PATH))

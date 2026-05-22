@@ -184,29 +184,16 @@ def _nickname_canonical(normalized: str) -> str:
     return " ".join(parts)
 
 
-def _stripped_middle(normalized: str) -> str:
-    """Drop single-character middle tokens — "jason m white" -> "jason white".
-
-    Only drops tokens in the middle positions (not first, not last) that are
-    exactly one character long. Catches the "middle initial is optional"
-    pattern that shows up across NASCAR data sources.
-    Input must already be normalized.
-    """
-    parts = normalized.split()
-    if len(parts) <= 2:
-        return normalized
-    kept = [p for i, p in enumerate(parts)
-            if i == 0 or i == len(parts) - 1 or len(p) > 1]
-    return " ".join(kept)
-
-
 def _match_keys(name: str) -> list:
     """Return all normalized keys a name could match against.
 
-    First key is the primary normalized form. Additional keys cover
-    systematic variants: nickname expansion (Nick -> Nicholas) and
-    middle-initial stripping (Jason M White -> Jason White). When matching
-    candidates, any shared key between name and candidate = match.
+    First key is the primary normalized form, plus a nickname-expanded
+    variant (Nick -> Nicholas). We intentionally do NOT add a
+    middle-stripped key: a middle initial present in one name but absent in
+    the other indicates DIFFERENT drivers (Austin Hill vs Austin J Hill,
+    Jason White vs Jason M White), not the same person. Middle-initial
+    *abbreviation* of a present middle (John H ↔ John Hunter) is handled by
+    the component-wise pass via _middles_compatible.
     """
     primary = normalize_driver_name(name)
     keys = [primary]
@@ -214,15 +201,46 @@ def _match_keys(name: str) -> list:
     nc = _nickname_canonical(primary)
     if nc != primary:
         keys.append(nc)
-    # Middle-initial stripped
-    sm = _stripped_middle(primary)
-    if sm != primary:
-        keys.append(sm)
-    # Also try combined: nickname + stripped middle
-    nc_sm = _stripped_middle(nc)
-    if nc_sm != primary and nc_sm not in keys:
-        keys.append(nc_sm)
     return keys
+
+
+def _name_components(norm: str):
+    """Split a normalized name into (first, [middle...], last).
+
+    Suffixes are already stripped by normalize_driver_name. For a single
+    token, returns it as the first name with empty middle/last.
+    """
+    parts = norm.split()
+    if not parts:
+        return "", [], ""
+    if len(parts) == 1:
+        return parts[0], [], ""
+    return parts[0], parts[1:-1], parts[-1]
+
+
+def _middles_compatible(a_mids: list, b_mids: list) -> bool:
+    """True if two middle-token lists belong to the same driver.
+
+    Rules (per user requirement):
+      - both empty            -> same person, compatible
+      - one empty, one present -> DIFFERENT people (e.g. Austin Hill vs
+        Austin J Hill, Jason White vs Jason M White)
+      - both present          -> compatible only if same count and each
+        token pair is equal or an initial of the other (John H ↔ John Hunter)
+    """
+    if not a_mids and not b_mids:
+        return True
+    if bool(a_mids) != bool(b_mids):
+        return False
+    if len(a_mids) != len(b_mids):
+        return False
+    for a, b in zip(a_mids, b_mids):
+        if a == b:
+            continue
+        if (len(a) == 1 and b.startswith(a)) or (len(b) == 1 and a.startswith(b)):
+            continue
+        return False
+    return True
 
 
 def _first_names_compatible(a: str, b: str) -> bool:
@@ -294,19 +312,18 @@ def fuzzy_match_name(name: str, candidates: list, threshold: float = 0.75) -> st
 
     # Pass 4: component-wise compatibility (first AND surname must both match).
     primary_norm = normalize_driver_name(name)
-    name_parts = primary_norm.split()
-    if len(name_parts) < 2:
+    name_first, name_mid, name_last = _name_components(primary_norm)
+    if not name_last:
         return None  # single-token name — too ambiguous to fuzzy-match safely
-    name_first, name_last = name_parts[0], name_parts[-1]
 
     best_match, best_score = None, 0.0
     for candidate, cand_keys in norm_candidates:
-        cand_parts = cand_keys[0].split()
-        if len(cand_parts) < 2:
+        cand_first, cand_mid, cand_last = _name_components(cand_keys[0])
+        if not cand_last:
             continue
-        cand_first, cand_last = cand_parts[0], cand_parts[-1]
         if (_first_names_compatible(name_first, cand_first)
-                and _surnames_compatible(name_last, cand_last)):
+                and _surnames_compatible(name_last, cand_last)
+                and _middles_compatible(name_mid, cand_mid)):
             # Tie-break among compatible candidates by whole-string similarity
             score = SequenceMatcher(None, primary_norm, cand_keys[0]).ratio()
             if score > best_score:
