@@ -304,7 +304,7 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     laps_led = pd.to_numeric(df.get("Laps Led", 0), errors="coerce").fillna(0)
     fast_laps = pd.to_numeric(df.get("Fast Laps", 0), errors="coerce").fillna(0)
 
-    n_races = len(df)
+    avg_run = pd.to_numeric(df.get("Avg Run"), errors="coerce").mean() if "Avg Run" in df.columns else None
     avg_fin, avg_st = finishes.mean(), starts.mean()
     best, worst = finishes.min(), finishes.max()
     n_dnf = int(df["Status"].astype(str).str.lower().isin(
@@ -314,7 +314,7 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     ).sum()) if "Status" in df.columns else 0
 
     row1 = st.columns(6)
-    row1[0].metric("Races", n_races)
+    row1[0].metric("Avg Run Pos", f"{avg_run:.1f}" if avg_run is not None and pd.notna(avg_run) else "—")
     row1[1].metric("Avg Finish", f"{avg_fin:.1f}" if pd.notna(avg_fin) else "—")
     row1[2].metric("Avg Start", f"{avg_st:.1f}" if pd.notna(avg_st) else "—")
     row1[3].metric("Best", f"{int(best)}" if pd.notna(best) else "—")
