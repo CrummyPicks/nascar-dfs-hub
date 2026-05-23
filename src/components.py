@@ -120,6 +120,49 @@ def style_heatmap(df: pd.DataFrame, rank_columns: list, max_rank: int = None) ->
     return df.style.apply(apply_colors)
 
 
+def style_results_table(df, *, rank_cols=None, max_rank=40, one_dec=None,
+                        two_dec=None, int_cols=None, money_cols=None):
+    """Return a Styler matching the driver-history popup's clean look:
+    green→red finish/rank heatmap plus consistent number formatting.
+
+    Use this for any results/standings table so the whole app reads the same
+    way as the popups (which the user called the cleanest displays).
+
+    Args:
+        df:        DataFrame to style.
+        rank_cols: columns to heatmap green(best)→red(worst), e.g. ["Finish"].
+        max_rank:  worst rank for the color scale (usually the field size).
+        one_dec:   columns formatted to 1 decimal (e.g. Avg Finish, Avg Run).
+        two_dec:   columns formatted to 2 decimals (e.g. DK Pts, Value).
+        int_cols:  columns coerced to nullable Int for clean integer display.
+        money_cols:columns formatted as "$1,234".
+    Missing columns are ignored; NaNs render as an em-dash.
+    """
+    rank_cols = [c for c in (rank_cols or []) if c in df.columns]
+    one_dec = [c for c in (one_dec or []) if c in df.columns]
+    two_dec = [c for c in (two_dec or []) if c in df.columns]
+    int_cols = [c for c in (int_cols or []) if c in df.columns]
+    money_cols = [c for c in (money_cols or []) if c in df.columns]
+
+    work = df.copy()
+    for c in int_cols:
+        work[c] = pd.to_numeric(work[c], errors="coerce").astype("Int64")
+    for c in one_dec + two_dec + money_cols:
+        work[c] = pd.to_numeric(work[c], errors="coerce")
+
+    styled = work.style
+    if rank_cols:
+        styled = styled.apply(
+            lambda col: [_rank_color(v, max_rank=max_rank) if col.name in rank_cols
+                         else "" for v in col], axis=0)
+    fmt = {c: "{:.1f}" for c in one_dec}
+    fmt.update({c: "{:.2f}" for c in two_dec})
+    fmt.update({c: "${:,.0f}" for c in money_cols})
+    if fmt:
+        styled = styled.format(fmt, na_rep="—")
+    return styled
+
+
 def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = True,
                               series_id: int = None, track_name: str = None):
     """Render the Practice Summary heatmap table.
@@ -281,9 +324,65 @@ _TRACK_TYPE_LABELS = {
 }
 
 
+def _render_full_field_results(race_id, highlight_driver=None, key_prefix=""):
+    """Inline full-field results for one race — every driver, car #, team, etc.
+
+    Rendered below the per-race table inside the driver-history dialog when the
+    user clicks a race row, so they can see the whole field for that event in
+    the same clean style as the single-driver log. The clicked driver's row is
+    highlighted for orientation. Streamlit doesn't allow nested st.dialog, so
+    this renders inline within the already-open dialog.
+    """
+    from src.data import query_race_field_results
+
+    data = query_race_field_results(race_id)
+    if not data or not data.get("rows"):
+        st.info("No full-field results available for this race.")
+        return
+
+    bits = [b for b in [data.get("race_name"), data.get("track"), data.get("date")] if b]
+    st.markdown(
+        f'<div style="margin:0.3rem 0 0.3rem 0;color:#7dd3fc;font-size:0.82rem;'
+        f'font-weight:700;">Full field — {" · ".join(bits)}</div>',
+        unsafe_allow_html=True)
+
+    fdf = pd.DataFrame(data["rows"])
+    for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:
+        if c in fdf.columns:
+            fdf[c] = pd.to_numeric(fdf[c], errors="coerce").astype("Int64")
+    for c in ["Avg Run", "DK Pts"]:
+        if c in fdf.columns:
+            fdf[c] = pd.to_numeric(fdf[c], errors="coerce")
+
+    show = [c for c in ["Driver", "Car", "Team", "Mfr", "Start", "Finish",
+                        "Laps Led", "Fast Laps", "Avg Run", "DK Pts", "Status"]
+            if c in fdf.columns]
+    fdisp = fdf[show]
+
+    fmt_map = {k: v for k, v in {"Avg Run": "{:.1f}", "DK Pts": "{:.2f}"}.items()
+               if k in show}
+    styled = fdisp.style.apply(
+        lambda col: [_rank_color(v, max_rank=40) if col.name == "Finish" else ""
+                     for v in col], axis=0)
+    if highlight_driver and "Driver" in fdisp.columns:
+        _hl = str(highlight_driver).strip().lower()
+        styled = styled.apply(
+            lambda row: ["background-color: rgba(56,189,248,0.22); font-weight:700"
+                         if str(row.get("Driver", "")).strip().lower() == _hl else ""
+                         for _ in show], axis=1)
+    if fmt_map:
+        styled = styled.format(fmt_map, na_rep="—")
+    # Tall enough to show the full field without an inner scroll for most races.
+    n = len(fdisp)
+    height = min(560, 38 + n * 35)
+    st.dataframe(styled, width="stretch", hide_index=True, height=height,
+                 key=f"{key_prefix}__field_{race_id}")
+
+
 def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
                                   track_type=None, season=None, all_tracks=False,
-                                  show_track_col=False, show_series_col=False):
+                                  show_track_col=False, show_series_col=False,
+                                  scope_tag=""):
     """Render one scope's worth of a driver's history: summary metrics + the
     per-race table with the finish-position heatmap. Used by each tab of the
     driver-history dialog."""
@@ -362,7 +461,35 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
         styled = disp.style
     if fmt_map:
         styled = styled.format(fmt_map, na_rep="—")
-    st.dataframe(styled, width="stretch", hide_index=True, height=380)
+
+    # Selectable per-race table → clicking a race renders that race's FULL FIELD
+    # (every driver/car #/team/result) inline below. Each scope tab needs a
+    # unique key (st.tabs renders them all every run); scope_tag disambiguates
+    # tabs that would otherwise share track/type/season args (e.g. "This Track"
+    # vs a "Pick a Track" selection of the same track).
+    import re as _re
+    scope_key = "drvscope_" + "_".join(
+        _re.sub(r"\W+", "", str(x)) for x in
+        [driver_name, series_id, scope_tag, track_name, track_type, season, all_tracks])
+    event = st.dataframe(styled, width="stretch", hide_index=True, height=380,
+                         selection_mode="single-row", on_select="rerun",
+                         key=scope_key)
+
+    # Resolve the clicked race → its DB race id (RaceId column on the full df)
+    # → render the whole field for that race below.
+    sel_rows = []
+    selection = getattr(event, "selection", None) if event is not None else None
+    if selection is not None:
+        sel_rows = (getattr(selection, "rows", None)
+                    or (selection.get("rows", []) if hasattr(selection, "get") else []))
+    if sel_rows and "RaceId" in df.columns:
+        ridx = sel_rows[0]
+        if 0 <= ridx < len(df):
+            race_id = df.iloc[ridx]["RaceId"]
+            if pd.notna(race_id):
+                st.caption("Click the selected race again to close the full field.")
+                _render_full_field_results(int(race_id), highlight_driver=driver_name,
+                                           key_prefix=scope_key)
 
 
 @st.dialog("Driver History", width="large")
@@ -396,13 +523,20 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         f' &nbsp;<span style="color:#64748b;font-size:0.82rem;">— race history</span>'
         f'</div>', unsafe_allow_html=True)
 
-    # Series selector — defaults to ALL series so a cross-series driver's full
-    # history shows even when the popup is opened from a race in a series where
-    # they have little/no data (e.g. a Cup regular in a one-off Truck race —
-    # the original bug where Stenhouse's "Intermediate" tab was empty).
+    # Series selector — defaults to the SERIES OF THE RACE THE USER CLICKED
+    # (series_id) so the popup opens in the most relevant context, while still
+    # letting them switch to any series, or "All Series" to see a cross-series
+    # driver's full history (e.g. a Cup regular's one-off Truck starts — the
+    # original Stenhouse "Intermediate"-tab-empty case). The widget key is
+    # scoped by series_id, so opening from a different series defaults afresh
+    # while manual toggles persist within that same context.
     _SERIES_OPTS = {"All Series": None, "Cup": 1, "O'Reilly": 2, "Truck": 3}
-    sel = st.radio("Series", list(_SERIES_OPTS.keys()), horizontal=True,
-                   key=f"drvhist_series_{driver_name}", label_visibility="collapsed")
+    _opts = list(_SERIES_OPTS.keys())
+    _id_to_label = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
+    _default_idx = _opts.index(_id_to_label.get(series_id, "All Series"))
+    sel = st.radio("Series", _opts, index=_default_idx, horizontal=True,
+                   key=f"drvhist_series_{driver_name}_{series_id}",
+                   label_visibility="collapsed")
     eff_series = _SERIES_OPTS[sel]
     show_series_col = (eff_series is None)
 
@@ -444,15 +578,18 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
                                     key=f"drvhist_pick_{sel}_{driver_name}")
                 if pick:
                     _render_driver_history_scope(driver_name, eff_series, track_name=pick,
-                                                 show_series_col=show_series_col)
+                                                 show_series_col=show_series_col,
+                                                 scope_tag=label)
             elif kw.get("_alltime"):
                 # All races (min_season floor inside the query)
                 _render_driver_history_scope(driver_name, eff_series,
                                              all_tracks=True, show_track_col=True,
-                                             show_series_col=show_series_col)
+                                             show_series_col=show_series_col,
+                                             scope_tag=label)
             else:
                 _render_driver_history_scope(driver_name, eff_series,
-                                             show_series_col=show_series_col, **kw)
+                                             show_series_col=show_series_col,
+                                             scope_tag=label, **kw)
 
 
 def interactive_drill_down_dataframe(df, *, key, series_id,

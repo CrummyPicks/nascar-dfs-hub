@@ -978,7 +978,7 @@ def query_driver_race_log(
                    rr.car_number, rr.team,
                    rr.start_pos, rr.finish_pos,
                    rr.laps_led, rr.fastest_laps,
-                   rr.avg_running_position, rr.status, r.series_id
+                   rr.avg_running_position, rr.status, r.series_id, r.id
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r   ON r.id = rr.race_id
@@ -996,7 +996,7 @@ def query_driver_race_log(
     from src.utils import calc_dk_points
     _series_label = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
     out = []
-    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status, sid in rows:
+    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status, sid, rid in rows:
         ll_v = ll or 0
         fl_v = fl or 0
         try:
@@ -1006,6 +1006,7 @@ def query_driver_race_log(
         # Trim ISO time off the date for display
         date_str = (str(rdate) or "")[:10]
         out.append({
+            "RaceId": rid,
             "Date": date_str,
             "Race": rname,
             "Track": track,
@@ -1021,6 +1022,71 @@ def query_driver_race_log(
             "Status": status,
         })
     return out
+
+
+def query_race_field_results(race_id: int) -> dict:
+    """Full-field results for a single race (every driver).
+
+    Returns {"race_name": str, "track": str, "date": str, "series_id": int,
+             "rows": [ {Driver, Car, Team, Mfr, Start, Finish, Laps Led,
+                        Fast Laps, Avg Run, DK Pts, Status}, ... ]}
+    sorted by finish position. Used by the driver-history popup's full-field
+    sub-view. `race_id` is the internal DB id (the RaceId field on each row
+    of query_driver_race_log), NOT the NASCAR api_race_id.
+    """
+    if not DB_PATH.exists() or not race_id:
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        meta = conn.execute('''
+            SELECT r.race_name, t.name, r.race_date, r.series_id
+            FROM races r JOIN tracks t ON t.id = r.track_id
+            WHERE r.id = ?
+        ''', (race_id,)).fetchone()
+        rows = conn.execute('''
+            SELECT d.full_name, rr.car_number, rr.team, rr.manufacturer,
+                   rr.start_pos, rr.finish_pos, rr.laps_led, rr.fastest_laps,
+                   rr.avg_running_position, rr.status
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            WHERE rr.race_id = ? AND rr.finish_pos IS NOT NULL
+            ORDER BY rr.finish_pos ASC
+        ''', (race_id,)).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+
+    if not meta or not rows:
+        return {}
+
+    from src.utils import calc_dk_points
+    out_rows = []
+    for name, car, team, mfr, start, finish, ll, fl, arp, status in rows:
+        ll_v, fl_v = ll or 0, fl or 0
+        try:
+            dk = calc_dk_points(finish, start or 0, ll_v, fl_v) if (start is not None and finish) else None
+        except Exception:
+            dk = None
+        out_rows.append({
+            "Driver": name,
+            "Car": car,
+            "Team": team,
+            "Mfr": mfr,
+            "Start": start,
+            "Finish": finish,
+            "Laps Led": ll_v,
+            "Fast Laps": fl_v,
+            "Avg Run": round(arp, 1) if arp is not None else None,
+            "DK Pts": round(dk, 2) if dk is not None else None,
+            "Status": status,
+        })
+    return {
+        "race_name": meta[0],
+        "track": meta[1],
+        "date": (str(meta[2]) or "")[:10],
+        "series_id": meta[3],
+        "rows": out_rows,
+    }
 
 
 def query_driver_finishes_by_track_type(

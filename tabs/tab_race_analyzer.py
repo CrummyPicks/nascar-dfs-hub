@@ -4,15 +4,16 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-from src.config import SERIES_OPTIONS, TRACK_TYPE_MAP, TRACK_TYPE_PARENT, TRACK_TYPE_DISPLAY
-from src.components import section_header
+from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT, TRACK_TYPE_DISPLAY
+from src.components import (
+    section_header, style_results_table, interactive_drill_down_dataframe,
+)
 from src.data import (
     fetch_race_list, fetch_weekend_feed, fetch_lap_times,
     extract_race_results, compute_fastest_laps, compute_avg_running_position,
     filter_point_races, query_salaries, load_arp_from_db,
 )
-from src.utils import calc_dk_points, calc_fd_points, safe_fillna, format_display_df, fuzzy_merge, fuzzy_get, build_norm_lookup
-from src.components import render_driver_race_log
+from src.utils import calc_dk_points, calc_fd_points, fuzzy_merge, fuzzy_get, build_norm_lookup
 from src.charts import race_scatter
 
 
@@ -237,14 +238,25 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
             "Car", "Team", "Manufacturer", "Status"]
     avail = [c for c in show if c in results.columns]
     disp = results[avail].copy().sort_values("Finish Position")
-    disp = format_display_df(disp)
 
     if search:
         mask = disp.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         disp = disp[mask]
 
-    st.caption(f"Track: **{race.get('track_name', '')}** | {len(results)} drivers")
-    st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=520)
+    st.caption(f"Track: **{race.get('track_name', '')}** · {len(disp)} drivers · "
+               "click a driver to see their history at this track")
+    styled = style_results_table(
+        disp,
+        rank_cols=["Finish Position"], max_rank=max(len(disp), 40),
+        one_dec=["Avg Run"], two_dec=["DK Pts", "FD Pts"],
+        int_cols=["Start", "Laps Led", "Fastest Laps", "Pos Diff"],
+        money_cols=["DK Salary"],
+    )
+    interactive_drill_down_dataframe(
+        styled, key="ra_single_table", series_id=series_id,
+        track_name=race.get("track_name"), driver_col="Driver",
+        width="stretch", hide_index=True, height=520,
+    )
 
     # Chart
     fig = race_scatter(results)
@@ -479,14 +491,27 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
     search = st.text_input("Search...", "", placeholder="Filter drivers...",
                            label_visibility="collapsed", key="ra_season_search")
 
-    st.caption(f"{len(agg)} drivers across {len(completed_races)} races — {year_label}")
+    st.caption(f"{len(agg)} drivers across {len(completed_races)} races — {year_label} · "
+               "click a driver for their full history")
 
-    disp = format_display_df(agg.copy())
+    disp = agg.copy()
     if search:
         mask = disp.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         disp = disp[mask]
 
-    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550)
+    season_scope = years_to_fetch[0] if len(years_to_fetch) == 1 else None
+    styled = style_results_table(
+        disp,
+        rank_cols=["Avg Finish"], max_rank=40,
+        one_dec=["Avg Finish", "Avg Start", "Avg DK", "Avg FD"],
+        int_cols=["Races", "Wins", "T5", "T10", "Laps Led", "Fast Laps", "Best Finish"],
+        money_cols=["Avg Salary"],
+    )
+    interactive_drill_down_dataframe(
+        styled, key="ra_season_table", series_id=series_id,
+        season=season_scope, driver_col="Driver",
+        width="stretch", hide_index=False, height=550,
+    )
 
     # Season charts
     import plotly.graph_objects as go
@@ -665,14 +690,28 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
     search = st.text_input("Search...", "", placeholder="Filter drivers...",
                            label_visibility="collapsed", key="ra_tt_search")
 
-    st.caption(f"{len(agg)} drivers across {len(type_races)} {chosen_type} races — {year_label}")
+    st.caption(f"{len(agg)} drivers across {len(type_races)} {chosen_type} races — {year_label} · "
+               "click a driver for their history at this track type")
 
-    disp = format_display_df(agg.copy())
+    disp = agg.copy()
     if search:
         mask = disp.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
         disp = disp[mask]
 
-    st.dataframe(safe_fillna(disp), width="stretch", hide_index=False, height=550)
+    dialog_tt = (chosen_type.replace("All ", "").lower()
+                 if chosen_type.startswith("All ") else chosen_type)
+    styled = style_results_table(
+        disp,
+        rank_cols=["Avg Finish"], max_rank=40,
+        one_dec=["Avg Finish", "Avg Start", "Avg DK", "Avg FD", "Avg Run"],
+        int_cols=["Races", "Wins", "T5", "T10", "Laps Led", "Fast Laps", "Best Finish"],
+        money_cols=["Avg Salary"],
+    )
+    interactive_drill_down_dataframe(
+        styled, key="ra_tt_table", series_id=series_id,
+        track_type=dialog_tt, driver_col="Driver",
+        width="stretch", hide_index=False, height=550,
+    )
 
     # Avg Running Pos vs Avg DK Points scatter chart
     if ("Avg Run" in agg.columns and agg["Avg Run"].notna().any()
@@ -794,8 +833,11 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
         ).round(1).sort_values("Avg DK", ascending=False)
         if len(type_agg) > 1:
             with st.expander("Performance by Track Type", expanded=False):
-                st.dataframe(safe_fillna(format_display_df(type_agg)),
-                             width="stretch", hide_index=False)
+                st.dataframe(
+                    style_results_table(
+                        type_agg, rank_cols=["Avg Finish"], max_rank=40,
+                        one_dec=["Avg Finish", "Avg DK"], int_cols=["Races"]),
+                    width="stretch", hide_index=False)
 
     # ── Race Log Table ─────────────────────────────────────────────────────
     st.markdown(f"#### {driver_pick} — Race Log")
@@ -804,8 +846,14 @@ def _render_driver_lookup(completed_races, series_id, year_label, years_to_fetch
     if "DK Salary" in m.columns:
         show_cols.insert(6, "DK Salary")
     avail = [c for c in show_cols if c in m.columns]
-    disp = format_display_df(m[avail].copy())
-    st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=400)
+    styled = style_results_table(
+        m[avail].copy(),
+        rank_cols=["Finish"], max_rank=40,
+        two_dec=["DK Pts", "FD Pts"],
+        int_cols=["Start", "Laps Led", "Fastest Laps"],
+        money_cols=["DK Salary"],
+    )
+    st.dataframe(styled, width="stretch", hide_index=True, height=400)
 
     # ── Charts ─────────────────────────────────────────────────────────────
     import plotly.graph_objects as go
@@ -933,7 +981,18 @@ def _render_driver_comparison(completed_races, series_id, year_label, years_to_f
         })
 
     comp_df = pd.DataFrame(comp_rows)
-    st.dataframe(comp_df, width="stretch", hide_index=True, height=420)
+
+    def _edge_style(row):
+        # Tint the winning driver's value cell green for an at-a-glance read.
+        styles = ["" for _ in comp_df.columns]
+        edge = row.get("Edge")
+        for i, col in enumerate(comp_df.columns):
+            if col in (driver_a, driver_b) and edge == col:
+                styles[i] = "background-color: #1a7a3d; color: white; font-weight:700"
+        return styles
+
+    st.dataframe(comp_df.style.apply(_edge_style, axis=1),
+                 width="stretch", hide_index=True, height=420)
 
     # Race-by-race charts
     import plotly.graph_objects as go
