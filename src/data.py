@@ -120,13 +120,16 @@ def sync_race_schedule_from_api(series_id: int, year: int, verbose: bool = False
             api = api_by_id.get(api_id)
             if not api:
                 continue
-            # Date sync
-            if db_date and api["date"] and db_date[:10] != api["date"]:
+            # Date sync — fill in MISSING dates as well as correct stale ones.
+            # (Previously this required db_date to be truthy, so rows with a
+            # NULL/empty race_date were silently skipped and stayed dateless.)
+            if api["date"] and (not db_date or db_date[:10] != api["date"]):
                 conn.execute("UPDATE races SET race_date = ? WHERE id = ?",
                              (api["date"], db_id))
                 summary["dates_updated"] += 1
                 if verbose:
-                    print(f"  date  db={db_id}  {db_date[:10]} -> {api['date']}  ({db_name[:30]})")
+                    _old = db_date[:10] if db_date else "(none)"
+                    print(f"  date  db={db_id}  {_old} -> {api['date']}  ({db_name[:30]})")
             # Name sync — only when our name is stale (API has updated sponsor)
             if api["name"] and db_name != api["name"]:
                 conn.execute("UPDATE races SET race_name = ? WHERE id = ?",
