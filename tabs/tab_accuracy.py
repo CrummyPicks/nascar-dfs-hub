@@ -594,9 +594,10 @@ def _generate_race_projections(race, series_id, weights=None):
         if len(odds_probs) >= field_size * 0.3:
             # Realistic expected-finish anchors (mirror tab_projections) — odds
             # do not imply the favorite finishes 1st, and the full-range mapping
-            # over-weighted odds vs the clamped track/ttype signals.
+            # over-weighted odds vs the clamped track/ttype signals. Worst anchor
+            # pulled to 0.58 so ~0%-win value plays aren't buried at the wall.
             _best_anchor = max(2.0, field_size * 0.13)
-            _worst_anchor = field_size * 0.82
+            _worst_anchor = field_size * 0.58
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
             log_probs = {name: math.log(prob) for name, prob in ranked}
             max_lp = max(log_probs.values())
@@ -1768,8 +1769,10 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     continue
             if len(odds_probs) >= field_size * 0.3:
                 # Realistic expected-finish anchors (mirror tab_projections).
+                # Worst anchor pulled to 0.58 so ~0%-win value plays aren't
+                # buried at the wall by the heaviest single weight (odds).
                 _best_anchor = max(2.0, field_size * 0.13)
-                _worst_anchor = field_size * 0.82
+                _worst_anchor = field_size * 0.58
                 ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
                 log_probs = {name: math.log(prob) for name, prob in ranked}
                 max_lp = max(log_probs.values())

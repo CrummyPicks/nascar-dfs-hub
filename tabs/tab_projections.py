@@ -735,11 +735,31 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
             where += " AND r.race_date < ?"
             params.append(before_date)
 
+        # Accident-aware Avg Finish: exclude crash/mechanical-DNF races from
+        # the finish average (a driver running P10 who gets wrecked to P36 had
+        # P10 *pace* — the finish is bad luck, and crash frequency is already
+        # priced separately by the DNF-risk penalty, so counting the P36 here
+        # too would double-count it). Avg Run Pos still spans ALL races since
+        # running position reflects the pace they were actually showing.
+        # Falls back to the raw average when a driver's only races were DNFs.
+        #
+        # Superspeedways are the exception (trim_worst=True): wrecks there are
+        # frequent and partly a driver skill (avoiding the Big One), so fully
+        # excluding them overstates pace. Supers keep the raw average and lean
+        # on the separate "drop the single worst finish" trim below instead.
+        _clean = "LOWER(COALESCE(rr.status,'running')) IN ('running','')"
+        if trim_worst:
+            avg_finish_sql = "ROUND(AVG(rr.finish_pos), 1)"
+        else:
+            avg_finish_sql = (f"ROUND(COALESCE("
+                              f"AVG(CASE WHEN {_clean} THEN rr.finish_pos END), "
+                              f"AVG(rr.finish_pos)), 1)")
+
         # Base aggregate query (always used)
         base_query = f'''
             SELECT d.full_name as Driver,
                    COUNT(*) as Races,
-                   ROUND(AVG(rr.finish_pos), 1) as "Avg Finish",
+                   {avg_finish_sql} as "Avg Finish",
                    ROUND(AVG(rr.start_pos), 1) as "Avg Start",
                    SUM(rr.laps_led) as "Laps Led",
                    SUM(rr.fastest_laps) as "Fastest Laps",
@@ -851,10 +871,21 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
             where_extra += " AND r.race_date < ?"
             params.append(before_date)
 
+        # Accident-aware avg_finish (see _query_db_track_history): exclude
+        # crash/mechanical-DNF races from the finish average, keep avg running
+        # position over all races, raw fallback when every race was a DNF.
+        # Superspeedways keep the raw average (wrecks are frequent/skill-based).
+        if parent == "superspeedway":
+            avg_finish_sql = "AVG(rr.finish_pos)"
+        else:
+            _clean = "LOWER(COALESCE(rr.status,'running')) IN ('running','')"
+            avg_finish_sql = (f"COALESCE(AVG(CASE WHEN {_clean} "
+                              f"THEN rr.finish_pos END), AVG(rr.finish_pos))")
+
         query = f'''
             SELECT d.full_name,
                    COUNT(*) as races,
-                   AVG(rr.finish_pos) as avg_finish,
+                   {avg_finish_sql} as avg_finish,
                    AVG(rr.avg_running_position) as avg_running_pos,
                    SUM(rr.laps_led) as total_laps_led
             FROM race_results rr
@@ -1413,12 +1444,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             # unrealistic and (b) gave the odds signal ~3x the spread of the
             # track/track-type signals (which clamp to their natural ~8-20
             # range), so odds dominated the weighted average far beyond its
-            # nominal weight. Anchoring to [field*0.13, field*0.82] keeps the
-            # favorite clearly best (~5 for a 38-car field) without letting
-            # odds steamroll the other signals.
+            # nominal weight.
+            #
+            # The WORST anchor is the subtle one: win odds barely discriminate
+            # the back half of the field (everyone past a few favorites is a
+            # tiny, noisy win%), yet a 38-car field has ONE winner and 37
+            # non-winners who AVERAGE ~mid-field — not the wall. Anchoring the
+            # longest shot to field*0.82 (~31st) was systematically burying
+            # value plays: a driver with ~0% win equity but solid race pace
+            # (good track/track-type form) was getting dragged toward 31st by
+            # the heaviest single weight (odds = 33% on intermediates). Pulling
+            # the worst anchor in to field*0.58 (~22nd) lets odds stay sharp
+            # where they're reliable (separating the genuine contenders at the
+            # front) while letting track/track-type/qual/DNF — not win odds —
+            # decide who runs 22nd vs 35th.
             import math
             best_anchor = max(2.0, field_size * 0.13)
-            worst_anchor = field_size * 0.82
+            worst_anchor = field_size * 0.58
             ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
             log_probs = {name: math.log(prob) for name, prob in ranked}
             max_lp = max(log_probs.values())

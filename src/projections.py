@@ -245,7 +245,22 @@ def compute_projections(
 
     ll_ref = calibration.get("avg_top_leader", race_laps * 0.35) if calibration else race_laps * 0.35
 
-    QUAL_DAMPEN_CAP = 8  # max positions qual can differ from race-pace signals
+    # Max positions qualifying can differ from the driver's race-pace signals
+    # before we pull it back toward pace. This is TRACK-TYPE AWARE: qualifying
+    # predicts the finish only as well as track position holds in the race.
+    #   • Intermediate / superspeedway: cars pass easily, deep starters
+    #     routinely race up to their true pace — so a bad (or fluke-good) qual
+    #     shouldn't drag the projection far. Tighter cap (5).
+    #   • Short / road: track position sticks (hard to pass), so qualifying is
+    #     genuinely predictive and allowed to stand further from pace (8).
+    # This directly serves the cheap "starts deep, decent race pace" value play
+    # on intermediates — its bad qual gets pulled toward its real pace instead
+    # of pinning the projection near the back.
+    _QUAL_CAP_BY_TYPE = {
+        "intermediate": 5, "intermediate_worn": 5, "superspeedway": 5,
+        "short": 8, "short_concrete": 8, "road": 8,
+    }
+    QUAL_DAMPEN_CAP = _QUAL_CAP_BY_TYPE.get(track_type, 7)
 
     for d in drivers:
         norm = normalized_signals[d]
@@ -322,26 +337,42 @@ def compute_projections(
         #
         # Weighting rule:
         #   - track, track_type, practice, odds = "driver-specific" (count fully)
+        #   - a well-sampled track_type (4+ races) counts as 1.5 — a real body
+        #     of form at this type of track is a reliable signal, so a value
+        #     play with it shouldn't be branded "low info" merely for lacking
+        #     THIS track's history or a Vegas quote (the Lavar Scott case).
         #   - qual = counts as 0.5 (single lap, doesn't prove race pace)
         #   - team = counts as 0.5 (tells us about equipment, not the driver)
-        driver_specific = {"track", "ttype", "prac", "odds"}
+        driver_specific = {"track", "prac", "odds"}  # ttype handled separately
         partial_signals = {"qual", "team"}
+        tt_info = tt_data.get(d) if tt_data else None
+        tt_races_ct = tt_info.get("races", 0) if isinstance(tt_info, dict) else 0
+        if "ttype" in norm:
+            ttype_credit = 1.5 if tt_races_ct >= 4 else 1.0
+        else:
+            ttype_credit = 0.0
         signal_weight_score = (
-            sum(1.0 for s in norm if s in driver_specific)
+            ttype_credit
+            + sum(1.0 for s in norm if s in driver_specific)
             + sum(0.5 for s in norm if s in partial_signals)
         )
         # Absent-from-Vegas penalty: when most of the field has odds but this
-        # driver doesn't, Vegas is saying they don't even trust him enough to
-        # quote. That's informative — not a neutral "missing" signal.
+        # driver doesn't, Vegas is mildly signaling they don't rate him. But
+        # books routinely skip the cheapest cars regardless of merit, so this
+        # is a soft nudge (−0.25), not a hammer — otherwise legit value plays
+        # get double-penalized (no odds AND a back-field anchor).
         vegas_skipped = (_odds_quoted_count >= 15 and not odds_finish.get(d))
         if vegas_skipped:
-            signal_weight_score = max(0.0, signal_weight_score - 0.5)
+            signal_weight_score = max(0.0, signal_weight_score - 0.25)
 
         # Full trust only at 3.0+ signal-weight (e.g. track + ttype + odds,
         # OR track + ttype + prac, OR odds + prac + qual + team).
         confidence = min(1.0, signal_weight_score / 3.0)
         if confidence < 1.0:
-            back_field_anchor = field_size * 0.90  # 85% → 90% (more punitive)
+            # Anchor the missing-information mass at field*0.80 (a back-half
+            # car), not field*0.90 (near-DFL). A thin-data driver is more
+            # likely a mid-to-back runner than a guaranteed tail-ender.
+            back_field_anchor = field_size * 0.80
             raw_finish = raw_finish * confidence + back_field_anchor * (1 - confidence)
             sig_detail["LowInfo"] = f"{signal_weight_score:.1f}sig"
             if vegas_skipped:
