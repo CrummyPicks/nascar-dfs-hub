@@ -283,7 +283,7 @@ _TRACK_TYPE_LABELS = {
 
 def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
                                   track_type=None, season=None, all_tracks=False,
-                                  show_track_col=False):
+                                  show_track_col=False, show_series_col=False):
     """Render one scope's worth of a driver's history: summary metrics + the
     per-race table with the finish-position heatmap. Used by each tab of the
     driver-history dialog."""
@@ -330,10 +330,13 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     row2[5].metric("Fast Laps", int(fast_laps.sum()))
     st.markdown("")
 
-    # Per-race table. Show the Track column for any multi-track view.
+    # Per-race table. Show the Track column for any multi-track view, and the
+    # Series column when results span multiple series (All Series).
     show_cols = ["Date", "Race"]
     if show_track_col:
         show_cols.append("Track")
+    if show_series_col:
+        show_cols.append("Series")
     show_cols.extend(["Car", "Team", "Start", "Finish", "Laps Led",
                       "Fast Laps", "Avg Run", "DK Pts", "Status"])
     show_cols = [c for c in show_cols if c in df.columns]
@@ -388,10 +391,20 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         season = _t.year + 1 if _t.month >= 10 else _t.year
 
     st.markdown(
-        f'<div style="margin:-0.4rem 0 0.6rem 0;">'
+        f'<div style="margin:-0.4rem 0 0.4rem 0;">'
         f'<span style="color:#e2e8f0;font-size:1.05rem;font-weight:700;">{driver_name}</span>'
         f' &nbsp;<span style="color:#64748b;font-size:0.82rem;">— race history</span>'
         f'</div>', unsafe_allow_html=True)
+
+    # Series selector — defaults to ALL series so a cross-series driver's full
+    # history shows even when the popup is opened from a race in a series where
+    # they have little/no data (e.g. a Cup regular in a one-off Truck race —
+    # the original bug where Stenhouse's "Intermediate" tab was empty).
+    _SERIES_OPTS = {"All Series": None, "Cup": 1, "O'Reilly": 2, "Truck": 3}
+    sel = st.radio("Series", list(_SERIES_OPTS.keys()), horizontal=True,
+                   key=f"drvhist_series_{driver_name}", label_visibility="collapsed")
+    eff_series = _SERIES_OPTS[sel]
+    show_series_col = (eff_series is None)
 
     # Build tab specs: (label, render-callable). Primary scope first.
     def _abbrev(tn):
@@ -423,20 +436,23 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     for tab, (label, kw) in zip(tabs, uniq):
         with tab:
             if kw.get("_picker"):
-                tracks = query_driver_tracks_raced(driver_name, series_id)
+                tracks = query_driver_tracks_raced(driver_name, eff_series)
                 if not tracks:
                     st.info("No tracks on record for this driver.")
                     continue
                 pick = st.selectbox("Track", tracks,
-                                    key=f"drvhist_pick_{series_id}_{driver_name}")
+                                    key=f"drvhist_pick_{sel}_{driver_name}")
                 if pick:
-                    _render_driver_history_scope(driver_name, series_id, track_name=pick)
+                    _render_driver_history_scope(driver_name, eff_series, track_name=pick,
+                                                 show_series_col=show_series_col)
             elif kw.get("_alltime"):
-                # All races in this series (min_season floor inside the query)
-                _render_driver_history_scope(driver_name, series_id,
-                                             all_tracks=True, show_track_col=True)
+                # All races (min_season floor inside the query)
+                _render_driver_history_scope(driver_name, eff_series,
+                                             all_tracks=True, show_track_col=True,
+                                             show_series_col=show_series_col)
             else:
-                _render_driver_history_scope(driver_name, series_id, **kw)
+                _render_driver_history_scope(driver_name, eff_series,
+                                             show_series_col=show_series_col, **kw)
 
 
 def interactive_drill_down_dataframe(df, *, key, series_id,

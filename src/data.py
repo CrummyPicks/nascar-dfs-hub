@@ -865,28 +865,32 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         return {}
 
 
-def query_driver_tracks_raced(driver_name: str, series_id: int,
+def query_driver_tracks_raced(driver_name: str, series_id: int = None,
                               min_season: int = 2022) -> list:
-    """Distinct tracks a driver has raced in a series (most-raced first).
+    """Distinct tracks a driver has raced (most-raced first).
 
-    Used by the driver-history popup's "Pick Track" tab so the user can drill
-    into any specific track for that driver.
+    series_id=None spans all series. Used by the driver-history popup's
+    "Pick a Track" tab so the user can drill into any specific track.
     """
     if not DB_PATH.exists() or not driver_name:
         return []
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        rows = conn.execute('''
+        where = "d.full_name = ? AND r.season >= ? AND rr.finish_pos IS NOT NULL"
+        params = [driver_name, min_season]
+        if series_id is not None:
+            where += " AND r.series_id = ?"
+            params.append(series_id)
+        rows = conn.execute(f'''
             SELECT t.name, COUNT(*) as n
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r   ON r.id = rr.race_id
             JOIN tracks t  ON t.id = r.track_id
-            WHERE d.full_name = ? AND r.series_id = ? AND r.season >= ?
-              AND rr.finish_pos IS NOT NULL
+            WHERE {where}
             GROUP BY t.name
             ORDER BY n DESC, t.name ASC
-        ''', (driver_name, series_id, min_season)).fetchall()
+        ''', params).fetchall()
         conn.close()
         return [r[0] for r in rows]
     except Exception:
@@ -925,8 +929,14 @@ def query_driver_race_log(
 
     from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
 
-    where = ["d.full_name = ?", "r.series_id = ?"]
-    params = [driver_name, series_id]
+    # series_id=None means ALL series (used by the popup's "All Series" option,
+    # so a Cup regular's intermediate history shows even when viewed from a
+    # Truck/O'Reilly race context).
+    where = ["d.full_name = ?"]
+    params = [driver_name]
+    if series_id is not None:
+        where.append("r.series_id = ?")
+        params.append(series_id)
 
     # Season filter mode: ONLY this season (no min_season floor)
     if season is not None:
@@ -968,7 +978,7 @@ def query_driver_race_log(
                    rr.car_number, rr.team,
                    rr.start_pos, rr.finish_pos,
                    rr.laps_led, rr.fastest_laps,
-                   rr.avg_running_position, rr.status
+                   rr.avg_running_position, rr.status, r.series_id
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r   ON r.id = rr.race_id
@@ -984,8 +994,9 @@ def query_driver_race_log(
         return []
 
     from src.utils import calc_dk_points
+    _series_label = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
     out = []
-    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status in rows:
+    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status, sid in rows:
         ll_v = ll or 0
         fl_v = fl or 0
         try:
@@ -998,6 +1009,7 @@ def query_driver_race_log(
             "Date": date_str,
             "Race": rname,
             "Track": track,
+            "Series": _series_label.get(sid, str(sid)),
             "Car": car,
             "Team": team,
             "Start": start,
