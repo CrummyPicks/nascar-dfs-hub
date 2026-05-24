@@ -403,20 +403,34 @@ def build_norm_lookup(mapping: dict) -> dict:
 
 
 def fuzzy_get(name: str, mapping: dict, norm_cache: dict = None):
-    """Look up a driver in a dict using normalized name matching.
+    """Look up a driver in a dict using exact → normalized → fuzzy matching.
 
     Args:
         name: Driver name to look up.
         mapping: Original {display_name: value} dict.
         norm_cache: Optional pre-built {normalized_name: value} dict from
                     build_norm_lookup() — avoids rebuilding each call.
+
+    Falls through to component-wise fuzzy_match_name() (the SAME matcher
+    fuzzy_merge uses) when exact + normalized lookups miss — so first-name
+    NICKNAMES the normalizer doesn't expand still resolve, e.g. "Nicholas
+    Sanchez" ↔ the lap feed's "Nick Sanchez". fuzzy_match_name is middle-aware,
+    so it still will NOT match "Justin S Carroll"→"Justin Carroll" or
+    "Jason M White"→"Jason White" (middle initial on one side only → different
+    people). Previously fuzzy_get stopped at the normalized step, so those
+    nickname cases silently returned None.
     """
     if name in mapping:
         return mapping[name]
     norm = normalize_driver_name(name)
     if norm_cache is None:
         norm_cache = build_norm_lookup(mapping)
-    return norm_cache.get(norm)
+    if norm in norm_cache:
+        return norm_cache[norm]
+    matched = fuzzy_match_name(name, list(mapping.keys()))
+    if matched is not None and matched in mapping:
+        return mapping[matched]
+    return None
 
 
 def fuzzy_merge(left: pd.DataFrame, right: pd.DataFrame, on: str = "Driver",
