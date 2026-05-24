@@ -304,7 +304,7 @@ TRACK_TYPE_WEIGHT_DEFAULTS = {
     "superspeedway":  {"odds": 25, "track": 20, "ttype": 30, "prac": 5,  "team": 15, "qual": 5},
     "short":          {"odds": 20, "track": 25, "ttype": 10, "prac": 10, "team": 10, "qual": 25},
     "short_concrete": {"odds": 20, "track": 30, "ttype": 5,  "prac": 10, "team": 10, "qual": 25},
-    "road":           {"odds": 20, "track": 15, "ttype": 15, "prac": 25, "team": 10, "qual": 15},
+    "road":           {"odds": 20, "track": 20, "ttype": 20, "prac": 15, "team": 10, "qual": 15},
     "intermediate":   {"odds": 20, "track": 25, "ttype": 20, "prac": 10, "team": 10, "qual": 15},
 }
 
