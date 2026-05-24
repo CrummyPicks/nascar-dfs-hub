@@ -7,7 +7,49 @@ their own data-loading layer, guaranteeing identical math.
 
 import math
 import numpy as np
-from src.config import DK_FINISH_POINTS
+from src.config import DK_FINISH_POINTS, TRACK_TYPE_PARENT
+
+# ── Deep-start dominator dampener, BY TRACK TYPE ──────────────────────────────
+# Starting deep hurts your chance to LEAD LAPS far more at some tracks than
+# others, so the dampener on a deep starter's dominator score is track-type
+# aware instead of one-size-fits-all:
+#   • short / short_concrete — track position is king and passing is hard, so a
+#     deep start is nearly a death penalty for leading laps (steep, low floor).
+#   • superspeedway — pack/draft racing cycles the lead through the whole field,
+#     so where you start barely predicts who leads (nearly flat).
+#   • intermediate / road — long green-flag runs, tire falloff and pit cycles
+#     let a fast car work forward, so a moderate, gentle dampener.
+# Values are (floor, slope): for a start beyond P10 the multiplier is
+# max(floor, 1 - (start-10)*slope). P1-P3 get a small boost, P4-P10 are neutral.
+_DOM_START_PENALTY = {
+    "superspeedway":     (0.93, 0.004),
+    "road":              (0.80, 0.011),
+    "intermediate":      (0.80, 0.009),
+    "intermediate_worn": (0.80, 0.009),
+    "short":             (0.60, 0.020),
+    "short_concrete":    (0.57, 0.022),
+}
+_DOM_START_PENALTY_DEFAULT = (0.78, 0.011)
+# Longer races give a deep starter more time to recover track position, so the
+# per-position cut is softened as race length grows past this reference — e.g.
+# the Charlotte 600 (400 laps) gets a gentler dampener than a 267-lap
+# intermediate. NOT applied to short tracks, where passing stays hard no matter
+# how long the race is (a 500-lap Bristol is still a track-position race).
+_DOM_START_LONGRACE_REF = 320
+
+
+def _dom_start_multiplier(qp, race_laps, track_type):
+    """Track-type-aware start-position multiplier on the dominator score."""
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    floor, slope = _DOM_START_PENALTY.get(
+        track_type, _DOM_START_PENALTY.get(parent, _DOM_START_PENALTY_DEFAULT))
+    if qp <= 3:
+        return 1.10 - (qp - 1) * 0.03            # 1.10 / 1.07 / 1.04
+    if qp <= 10:
+        return 1.0
+    if parent not in ("short", "short_concrete") and race_laps and race_laps > _DOM_START_LONGRACE_REF:
+        slope *= max(0.6, _DOM_START_LONGRACE_REF / race_laps)
+    return max(floor, 1.0 - (qp - 10) * slope)
 
 
 def _expected_finish_pts(pos):
@@ -538,20 +580,17 @@ def compute_projections(
                 total_fw = sum(fl_signal_weights)
                 fl_score = sum(s * w for s, w in zip(fl_signals, fl_signal_weights)) / total_fw
 
-        # Qualifying start-position multiplier on dominator score. GENTLE: a
-        # deep starter with elite laps-led history (Byron at Charlotte) should
-        # still project as a top lap-leader — start barely predicts who
-        # dominates a 400-lap race. Mild upside for the front row, a soft floor
-        # (0.85) for the back so history/pace carry the projection. (Was 1.15→
-        # 0.70, which buried deep-starting dominators.)
+        # Start-position multiplier on the dominator score — TRACK-TYPE AWARE
+        # (see _dom_start_multiplier). A deep start is nearly a death penalty
+        # for leading laps at short tracks, barely matters at superspeedways,
+        # and is a gentle dampener at intermediates/road courses (softened
+        # further for long races like the Charlotte 600). This keeps a deep-
+        # starting track ace a real lap-leader threat at a long intermediate
+        # while correctly burying one at a short track. Pairs with the soft-
+        # rank allocator so the resulting laps are also stable to small weight
+        # changes.
         if qp and qp <= field_size and dom_score > 0:
-            if qp <= 3:
-                start_mult = 1.08 - (qp - 1) * 0.02      # 1.08 / 1.06 / 1.04
-            elif qp <= 10:
-                start_mult = 1.0
-            else:
-                start_mult = max(0.85, 1.0 - (qp - 10) * 0.0075)
-            dom_score = dom_score * start_mult
+            dom_score = dom_score * _dom_start_multiplier(qp, race_laps, track_type)
 
         dom_raw_scores[d] = dom_score
         fl_raw_scores[d] = fl_score

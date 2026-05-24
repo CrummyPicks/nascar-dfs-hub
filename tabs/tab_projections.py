@@ -15,6 +15,7 @@ import numpy as np
 import streamlit as st
 import sqlite3
 import os
+import math
 
 from src.config import (
     DEFAULT_PROJECTION_WEIGHTS, DB_PATH, TRACK_TYPE_MAP,
@@ -333,6 +334,84 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
     return defaults
 
 
+# ── Soft-rank smoothing of the empirical by-rank curves ──────────────────────
+# The empirical laps-led / fastest-laps curves describe the SHAPE of a typical
+# race (the leader takes ~46% of laps at Charlotte, steep dropoff). The old
+# mapping assigned that shape by HARD rank — driver_k gets curve[k] — which is a
+# step function of the dominator score: a razor-thin score change flips a driver
+# between adjacent rungs, and because the laps-led curve is steep that swung
+# drivers like Byron between 87 and 18 projected laps on a tiny weight-slider
+# change. `_soft_rank_shares` replaces the hard rank with an EXPECTED (soft)
+# rank so the allocation is continuous in the scores: near-tied contenders SHARE
+# the dominator laps instead of one taking the whole top rung, while a clear
+# runaway favorite still collapses to the full leader share.
+_LL_SOFT_TAU = 5.0       # logistic temperature for laps led (0-100 score units)
+_FL_SOFT_TAU = 7.0       # fastest laps spread wider, so smooth a touch softer
+_LL_SOFT_TOPK = 14       # only realistic leaders compete for laps-led shares
+_FL_SOFT_TOPK = 28       # fastest laps legitimately reach far more drivers
+
+
+def _interp_curve(curve: list, x: float) -> float:
+    """Linear interpolation of `curve` (indexed 0,1,2,...) at fractional x."""
+    if not curve:
+        return 0.0
+    if x <= 0:
+        return curve[0]
+    if x >= len(curve) - 1:
+        return curve[-1]
+    lo = int(math.floor(x))
+    frac = x - lo
+    return curve[lo] * (1.0 - frac) + curve[lo + 1] * frac
+
+
+def _soft_rank_shares(scores: dict, dist: list, tau: float, top_k: int) -> dict:
+    """Map dominator scores onto an empirical by-rank share curve via EXPECTED
+    ranks (Bradley-Terry), instead of snapping each driver to one hard rung.
+
+    For each contender i, the expected rank is the expected number of drivers
+    who outrank it:  E[rank_i] = Σ_j σ((s_j - s_i)/τ).  The empirical curve is
+    then read at that fractional rank by interpolation. Properties:
+      • Continuous in the scores → no step jumps; a small weight change moves a
+        driver's laps smoothly instead of flipping 87 ↔ 18.
+      • Separated limit (clear favorite, big score gap) → E[rank] → integer
+        rank → recovers the exact hard-rank curve (leader still gets ~46%).
+      • Tie limit (cluster of equal dominators) → they SHARE the top rungs
+        evenly rather than one winning all the laps on a hair-thin edge.
+
+    Scores are normalized so the field leader = 100, making τ a stable unit
+    regardless of track / weight scale. Only the top_k by score compete (laps
+    led realistically go to a handful of cars; restricting the pool also stops
+    a long tail of backmarkers from inflating every contender's expected rank).
+    Shares are renormalized to the curve's total mass so all laps stay allocated.
+    """
+    items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    out = {d: 0.0 for d, _ in items}
+    if not items or not dist:
+        return out
+    smax = items[0][1]
+    if smax <= 0:
+        return out
+    k = min(len(items), max(1, top_k))
+    top = [(d, 100.0 * max(0.0, s) / smax) for d, s in items[:k]]
+    curve = list(dist) + [0.0] * max(0, k - len(dist))
+
+    raw = {}
+    for d_i, ns_i in top:
+        er = 0.0
+        for d_j, ns_j in top:
+            if d_j == d_i:
+                continue
+            er += 1.0 / (1.0 + math.exp(-(ns_j - ns_i) / tau))
+        raw[d_i] = max(0.0, _interp_curve(curve, er))
+
+    target = sum(dist)
+    tot = sum(raw.values())
+    if tot > 0:
+        for d, v in raw.items():
+            out[d] = v * target / tot
+    return out
+
+
 def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
                         track_type: str, calibration: dict = None,
                         odds_display: dict = None) -> dict:
@@ -359,9 +438,9 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     # spread laps too evenly (top ~60 across ~11 drivers). ──
     ll_dist = cal.get("ll_rank_distribution")
     if ll_dist:
-        sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
-        return {d: race_laps * (ll_dist[rank] if rank < len(ll_dist) else 0.0)
-                for rank, (d, _score) in enumerate(sorted_drivers)}
+        shares = _soft_rank_shares(driver_scores, ll_dist,
+                                   tau=_LL_SOFT_TAU, top_k=_LL_SOFT_TOPK)
+        return {d: race_laps * frac for d, frac in shares.items()}
 
     # ── Fallback path (no historical LL shape for this track/type): parametric
     # power-curve concentration. ──
@@ -439,12 +518,9 @@ def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
     # at Charlotte vs the real 59/40/31 shape). ──
     fl_dist = cal.get("fl_rank_distribution")
     if fl_dist:
-        sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
-        result = {}
-        for rank, (d, _score) in enumerate(sorted_drivers):
-            frac = fl_dist[rank] if rank < len(fl_dist) else 0.0
-            result[d] = race_laps * frac
-        return result
+        shares = _soft_rank_shares(driver_fl_scores, fl_dist,
+                                   tau=_FL_SOFT_TAU, top_k=_FL_SOFT_TOPK)
+        return {d: race_laps * frac for d, frac in shares.items()}
 
     # ── Fallback path (no historical FL data for this track or track type):
     # parametric exponent-based concentration. ──

@@ -2,15 +2,15 @@
   "A Elite1": {
     "diff_pts": 1,
     "fast_laps": 100,
-    "laps_led": 165,
-    "proj_dk": 132.2,
+    "laps_led": 166,
+    "proj_dk": 132.5,
     "proj_finish": 1
   },
   "A Elite2": {
     "diff_pts": 2,
     "fast_laps": 100,
-    "laps_led": 113,
-    "proj_dk": 117.2,
+    "laps_led": 112,
+    "proj_dk": 117.0,
     "proj_finish": 2
   },
   "A Elite3": {
