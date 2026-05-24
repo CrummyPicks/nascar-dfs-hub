@@ -424,23 +424,27 @@ def compute_projections(
             dom_signals = []
             dom_weights_list = []
 
-            # Track history laps led
+            # Track history laps led — credit ONLY when the driver actually
+            # has laps-led history at this track. NO floor: a driver who has
+            # never led a lap here gets zero dominator credit from this signal.
+            # The old 5.0 floor (≈ "led 5% of the leader's laps") was a
+            # backmarker's entire dominator score, propping zero-history cars
+            # up into the top-N lap-leader allocation — e.g. a P37 car (Katherine
+            # Legge, +250000, 0 career laps led at the type) projected to lead
+            # 10+ laps. Skipping the signal lets the laps-led allocation route
+            # any leftover leader slots to good-ODDS contenders instead.
             if th and th.get("races", 0) >= 1 and th.get("laps_led", 0) > 0:
                 ll_per_race = th["laps_led"] / th["races"]
                 ll_norm = min(100, (ll_per_race / max(ll_ref, 1)) * 100)
                 dom_signals.append(ll_norm)
-            else:
-                dom_signals.append(5.0)
-            dom_weights_list.append(wn.get("track", 0.20))
+                dom_weights_list.append(wn.get("track", 0.20))
 
-            # Track type laps led
+            # Track type laps led — same rule: credit only with real history.
             if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
                 tt_ll = tt["laps_led_per_race"]
                 tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
                 dom_signals.append(tt_ll_norm)
-            else:
-                dom_signals.append(5.0)
-            dom_weights_list.append(wn.get("track_type", 0.15))
+                dom_weights_list.append(wn.get("track_type", 0.15))
 
             # Qualifying
             if qp and qp <= field_size and wn.get("qual", 0) > 0:
@@ -448,12 +452,19 @@ def compute_projections(
                 dom_signals.append(qual_dom)
                 dom_weights_list.append(wn.get("qual", 0.15))
 
-            # Odds (implied probability)
+            # Odds → leading laps correlates with WIN probability, not expected
+            # finish. Use implied win % directly. CRITICAL: impl_pct legitimately
+            # rounds to 0.0 for longshots, so test `is not None`, NOT truthiness.
+            # The old truthy check sent every longshot into the odds_finish
+            # fallback below, and since odds_finish is compressed toward mid-
+            # field (worst anchor ~0.58*field), that handed +250000 longshots
+            # ~34% dominator credit — the P37 car projected to lead 10+ laps.
             if od and wn.get("odds", 0) > 0:
                 odds_info = odds_display.get(d) if odds_display else None
-                if odds_info and odds_info.get("impl_pct"):
+                impl = odds_info.get("impl_pct") if odds_info else None
+                if impl is not None:
                     max_impl = max((v.get("impl_pct", 0) for v in odds_display.values()), default=1)
-                    odds_dom = min(100, (odds_info["impl_pct"] / max(max_impl, 1)) * 100)
+                    odds_dom = min(100, (impl / max(max_impl, 1)) * 100)
                 else:
                     odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
                 dom_signals.append(odds_dom)
@@ -493,11 +504,16 @@ def compute_projections(
                 fl_signals.append(prac_fl)
                 fl_signal_weights.append(wn.get("practice", 0.10))
 
+            # Same win-probability fix as the dominator odds signal: use
+            # impl_pct via `is not None` so longshots (impl rounds to 0.0)
+            # don't fall into the compressed-odds_finish fallback and get
+            # spurious fast-lap credit.
             if od and wn.get("odds", 0) > 0:
                 odds_info = odds_display.get(d) if odds_display else None
-                if odds_info and odds_info.get("impl_pct"):
+                impl = odds_info.get("impl_pct") if odds_info else None
+                if impl is not None:
                     max_impl = max((v.get("impl_pct", 0) for v in odds_display.values()), default=1)
-                    odds_fl = min(100, (odds_info["impl_pct"] / max(max_impl, 1)) * 100)
+                    odds_fl = min(100, (impl / max(max_impl, 1)) * 100)
                 else:
                     odds_fl = max(0, (field_size + 1 - od) / field_size) * 100
                 fl_signals.append(odds_fl)

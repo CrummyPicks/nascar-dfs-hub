@@ -77,10 +77,12 @@ def load_race(conn, race_id, series_id, track_name, race_date):
         "WHERE o.race_id=? AND o.win_odds IS NOT NULL", (race_id,)).fetchall()
         if n in start_pos}
 
-    # Odds -> implied finish (mirror tab_projections anchors)
+    # Odds -> implied finish (mirror tab_projections anchors) + implied-win %
+    # display (drives the dominator/FL odds signal, like the live app).
     odds_finish = {}
     probs = {n: (100/(o+100) if o > 0 else abs(o)/(abs(o)+100))
              for n, o in odds_data.items()}
+    odds_display = {n: {"impl_pct": round(p*100, 1)} for n, p in probs.items()}
     if probs:
         best, worst = max(2.0, field_size*0.13), field_size*0.58
         ranked = sorted(probs.items(), key=lambda x: x[1], reverse=True)
@@ -124,9 +126,9 @@ def load_race(conn, race_id, series_id, track_name, race_date):
 
     return dict(drivers=drivers, field_size=field_size, track_name=track_name,
                 track_type=track_type, parent=parent, series_id=series_id,
-                qual_pos=start_pos, odds_finish=odds_finish, th_data=th_data,
-                tt_data=tt_data, team_signal=team_signal, team_adj=team_adj,
-                actual_dk=actual_dk, start_pos=start_pos)
+                qual_pos=start_pos, odds_finish=odds_finish, odds_display=odds_display,
+                th_data=th_data, tt_data=tt_data, team_signal=team_signal,
+                team_adj=team_adj, actual_dk=actual_dk, start_pos=start_pos)
 
 
 def normalize_weights(raw, has_odds=True, has_prac=False):
@@ -146,7 +148,7 @@ def project_race(race, raw_weights):
     rows, _, _ = compute_projections(
         return_signal_details=True, drivers=race["drivers"], field_size=race["field_size"],
         wn=wn, th_data=race["th_data"], tt_data=race["tt_data"], qual_pos=race["qual_pos"],
-        practice_data={}, odds_finish=race["odds_finish"], odds_display={},
+        practice_data={}, odds_finish=race["odds_finish"], odds_display=race["odds_display"],
         team_signal=race["team_signal"], mfr_adjustment={}, team_adj_data=race["team_adj"],
         dnf_data={}, race_laps=200, track_name=race["track_name"], track_type=race["track_type"],
         series_id=race["series_id"], calibration={}, cross_th_lookup={})
