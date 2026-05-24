@@ -191,8 +191,37 @@ def _get_race_year(race):
 
 
 def _load_actual_results(race, series_id):
-    """Load actual race results for a completed race."""
-    rc_id = race.get("race_id")
+    """Load actual race results for a completed race.
+
+    DB-FIRST: historical accuracy comparison must not depend on the live
+    NASCAR API. The API path (fetch_weekend_feed) is fragile — a single
+    transient failure gets cached by Streamlit and breaks the whole Accuracy
+    tab ("Could not generate projections — race results may not be
+    available") even for races whose results are already in the DB. So for any
+    race already stored we build actuals straight from race_results (keyed by
+    driver_id — no name matching, ARP/fast-laps already backfilled). The live
+    API is only a fallback for races not yet persisted.
+    """
+    rc_id = race.get("race_id")  # NASCAR API race id
+
+    # ── DB-first ──────────────────────────────────────────────────────────
+    if rc_id:
+        try:
+            from tabs.tab_projections import _resolve_db_race_id
+            from src.data import query_race_field_results
+            db_id = _resolve_db_race_id(rc_id, series_id)
+            if db_id:
+                data = query_race_field_results(db_id)
+                if data and data.get("rows"):
+                    return pd.DataFrame(data["rows"]).rename(columns={
+                        "Finish": "Finish Position",
+                        "Fast Laps": "Fastest Laps",
+                        "Mfr": "Manufacturer",
+                    })
+        except Exception:
+            pass  # fall through to the live API
+
+    # ── Fallback: live API (race not yet stored in the DB) ────────────────
     yr = _get_race_year(race)
     rc_feed = fetch_weekend_feed(series_id, rc_id, yr)
     rc_laps = fetch_lap_times(series_id, rc_id, yr)
