@@ -19,8 +19,20 @@ import os
 from src.config import (
     DEFAULT_PROJECTION_WEIGHTS, DB_PATH, TRACK_TYPE_MAP,
     TRACK_TYPE_PARENT, DK_FINISH_POINTS, TRACK_TYPE_WEIGHT_DEFAULTS,
-    CROSS_SERIES_HIERARCHY,
+    CROSS_SERIES_HIERARCHY, PROJECTION_RECENCY_DECAY_STEP,
 )
+
+
+def _recency_weight_sql(rank_col: str = "rn") -> str:
+    """SQL fragment: per-race recency weight given a newest-first rank column.
+
+    weight = MAX(0, 1 - (rank-1)*DECAY_STEP). Must be used inside a query that
+    supplies `rank_col` via ROW_NUMBER() OVER (PARTITION BY driver/team
+    ORDER BY race_date DESC), so the most recent races dominate the aggregate
+    and a hot recent streak isn't drowned by the volume of older races.
+    Shared by track history, track-type form, and team quality.
+    """
+    return f"MAX(0.0, 1.0 - ({rank_col} - 1) * {PROJECTION_RECENCY_DECAY_STEP})"
 from src.data import (
     scrape_track_history, query_driver_dk_points_at_track,
     query_driver_career_dnf, query_team_stats, query_manufacturer_stats,
@@ -712,10 +724,12 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
         cross_series_ids: list of higher-series IDs for cross-series blending.
             When provided, returns a tuple (current_df, cross_df).
             When None, returns just current_df.
-        trim_worst: when True, each driver's WORST finish is excluded from
-            the aggregates (provided they have 4+ races at this track).
-            Used at superspeedways where one unavoidable pileup shouldn't
-            poison a driver's pace-reflective avg.
+        trim_worst: superspeedway flag. When True, crash/mechanical DNFs are
+            KEPT in the finish average (wrecks at supers are frequent and
+            partly a driver skill, so excluding them overstates pace). When
+            False, DNFs are excluded from the finish average (their bad finish
+            is luck; crash rate is priced separately by the DNF penalty).
+            Aggregates are recency-weighted by race order either way.
     """
     if not os.path.exists(PROJ_DB):
         return (pd.DataFrame(), pd.DataFrame()) if cross_series_ids else pd.DataFrame()
@@ -735,90 +749,56 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
             where += " AND r.race_date < ?"
             params.append(before_date)
 
-        # Accident-aware Avg Finish: exclude crash/mechanical-DNF races from
-        # the finish average (a driver running P10 who gets wrecked to P36 had
-        # P10 *pace* — the finish is bad luck, and crash frequency is already
-        # priced separately by the DNF-risk penalty, so counting the P36 here
-        # too would double-count it). Avg Run Pos still spans ALL races since
-        # running position reflects the pace they were actually showing.
-        # Falls back to the raw average when a driver's only races were DNFs.
-        #
-        # Superspeedways are the exception (trim_worst=True): wrecks there are
-        # frequent and partly a driver skill (avoiding the Big One), so fully
-        # excluding them overstates pace. Supers keep the raw average and lean
-        # on the separate "drop the single worst finish" trim below instead.
-        _clean = "LOWER(COALESCE(rr.status,'running')) IN ('running','')"
+        # Recency by RACE ORDER: rank each driver's races newest-first and
+        # weight w = max(0, 1-(rn-1)*STEP) so the last ~10-14 races dominate
+        # (current form isn't drowned by the volume of older races).
+        w = _recency_weight_sql("rn")
+        # Accident-aware finish average: exclude crash/mechanical-DNF races
+        # (the bad finish is luck; crash rate is priced by the DNF penalty),
+        # raw fallback when every race was a DNF. Avg Run Pos keeps ALL races
+        # (running position reflects the pace shown). Superspeedways
+        # (trim_worst) keep DNFs in the finish average.
+        _clean = "LOWER(COALESCE(status,'running')) IN ('running','')"
         if trim_worst:
-            avg_finish_sql = "ROUND(AVG(rr.finish_pos), 1)"
+            finish_num, finish_den = f"SUM(finish_pos*{w})", f"SUM({w})"
         else:
-            avg_finish_sql = (f"ROUND(COALESCE("
-                              f"AVG(CASE WHEN {_clean} THEN rr.finish_pos END), "
-                              f"AVG(rr.finish_pos)), 1)")
+            finish_num = f"SUM(CASE WHEN {_clean} THEN finish_pos*{w} END)"
+            finish_den = f"SUM(CASE WHEN {_clean} THEN {w} END)"
 
-        # Base aggregate query (always used)
-        base_query = f'''
-            SELECT d.full_name as Driver,
+        query = f'''
+            WITH ranked AS (
+                SELECT d.id AS did, d.full_name AS Driver,
+                       rr.finish_pos, rr.start_pos, rr.laps_led, rr.fastest_laps,
+                       rr.avg_running_position AS arp, rr.status,
+                       ROW_NUMBER() OVER (PARTITION BY d.id
+                                          ORDER BY r.race_date DESC, r.id DESC) AS rn
+                FROM race_results rr
+                JOIN drivers d ON d.id = rr.driver_id
+                JOIN races r ON r.id = rr.race_id
+                JOIN tracks t ON t.id = r.track_id
+                {where}
+            )
+            SELECT Driver,
                    COUNT(*) as Races,
-                   {avg_finish_sql} as "Avg Finish",
-                   ROUND(AVG(rr.start_pos), 1) as "Avg Start",
-                   SUM(rr.laps_led) as "Laps Led",
-                   SUM(rr.fastest_laps) as "Fastest Laps",
-                   ROUND(AVG(rr.avg_running_position), 1) as "Avg Run Pos",
-                   SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
-                   SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
-                   SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
-                   SUM(CASE WHEN LOWER(rr.status) NOT IN ('running','') THEN 1 ELSE 0 END) as DNF
-            FROM race_results rr
-            JOIN drivers d ON d.id = rr.driver_id
-            JOIN races r ON r.id = rr.race_id
-            JOIN tracks t ON t.id = r.track_id
-            {where}
-            GROUP BY d.id
+                   ROUND(COALESCE({finish_num}/NULLIF({finish_den},0), AVG(finish_pos)), 1) as "Avg Finish",
+                   ROUND(AVG(start_pos), 1) as "Avg Start",
+                   SUM(laps_led) as "Laps Led",
+                   SUM(fastest_laps) as "Fastest Laps",
+                   ROUND(SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
+                         NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0), 1) as "Avg Run Pos",
+                   SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
+                   SUM(CASE WHEN finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
+                   SUM(CASE WHEN finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+                   SUM(CASE WHEN LOWER(COALESCE(status,'running')) NOT IN ('running','')
+                        THEN 1 ELSE 0 END) as DNF
+            FROM ranked
+            GROUP BY did
             HAVING COUNT(*) >= 1
         '''
         try:
-            df = pd.read_sql_query(base_query, conn, params=params)
+            return pd.read_sql_query(query, conn, params=params)
         except Exception:
             return pd.DataFrame()
-
-        # Optional trimmed-mean pass: for drivers with 4+ races, recompute
-        # Avg Finish and Avg Run Pos excluding their worst finish at this track.
-        # This is the "drop one unavoidable wreck" adjustment for supers.
-        if trim_worst and not df.empty:
-            trim_query = f'''
-                WITH ranked AS (
-                    SELECT d.id as did, d.full_name as Driver,
-                           rr.finish_pos, rr.avg_running_position,
-                           ROW_NUMBER() OVER (PARTITION BY d.id ORDER BY rr.finish_pos DESC, rr.id) as rn,
-                           COUNT(*) OVER (PARTITION BY d.id) as n
-                    FROM race_results rr
-                    JOIN drivers d ON d.id = rr.driver_id
-                    JOIN races r ON r.id = rr.race_id
-                    JOIN tracks t ON t.id = r.track_id
-                    {where}
-                )
-                SELECT did, Driver,
-                       ROUND(AVG(finish_pos), 1) as trimmed_finish,
-                       ROUND(AVG(avg_running_position), 1) as trimmed_arp
-                FROM ranked
-                WHERE (n >= 4 AND rn > 1) OR n < 4
-                GROUP BY did
-            '''
-            try:
-                tdf = pd.read_sql_query(trim_query, conn, params=params)
-                # Replace Avg Finish / Avg Run Pos with trimmed versions for
-                # drivers with 4+ races (where trimming actually happened)
-                base_idx = df.set_index("Driver")
-                for _, trow in tdf.iterrows():
-                    drv = trow["Driver"]
-                    if drv in base_idx.index and base_idx.loc[drv, "Races"] >= 4:
-                        df.loc[df["Driver"] == drv, "Avg Finish"] = trow["trimmed_finish"]
-                        if pd.notna(trow.get("trimmed_arp")):
-                            df.loc[df["Driver"] == drv, "Avg Run Pos"] = trow["trimmed_arp"]
-            except Exception:
-                # If the trim query fails, just use the un-trimmed aggregate
-                pass
-        return df
 
     conn = sqlite3.connect(PROJ_DB)
     current_df = _run_query(conn, [series_id])
@@ -871,31 +851,42 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
             where_extra += " AND r.race_date < ?"
             params.append(before_date)
 
-        # Accident-aware avg_finish (see _query_db_track_history): exclude
-        # crash/mechanical-DNF races from the finish average, keep avg running
-        # position over all races, raw fallback when every race was a DNF.
-        # Superspeedways keep the raw average (wrecks are frequent/skill-based).
+        # Recency by RACE ORDER (see _query_db_track_history): rank each
+        # driver's track-type races newest-first; weight w=max(0,1-(rn-1)*STEP)
+        # so recent form dominates the volume of older races. Accident-aware
+        # finish average (exclude crash/mechanical DNFs, raw fallback); ARP
+        # keeps all races; superspeedways keep DNFs in the finish average.
+        w = _recency_weight_sql("rn")
         if parent == "superspeedway":
-            avg_finish_sql = "AVG(rr.finish_pos)"
+            fnum, fden = f"SUM(finish_pos*{w})", f"SUM({w})"
         else:
-            _clean = "LOWER(COALESCE(rr.status,'running')) IN ('running','')"
-            avg_finish_sql = (f"COALESCE(AVG(CASE WHEN {_clean} "
-                              f"THEN rr.finish_pos END), AVG(rr.finish_pos))")
+            _clean = "LOWER(COALESCE(status,'running')) IN ('running','')"
+            fnum = f"SUM(CASE WHEN {_clean} THEN finish_pos*{w} END)"
+            fden = f"SUM(CASE WHEN {_clean} THEN {w} END)"
 
         query = f'''
-            SELECT d.full_name,
+            WITH ranked AS (
+                SELECT d.id AS did, d.full_name AS name,
+                       rr.finish_pos, rr.avg_running_position AS arp,
+                       rr.laps_led, rr.status,
+                       ROW_NUMBER() OVER (PARTITION BY d.id
+                                          ORDER BY r.race_date DESC, r.id DESC) AS rn
+                FROM race_results rr
+                JOIN drivers d ON d.id = rr.driver_id
+                JOIN races r ON r.id = rr.race_id
+                JOIN tracks t ON t.id = r.track_id
+                WHERE t.name IN ({placeholders_t})
+                  {series_clause}
+                  {where_extra}
+            )
+            SELECT name,
                    COUNT(*) as races,
-                   {avg_finish_sql} as avg_finish,
-                   AVG(rr.avg_running_position) as avg_running_pos,
-                   SUM(rr.laps_led) as total_laps_led
-            FROM race_results rr
-            JOIN drivers d ON d.id = rr.driver_id
-            JOIN races r ON r.id = rr.race_id
-            JOIN tracks t ON t.id = r.track_id
-            WHERE t.name IN ({placeholders_t})
-              {series_clause}
-              {where_extra}
-            GROUP BY d.id
+                   COALESCE({fnum}/NULLIF({fden},0), AVG(finish_pos)) as avg_finish,
+                   SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
+                     NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0) as avg_running_pos,
+                   SUM(laps_led) as total_laps_led
+            FROM ranked
+            GROUP BY did
         '''
         rows = conn.execute(query, params).fetchall()
         result = {}

@@ -115,6 +115,16 @@ def compute_projections(
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
             tt_avg = arp_finish_blend(tt_arp, tt_af, track_type)
+            # Apply the SAME team-change adjustment used for track history:
+            # a driver's track-type form was also earned in past equipment, so
+            # moving to a better/worse team should shift it too (their team
+            # progression is the same across tracks of a type). Previously only
+            # the single-track signal got this, so a team-changer's broader
+            # track-type form was left un-adjusted.
+            tt_adj = team_adj_data.get(d) if team_adj_data else None
+            if tt_adj and tt_adj.get("team_adj", 0) != 0:
+                tt_avg = tt_avg + tt_adj["team_adj"]
+                extras.setdefault("Team Adj", round(tt_adj["team_adj"], 1))
             tt_regressed = tt_avg * tt_trust + mid_field * (1 - tt_trust)
             sigs["ttype"] = tt_regressed
             sig_w["ttype"] = tt_weight

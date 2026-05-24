@@ -1713,12 +1713,27 @@ def query_track_type_stats(track_type: str, season: int = None,
         return pd.DataFrame()
 
 
+def _recency_weight_sql(rank_col: str = "rn") -> str:
+    """Per-race recency weight SQL fragment, by RACE ORDER (newest-first rank).
+
+    Mirrors tabs.tab_projections._recency_weight_sql; both read the same
+    PROJECTION_RECENCY_DECAY_STEP config so the decay stays single-sourced.
+    weight = MAX(0, 1 - (rank-1)*STEP). Must be used inside a query that
+    supplies `rank_col` via ROW_NUMBER() OVER (PARTITION BY team
+    ORDER BY race_date DESC), so a team's current form drives its quality.
+    """
+    from src.config import PROJECTION_RECENCY_DECAY_STEP
+    return f"MAX(0.0, 1.0 - ({rank_col} - 1) * {PROJECTION_RECENCY_DECAY_STEP})"
+
+
 def query_team_stats(series_id: int, track_type: str = None,
                      min_season: int = 2022, before_date: str = None) -> dict:
     """Query team performance stats from race_results.
 
     Returns {team_name: {"avg_finish": X, "avg_arp": Y, "races": N}}.
     Optionally filtered by track type for track-type-specific team quality.
+    Averages are recency-weighted so a team's CURRENT-season form (e.g. a
+    hot new team) drives its quality rather than a flat multi-year average.
     """
     if not DB_PATH.exists():
         return {}
@@ -1743,17 +1758,25 @@ def query_team_stats(series_id: int, track_type: str = None,
         track_filter += " AND r.race_date < ?"
         params.append(before_date)
 
+    w = _recency_weight_sql("rn")
     query = f'''
-        SELECT rr.team, COUNT(*) as races,
-               ROUND(AVG(rr.finish_pos), 1) as avg_finish,
-               ROUND(AVG(rr.avg_running_position), 1) as avg_arp
-        FROM race_results rr
-        JOIN races r ON r.id = rr.race_id
-        JOIN tracks t ON t.id = r.track_id
-        WHERE r.series_id = ? AND r.season >= ?
-          AND rr.team IS NOT NULL AND rr.team != ''
-          {track_filter}
-        GROUP BY rr.team
+        WITH ranked AS (
+            SELECT rr.team, rr.finish_pos, rr.avg_running_position AS arp,
+                   ROW_NUMBER() OVER (PARTITION BY rr.team
+                                      ORDER BY r.race_date DESC, r.id DESC) AS rn
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE r.series_id = ? AND r.season >= ?
+              AND rr.team IS NOT NULL AND rr.team != ''
+              {track_filter}
+        )
+        SELECT team, COUNT(*) as races,
+               ROUND(SUM(finish_pos*{w})/NULLIF(SUM({w}),0), 1) as avg_finish,
+               ROUND(SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
+                     NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0), 1) as avg_arp
+        FROM ranked
+        GROUP BY team
         HAVING races >= 3
         ORDER BY avg_finish
     '''
@@ -1786,15 +1809,23 @@ def query_team_quality_lookup(series_id: int, min_season: int = 2022,
         date_filter = "AND r.race_date < ?"
         params.append(before_date)
 
+    w = _recency_weight_sql("rn")
     query = f'''
-        SELECT rr.team, ROUND(AVG(rr.finish_pos), 2) as avg_finish,
+        WITH ranked AS (
+            SELECT rr.team, rr.finish_pos,
+                   ROW_NUMBER() OVER (PARTITION BY rr.team
+                                      ORDER BY r.race_date DESC, r.id DESC) AS rn
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            WHERE r.series_id = ? AND r.season >= ?
+              AND rr.team IS NOT NULL AND rr.team != ''
+              {date_filter}
+        )
+        SELECT team,
+               ROUND(SUM(finish_pos*{w})/NULLIF(SUM({w}),0), 2) as avg_finish,
                COUNT(*) as entries
-        FROM race_results rr
-        JOIN races r ON r.id = rr.race_id
-        WHERE r.series_id = ? AND r.season >= ?
-          AND rr.team IS NOT NULL AND rr.team != ''
-          {date_filter}
-        GROUP BY rr.team
+        FROM ranked
+        GROUP BY team
         HAVING entries >= 20
         ORDER BY avg_finish
     '''

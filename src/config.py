@@ -243,6 +243,23 @@ EXHIBITION_KEYWORDS = ["clash", "duel", "exhibition", "open"]
 # ----------------------------
 # PROJECTION DEFAULTS
 # ----------------------------
+# Recency weighting for historical signals — by RACE ORDER, not season.
+# Each driver's (or team's) races are ranked newest-first and weighted
+# w = max(0, 1 - (rank-1)*DECAY_STEP). At STEP=0.07 the most recent race gets
+# full weight and weight tapers linearly to zero by ~the 15th-oldest race, so
+# roughly the last ~10-14 races carry the signal and CURRENT form dominates a
+# stale multi-year average — without a hard season cutoff.
+#
+# Why race-order, not season-linear: a hot 3-race streak is drowned by the
+# VOLUME of older races under any season weighting (a driver with 36 races
+# has too many old ones). Decaying by race ORDER makes the most recent races
+# dominate regardless of how many old races exist. This is the lever that
+# actually moves a driver's projected FINISH (a rank), because it selectively
+# lifts the recently-good drivers rather than shifting the whole field.
+# The 2022 Next-Gen floor still bounds the data. Set STEP=0 to disable
+# (weight all races equally).
+PROJECTION_RECENCY_DECAY_STEP = 0.07
+
 DEFAULT_PROJECTION_WEIGHTS = {
     "odds": 0.30,
     "track_history": 0.30,
