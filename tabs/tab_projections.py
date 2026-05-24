@@ -199,41 +199,47 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             out["avg_n_fl_leaders"] = float(np.mean(n_fl_list))
         return out
 
-    def _fl_curve(conn, where_sql, where_params):
-        """Empirical fastest-laps-by-rank distribution from history.
+    def _rank_curve(conn, where_sql, where_params, value_col):
+        """Empirical {value_col}-by-rank distribution from history.
 
-        For each race matching the filter, sort drivers by fastest_laps
-        descending and record each rank's fractional share of that race's
-        total FL. Average the fractions across races, normalize to sum to 1.
-        Returns a list [frac_rank1, frac_rank2, ...] or None if too few races.
+        For each race matching the filter, sort drivers by `value_col`
+        (fastest_laps OR laps_led) descending and record each rank's
+        fractional share of that race's total. Average the fractions across
+        races, normalize to sum to 1. Returns [frac_rank1, frac_rank2, ...]
+        or None if too few races.
 
         Using FRACTIONS (not absolute counts) makes the shape robust to
-        differing race lengths / caution-shortened FL totals between years.
-        Only races with a meaningful FL total are included so empty future
-        rows and tiny exhibition heats don't distort the curve.
+        differing race lengths / caution-shortened totals between years.
+        Only races with a meaningful total are included so empty future rows
+        and tiny exhibition heats don't distort the curve.
+
+        Critically for LAPS LED: real intermediate races concentrate laps on
+        one dominator (~46% to the leader, steep dropoff), so the empirical
+        curve reproduces that shape instead of the old parametric power curve,
+        which spread laps too evenly across the field.
         """
         rows = conn.execute(f'''
-            SELECT r.id, rr.fastest_laps
+            SELECT r.id, rr.{value_col}
             FROM race_results rr
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
-            WHERE {where_sql} AND rr.fastest_laps IS NOT NULL
-            ORDER BY r.id, rr.fastest_laps DESC
+            WHERE {where_sql} AND rr.{value_col} IS NOT NULL
+            ORDER BY r.id, rr.{value_col} DESC
         ''', where_params).fetchall()
         if not rows:
             return None
         per_race = {}
-        for rid, fl in rows:
-            per_race.setdefault(rid, []).append(fl or 0)
+        for rid, v in rows:
+            per_race.setdefault(rid, []).append(v or 0)
         rank_fracs = {}
         n_races = 0
-        for rid, fls in per_race.items():
-            total = sum(fls)
-            if total < 30:   # skip races with negligible FL data (future/heats)
+        for rid, vals in per_race.items():
+            total = sum(vals)
+            if total < 30:   # skip races with negligible data (future/heats)
                 continue
             n_races += 1
-            for rank, fl in enumerate(fls):
-                rank_fracs.setdefault(rank, []).append(fl / total)
+            for rank, v in enumerate(vals):
+                rank_fracs.setdefault(rank, []).append(v / total)
         if n_races < 2:
             return None
         # Average the fraction at each rank, then normalize to sum to 1.0
@@ -290,15 +296,20 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             ''', list(family_tracks) + [series_id]).fetchall()
             type_summary = _summarize(type_rows)
 
-        # Empirical FL-by-rank distribution: prefer per-track, fall back to
-        # track-type-for-series. Stored on the calibration so the allocator
-        # can map projected FL order onto the real historical shape.
-        fl_dist = _fl_curve(conn, f"t.name = ? {series_filter}", params)
-        if fl_dist is None and type_placeholders:
-            fl_dist = _fl_curve(conn, f"t.name IN ({type_placeholders}) AND r.series_id = ?",
-                                list(family_tracks) + [series_id])
-        if fl_dist:
-            result["fl_rank_distribution"] = fl_dist
+        # Empirical FL- and LL-by-rank distributions: prefer per-track, fall
+        # back to track-type-for-series. Stored on the calibration so the
+        # allocators map projected order onto the REAL historical shape — this
+        # is what makes laps led concentrate on the dominator (~46% to the
+        # leader at Charlotte) instead of the old too-flat power curve.
+        for _col, _key in [("fastest_laps", "fl_rank_distribution"),
+                           ("laps_led", "ll_rank_distribution")]:
+            _dist = _rank_curve(conn, f"t.name = ? {series_filter}", params, _col)
+            if _dist is None and type_placeholders:
+                _dist = _rank_curve(
+                    conn, f"t.name IN ({type_placeholders}) AND r.series_id = ?",
+                    list(family_tracks) + [series_id], _col)
+            if _dist:
+                result[_key] = _dist
 
         conn.close()
 
@@ -339,6 +350,21 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     cal = calibration or {}
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
 
+    # ── Preferred path: map our projected dominator order onto the EMPIRICAL
+    # historical laps-led-by-rank shape (same approach as fastest laps). Our
+    # model decides WHO dominates; the real historical curve decides HOW MANY
+    # laps each rank leads. This reproduces the true concentration of
+    # intermediate races — the leader takes ~46% of laps at Charlotte with a
+    # steep dropoff — instead of the parametric power curve below, which
+    # spread laps too evenly (top ~60 across ~11 drivers). ──
+    ll_dist = cal.get("ll_rank_distribution")
+    if ll_dist:
+        sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
+        return {d: race_laps * (ll_dist[rank] if rank < len(ll_dist) else 0.0)
+                for rank, (d, _score) in enumerate(sorted_drivers)}
+
+    # ── Fallback path (no historical LL shape for this track/type): parametric
+    # power-curve concentration. ──
     # Number of leaders: use historical average, fall back to track-type defaults
     FALLBACK_LEADERS = {"superspeedway": 15, "road": 8, "intermediate": 8,
                         "intermediate_worn": 7, "short": 7, "short_concrete": 6}

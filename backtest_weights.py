@@ -27,7 +27,8 @@ from src.config import (DB_PATH, CROSS_SERIES_HIERARCHY, TRACK_TYPE_MAP,
                         TRACK_TYPE_PARENT, TRACK_TYPE_WEIGHT_DEFAULTS)
 from src.utils import fuzzy_match_name, arp_finish_blend, calc_dk_points
 from src.projections import compute_projections
-from tabs.tab_projections import _query_db_track_history, _query_db_track_type_history
+from tabs.tab_projections import (_query_db_track_history, _query_db_track_type_history,
+                                   _get_track_dominator_calibration)
 from src.data import query_team_stats, compute_team_adjusted_track_history
 import pandas as pd
 
@@ -124,11 +125,14 @@ def load_race(conn, race_id, series_id, track_name, race_date):
     team_adj = compute_team_adjusted_track_history(track_name, series_id, team_map,
                                                    before_date=race_date, track_type=track_type)
 
+    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
+
     return dict(drivers=drivers, field_size=field_size, track_name=track_name,
                 track_type=track_type, parent=parent, series_id=series_id,
                 qual_pos=start_pos, odds_finish=odds_finish, odds_display=odds_display,
                 th_data=th_data, tt_data=tt_data, team_signal=team_signal,
-                team_adj=team_adj, actual_dk=actual_dk, start_pos=start_pos)
+                team_adj=team_adj, calibration=calibration,
+                actual_dk=actual_dk, start_pos=start_pos)
 
 
 def normalize_weights(raw, has_odds=True, has_prac=False):
@@ -151,7 +155,7 @@ def project_race(race, raw_weights):
         practice_data={}, odds_finish=race["odds_finish"], odds_display=race["odds_display"],
         team_signal=race["team_signal"], mfr_adjustment={}, team_adj_data=race["team_adj"],
         dnf_data={}, race_laps=200, track_name=race["track_name"], track_type=race["track_type"],
-        series_id=race["series_id"], calibration={}, cross_th_lookup={})
+        series_id=race["series_id"], calibration=race["calibration"], cross_th_lookup={})
     return {r["driver"]: r["proj_dk"] for r in rows}
 
 

@@ -433,24 +433,35 @@ def compute_projections(
             # Legge, +250000, 0 career laps led at the type) projected to lead
             # 10+ laps. Skipping the signal lets the laps-led allocation route
             # any leftover leader slots to good-ODDS contenders instead.
+            # Laps-led HISTORY is the most direct "does this driver dominate
+            # HERE" signal, so it gets a 1.5x boost in the dominator (vs its
+            # finish weight) — a track ace like Byron at Charlotte (106 laps
+            # led/race, far the field's highest) should project as a top lap
+            # leader even from a deep start, rather than being out-ranked by
+            # better-qualified / shorter-odds cars with thinner track dominance.
+            _DOM_LL_HISTORY_BOOST = 1.5
             if th and th.get("races", 0) >= 1 and th.get("laps_led", 0) > 0:
                 ll_per_race = th["laps_led"] / th["races"]
                 ll_norm = min(100, (ll_per_race / max(ll_ref, 1)) * 100)
                 dom_signals.append(ll_norm)
-                dom_weights_list.append(wn.get("track", 0.20))
+                dom_weights_list.append(wn.get("track", 0.20) * _DOM_LL_HISTORY_BOOST)
 
             # Track type laps led — same rule: credit only with real history.
             if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
                 tt_ll = tt["laps_led_per_race"]
                 tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
                 dom_signals.append(tt_ll_norm)
-                dom_weights_list.append(wn.get("track_type", 0.15))
+                dom_weights_list.append(wn.get("track_type", 0.15) * _DOM_LL_HISTORY_BOOST)
 
-            # Qualifying
+            # Qualifying — a WEAK predictor of laps led. Real dominators come
+            # from all over the grid (e.g. at Charlotte, Chastain led 153 from
+            # P22, Blaney 163 from P8), so qual gets HALF its finish weight in
+            # the dominator and the start multiplier below is gentle. Laps-led
+            # HISTORY + pace (odds) should decide who dominates — not the grid.
             if qp and qp <= field_size and wn.get("qual", 0) > 0:
                 qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 100
                 dom_signals.append(qual_dom)
-                dom_weights_list.append(wn.get("qual", 0.15))
+                dom_weights_list.append(wn.get("qual", 0.15) * 0.5)
 
             # Odds → leading laps correlates with WIN probability, not expected
             # finish. Use implied win % directly. CRITICAL: impl_pct legitimately
@@ -527,14 +538,19 @@ def compute_projections(
                 total_fw = sum(fl_signal_weights)
                 fl_score = sum(s * w for s, w in zip(fl_signals, fl_signal_weights)) / total_fw
 
-        # Qualifying start position multiplier on dominator score
+        # Qualifying start-position multiplier on dominator score. GENTLE: a
+        # deep starter with elite laps-led history (Byron at Charlotte) should
+        # still project as a top lap-leader — start barely predicts who
+        # dominates a 400-lap race. Mild upside for the front row, a soft floor
+        # (0.85) for the back so history/pace carry the projection. (Was 1.15→
+        # 0.70, which buried deep-starting dominators.)
         if qp and qp <= field_size and dom_score > 0:
             if qp <= 3:
-                start_mult = 1.15 - (qp - 1) * 0.05
+                start_mult = 1.08 - (qp - 1) * 0.02      # 1.08 / 1.06 / 1.04
             elif qp <= 10:
                 start_mult = 1.0
             else:
-                start_mult = max(0.70, 1.0 - (qp - 10) * 0.02)
+                start_mult = max(0.85, 1.0 - (qp - 10) * 0.0075)
             dom_score = dom_score * start_mult
 
         dom_raw_scores[d] = dom_score
