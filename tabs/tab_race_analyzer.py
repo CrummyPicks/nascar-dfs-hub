@@ -212,8 +212,18 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
         st.warning("No results available for this race.")
         return
 
-    results["Fastest Laps"] = results["Driver"].map(lambda d: fl.get(d, 0)).astype("Int64")
-    results["Avg Run"] = results["Driver"].map(lambda d: avg_run.get(d))
+    # Fuzzy-match fast laps / ARP from the lap data. The NASCAR lap-times feed
+    # sometimes formats a driver's name differently than the results feed
+    # (e.g. results "John H Nemechek" vs laps "John Hunter Nemechek"), so an
+    # exact dict lookup silently dropped those drivers' fast laps + Avg Run —
+    # making historical single-race views look like they were missing data.
+    # Normalize + alias matching (same as the season aggregation) resolves it.
+    fl_norm = build_norm_lookup(fl)
+    arp_norm = build_norm_lookup(avg_run)
+    results["Fastest Laps"] = results["Driver"].map(
+        lambda d: fuzzy_get(d, fl, fl_norm) or 0).astype("Int64")
+    results["Avg Run"] = results["Driver"].map(
+        lambda d: fuzzy_get(d, avg_run, arp_norm))
     results["DK Pts"] = results.apply(
         lambda r: calc_dk_points(r["Finish Position"], r["Start"],
                                  r["Laps Led"], r["Fastest Laps"]), axis=1)

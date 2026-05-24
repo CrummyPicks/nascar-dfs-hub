@@ -37,10 +37,22 @@ def _clean_api_name(name: str) -> str:
         return ""
     import unicodedata as _ud
     name = name.strip()
-    # Strip race-meta indicators
-    name = re.sub(r'^\*\s*', '', name)            # leading asterisk (rookie)
-    name = re.sub(r'\s*#$', '', name)              # trailing # (charter)
-    name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)   # trailing (i)/(R)
+    # Strip race-meta indicators. These can appear COMBINED and in any order —
+    # the lap-times feed uses e.g. "Austin Hill # (P)" and "John Hunter
+    # Nemechek(i) (P)" (charter/ineligible PLUS a trailing Playoff "(P)"). A
+    # single fixed-order pass left residue: stripping the trailing "(P)" first
+    # leaves "Austin Hill #", but the "#" rule already ran when "#" wasn't
+    # terminal — so the cleaned name kept a stray "#"/"(i)", never matched the
+    # results feed, and that driver's ARP/fast-laps silently dropped. Loop
+    # until stable so every trailing/leading indicator is removed regardless
+    # of order or combination.
+    _prev = None
+    while _prev != name:
+        _prev = name
+        name = re.sub(r'^\*\s*', '', name)            # leading asterisk (rookie)
+        name = re.sub(r'\s*#$', '', name)              # trailing # (charter)
+        name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)   # trailing (i)/(R)/(P)
+        name = name.strip()
     # Unicode fold: Suárez -> Suarez, Leguizamón -> Leguizamon
     name = _ud.normalize("NFKD", name).encode("ascii", "ignore").decode()
     # Remove all periods (A.J. -> AJ, John H. -> John H, Jr. -> Jr)
@@ -697,30 +709,36 @@ def save_arp_to_db(arp_data: dict, race_id: int) -> int:
             return 0
         db_race_id = db_race[0]
 
-        # Check if ARP already filled for this race
-        existing = conn.execute(
-            "SELECT COUNT(*) FROM race_results WHERE race_id = ? AND avg_running_position IS NOT NULL",
+        # Skip only when EVERY row already has ARP. Previously we skipped as
+        # soon as ANY row was filled, so a race where a few drivers failed to
+        # match (lap feed names a driver differently than the results feed)
+        # kept those rows NULL forever. Now we fill just the remaining NULL
+        # rows, so scattered gaps self-heal whenever the race is viewed.
+        null_count = conn.execute(
+            "SELECT COUNT(*) FROM race_results WHERE race_id = ? AND avg_running_position IS NULL",
             (db_race_id,)
         ).fetchone()[0]
-        if existing > 0:
+        if null_count == 0:
             conn.close()
-            return 0  # Already backfilled
+            return 0  # fully populated already
 
-        # Match driver names and update
+        # Match only the rows still missing ARP. Use fuzzy_get (exact →
+        # normalized/alias → component-wise fuzzy) — the SAME matching the
+        # display layer uses — so cross-feed name differences like
+        # "John H Nemechek" (results) vs "John Hunter Nemechek" (laps) resolve
+        # consistently everywhere instead of silently dropping ARP.
+        from src.utils import build_norm_lookup, fuzzy_get
         db_drivers = conn.execute(
             """SELECT rr.id, d.full_name FROM race_results rr
                JOIN drivers d ON d.id = rr.driver_id
-               WHERE rr.race_id = ?""",
+               WHERE rr.race_id = ? AND rr.avg_running_position IS NULL""",
             (db_race_id,)
         ).fetchall()
 
-        arp_norm = {normalize_driver_name(k): v for k, v in arp_data.items()}
+        arp_norm = build_norm_lookup(arp_data)
         count = 0
         for rr_id, db_name in db_drivers:
-            arp = arp_data.get(db_name)
-            if arp is None:
-                norm_key = normalize_driver_name(db_name)
-                arp = arp_norm.get(norm_key)
+            arp = fuzzy_get(db_name, arp_data, arp_norm)
             if arp is not None:
                 conn.execute(
                     "UPDATE race_results SET avg_running_position = ? WHERE id = ?",
