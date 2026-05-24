@@ -128,6 +128,13 @@ DRIVER_ALIASES = {
     "john h nemechek": "john hunter nemechek",
     "john nemechek": "john hunter nemechek",
     "jh nemechek": "john hunter nemechek",
+    # Justin S Carroll: results feed tacks on a middle "S" the lap feed drops.
+    # There is NO separate "Justin Carroll" driver record, so it's confirmed
+    # the same person — but the middle-aware matcher won't merge a
+    # middle-initial difference (correct, by rule), so alias it explicitly.
+    # (Jason M White vs Jason White are deliberately NOT aliased — confirmed
+    # different people, with separate driver records.)
+    "justin carroll": "justin s carroll",
     # Stage name / legal name variants (cannot be handled by rules)
     "cleetus mcfarland": "garrett mitchell",
     "cleetus mitchell": "garrett mitchell",
