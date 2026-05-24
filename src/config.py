@@ -284,18 +284,28 @@ DEFAULT_PROJECTION_WEIGHTS = {
 #   Short concrete (Bristol/Dover): moderate qual/TH, high position churn.
 #   Road courses: qual strong (r=0.45), track-type specialists matter, practice key.
 #   Intermediate: balanced signals.
+#
+# Conventions (enforced):
+#   - Every weight is a MULTIPLE OF 5 so the +/- controls (step 5) stay on-grid
+#     and a clean "reset to defaults" always lands on round numbers.
+#   - ODDS is capped at 25 everywhere. Win odds mostly encode where a driver
+#     STARTS / whether they'll WIN, so over-weighting them punishes
+#     back-of-pack value plays who can still finish mid-pack. History + pace
+#     carry more of the projection instead.
+#   - Each row sums to 100.
+#   - These apply across ALL series (Cup/Xfinity/Truck) — per-series tuning
+#     isn't supported by the data yet (see backtest_weights.py).
+# Per-track-type emphasis: superspeedway = draft/equipment + (capped) odds,
+# qual irrelevant; short / short_concrete = qualifying + track history;
+# road = practice + qual (specialists); intermediate = balanced, history-leaning.
+# (Team has a per-driver 0.30x-1.30x scale applied later, so a base of 10
+# becomes ~3% for a veteran and ~13% for a rookie.)
 TRACK_TYPE_WEIGHT_DEFAULTS = {
-    # Team weight lowered from 10 -> 7 uniformly; 3 points shifted to odds.
-    # Rationale: the engine applies per-driver scaling on team (0.30x for
-    # veterans with 8+ track races, 1.30x for rookies). With a base of 7%,
-    # a veteran's effective team weight is ~2%, and a rookie's is ~9%.
-    # Odds absorb the shift since they're the most reliable independent
-    # signal when team is dampened.
-    "superspeedway":  {"odds": 48, "track": 15, "ttype": 20, "prac": 5,  "team": 7, "qual": 5},
-    "short":          {"odds": 28, "track": 25, "ttype": 10, "prac": 10, "team": 7, "qual": 20},
-    "short_concrete": {"odds": 33, "track": 25, "ttype": 5,  "prac": 10, "team": 7, "qual": 20},
-    "road":           {"odds": 28, "track": 15, "ttype": 15, "prac": 20, "team": 7, "qual": 15},
-    "intermediate":   {"odds": 33, "track": 20, "ttype": 15, "prac": 10, "team": 7, "qual": 15},
+    "superspeedway":  {"odds": 25, "track": 20, "ttype": 30, "prac": 5,  "team": 15, "qual": 5},
+    "short":          {"odds": 20, "track": 25, "ttype": 10, "prac": 10, "team": 10, "qual": 25},
+    "short_concrete": {"odds": 20, "track": 30, "ttype": 5,  "prac": 10, "team": 10, "qual": 25},
+    "road":           {"odds": 20, "track": 15, "ttype": 15, "prac": 25, "team": 10, "qual": 15},
+    "intermediate":   {"odds": 20, "track": 25, "ttype": 20, "prac": 10, "team": 10, "qual": 15},
 }
 
 # ----------------------------

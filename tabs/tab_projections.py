@@ -613,28 +613,35 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         "team":  f"pw_team_{parent_type}",
         "qual":  f"pw_qual_{parent_type}",
     }
-    # Honor a pending reset (set by the button on the previous run) by clearing
-    # the widget-state keys BEFORE the number_inputs are instantiated, so they
-    # fall back to the track-type defaults.
-    if st.session_state.pop(f"pw_reset_{parent_type}", False):
-        for k in _wkeys.values():
-            st.session_state.pop(k, None)
+    # Initialize / reset the weight widgets' session-state. We explicitly SET
+    # each key to its track-type default — on first use for this track type, or
+    # when the Reset button requested it on the previous run. The OLD approach
+    # popped the keys and relied on each number_input's `value` arg to restore
+    # the default, but that didn't reliably take effect (the manual values
+    # stuck). The number_inputs below read their value from session_state via
+    # `key`, so setting it here is exactly what they display — no `value` arg,
+    # which also avoids Streamlit's "value set via both arg and Session State"
+    # warning.
+    _reset = st.session_state.pop(f"pw_reset_{parent_type}", False)
+    for _sig, _key in _wkeys.items():
+        if _reset or _key not in st.session_state:
+            st.session_state[_key] = defaults[_sig]
 
     # Weight sliders in collapsible expander
     with st.expander("Projection Weights", expanded=False):
         st.caption(f"Defaults tuned for **{parent_type}** tracks. "
-                   "Adjust weights — auto-normalizes to 100%.")
+                   "Adjust weights (in 5s) — auto-normalizes to 100%.")
         if st.button("Reset to defaults", key=f"pw_reset_btn_{parent_type}",
                      help=f"Restore the tuned default weights for {parent_type} tracks"):
             st.session_state[f"pw_reset_{parent_type}"] = True
             st.rerun()
         w_cols = st.columns(6)
-        w_odds = w_cols[0].number_input("Odds", 0, 100, defaults["odds"], 5, key=_wkeys["odds"])
-        w_track = w_cols[1].number_input("Track History", 0, 100, defaults["track"], 5, key=_wkeys["track"])
-        w_ttype = w_cols[2].number_input("Track Type", 0, 100, defaults["ttype"], 5, key=_wkeys["ttype"])
-        w_prac = w_cols[3].number_input("Practice", 0, 100, defaults["prac"], 5, key=_wkeys["prac"])
-        w_team = w_cols[4].number_input("Team", 0, 100, defaults["team"], 5, key=_wkeys["team"])
-        w_qual = w_cols[5].number_input("Qualifying", 0, 100, defaults["qual"], 5, key=_wkeys["qual"])
+        w_odds = w_cols[0].number_input("Odds", 0, 100, step=5, key=_wkeys["odds"])
+        w_track = w_cols[1].number_input("Track History", 0, 100, step=5, key=_wkeys["track"])
+        w_ttype = w_cols[2].number_input("Track Type", 0, 100, step=5, key=_wkeys["ttype"])
+        w_prac = w_cols[3].number_input("Practice", 0, 100, step=5, key=_wkeys["prac"])
+        w_team = w_cols[4].number_input("Team", 0, 100, step=5, key=_wkeys["team"])
+        w_qual = w_cols[5].number_input("Qualifying", 0, 100, step=5, key=_wkeys["qual"])
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
