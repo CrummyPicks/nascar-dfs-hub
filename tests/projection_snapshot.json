@@ -2,36 +2,36 @@
   "A Elite1": {
     "diff_pts": 1,
     "fast_laps": 100,
-    "laps_led": 166,
-    "proj_dk": 132.5,
+    "laps_led": 178,
+    "proj_dk": 135.5,
     "proj_finish": 1
   },
   "A Elite2": {
     "diff_pts": 2,
     "fast_laps": 100,
-    "laps_led": 112,
-    "proj_dk": 117.0,
+    "laps_led": 118,
+    "proj_dk": 118.5,
     "proj_finish": 2
   },
   "A Elite3": {
     "diff_pts": 5,
     "fast_laps": 100,
-    "laps_led": 55,
-    "proj_dk": 104.8,
+    "laps_led": 58,
+    "proj_dk": 105.5,
     "proj_finish": 3
   },
   "B Mid1": {
     "diff_pts": 2,
-    "fast_laps": 72,
-    "laps_led": 30,
-    "proj_dk": 81.9,
+    "fast_laps": 74,
+    "laps_led": 29,
+    "proj_dk": 82.6,
     "proj_finish": 4
   },
   "B Mid2": {
     "diff_pts": 3,
     "fast_laps": 14,
-    "laps_led": 13,
-    "proj_dk": 49.5,
+    "laps_led": 8,
+    "proj_dk": 48.3,
     "proj_finish": 7
   },
   "B Mid3": {
@@ -85,23 +85,23 @@
   },
   "E Rookie1": {
     "diff_pts": 8,
-    "fast_laps": 8,
-    "laps_led": 19,
-    "proj_dk": 55.4,
+    "fast_laps": 7,
+    "laps_led": 4,
+    "proj_dk": 51.1,
     "proj_finish": 5
   },
   "E Rookie2": {
     "diff_pts": 16,
-    "fast_laps": 1,
-    "laps_led": 1,
-    "proj_dk": 54.7,
+    "fast_laps": 2,
+    "laps_led": 3,
+    "proj_dk": 55.6,
     "proj_finish": 6
   },
   "F LongShot": {
     "diff_pts": 15,
-    "fast_laps": 0,
+    "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 50.0,
+    "proj_dk": 50.5,
     "proj_finish": 9
   }
 }

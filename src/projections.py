@@ -466,44 +466,52 @@ def compute_projections(
             dom_signals = []
             dom_weights_list = []
 
-            # Track history laps led — credit ONLY when the driver actually
-            # has laps-led history at this track. NO floor: a driver who has
-            # never led a lap here gets zero dominator credit from this signal.
-            # The old 5.0 floor (≈ "led 5% of the leader's laps") was a
-            # backmarker's entire dominator score, propping zero-history cars
-            # up into the top-N lap-leader allocation — e.g. a P37 car (Katherine
-            # Legge, +250000, 0 career laps led at the type) projected to lead
-            # 10+ laps. Skipping the signal lets the laps-led allocation route
-            # any leftover leader slots to good-ODDS contenders instead.
+            # Per-signal rule: if the user's SLIDER for a signal is > 0, that
+            # signal's WEIGHT always goes into the denominator; the VALUE is
+            # the real signal when data is available and 0 ("no evidence of
+            # dominance from this signal") when it isn't. This matters because
+            # the old "skip both signal and weight on missing data" pattern
+            # silently INFLATED data-poor drivers: a contender with no track
+            # LL history and no ttype LL history had a smaller weight sum, so
+            # the same odds + contender contribution produced a higher dom_score
+            # than a driver with real LL history. The fix gives the missing-
+            # data driver a true zero on those signals (not a free pass) without
+            # reintroducing the old 5.0 backmarker floor.
+            #
             # Laps-led HISTORY is the most direct "does this driver dominate
-            # HERE" signal, so it gets a 1.5x boost in the dominator (vs its
-            # finish weight) — a track ace like Byron at Charlotte (106 laps
-            # led/race, far the field's highest) should project as a top lap
-            # leader even from a deep start, rather than being out-ranked by
-            # better-qualified / shorter-odds cars with thinner track dominance.
+            # HERE" signal, so it gets a 1.5x boost vs its finish-side weight.
             _DOM_LL_HISTORY_BOOST = 1.5
-            if th and th.get("races", 0) >= 1 and th.get("laps_led", 0) > 0:
-                ll_per_race = th["laps_led"] / th["races"]
-                ll_norm = min(100, (ll_per_race / max(ll_ref, 1)) * 100)
+            if wn.get("track", 0) > 0:
+                if th and th.get("races", 0) >= 1 and th.get("laps_led", 0) > 0:
+                    ll_per_race = th["laps_led"] / th["races"]
+                    ll_norm = min(100, (ll_per_race / max(ll_ref, 1)) * 100)
+                else:
+                    ll_norm = 0.0
                 dom_signals.append(ll_norm)
-                dom_weights_list.append(wn.get("track", 0.20) * _DOM_LL_HISTORY_BOOST)
+                dom_weights_list.append(wn["track"] * _DOM_LL_HISTORY_BOOST)
 
-            # Track type laps led — same rule: credit only with real history.
-            if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
-                tt_ll = tt["laps_led_per_race"]
-                tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
+            # Track type laps led — same per-signal rule.
+            if wn.get("track_type", 0) > 0:
+                if tt and isinstance(tt, dict) and tt.get("laps_led_per_race", 0) > 0:
+                    tt_ll = tt["laps_led_per_race"]
+                    tt_ll_norm = min(100, (tt_ll / max(ll_ref, 1)) * 100)
+                else:
+                    tt_ll_norm = 0.0
                 dom_signals.append(tt_ll_norm)
-                dom_weights_list.append(wn.get("track_type", 0.15) * _DOM_LL_HISTORY_BOOST)
+                dom_weights_list.append(wn["track_type"] * _DOM_LL_HISTORY_BOOST)
 
             # Qualifying — a WEAK predictor of laps led. Real dominators come
             # from all over the grid (e.g. at Charlotte, Chastain led 153 from
             # P22, Blaney 163 from P8), so qual gets HALF its finish weight in
             # the dominator and the start multiplier below is gentle. Laps-led
             # HISTORY + pace (odds) should decide who dominates — not the grid.
-            if qp and qp <= field_size and wn.get("qual", 0) > 0:
-                qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 100
+            if wn.get("qual", 0) > 0:
+                if qp and qp <= field_size:
+                    qual_dom = max(0, (field_size + 1 - qp) / field_size) ** 1.5 * 100
+                else:
+                    qual_dom = 0.0
                 dom_signals.append(qual_dom)
-                dom_weights_list.append(wn.get("qual", 0.15) * 0.5)
+                dom_weights_list.append(wn["qual"] * 0.5)
 
             # Odds → leading laps correlates with WIN probability, not expected
             # finish. Use implied win % directly. CRITICAL: impl_pct legitimately
@@ -512,23 +520,46 @@ def compute_projections(
             # fallback below, and since odds_finish is compressed toward mid-
             # field (worst anchor ~0.58*field), that handed +250000 longshots
             # ~34% dominator credit — the P37 car projected to lead 10+ laps.
-            if od and wn.get("odds", 0) > 0:
-                odds_info = odds_display.get(d) if odds_display else None
-                impl = odds_info.get("impl_pct") if odds_info else None
-                if impl is not None:
-                    max_impl = max((v.get("impl_pct", 0) for v in odds_display.values()), default=1)
-                    odds_dom = min(100, (impl / max(max_impl, 1)) * 100)
+            if wn.get("odds", 0) > 0:
+                if od:
+                    odds_info = odds_display.get(d) if odds_display else None
+                    impl = odds_info.get("impl_pct") if odds_info else None
+                    if impl is not None:
+                        max_impl = max((v.get("impl_pct", 0) for v in odds_display.values()), default=1)
+                        odds_dom = min(100, (impl / max(max_impl, 1)) * 100)
+                    else:
+                        odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
                 else:
-                    odds_dom = max(0, (field_size + 1 - od) / field_size) ** 1.3 * 100
+                    odds_dom = 0.0
                 dom_signals.append(odds_dom)
-                dom_weights_list.append(wn.get("odds", 0.15))
+                dom_weights_list.append(wn["odds"])
 
             # Practice
-            if pr and practice_data:
-                max_p_val = max(practice_data.values()) if practice_data else field_size
-                prac_dom = max(0, (max_p_val + 1 - pr) / max_p_val) * 100
+            if wn.get("practice", 0) > 0:
+                if pr and practice_data:
+                    max_p_val = max(practice_data.values()) if practice_data else field_size
+                    prac_dom = max(0, (max_p_val + 1 - pr) / max_p_val) * 100
+                else:
+                    prac_dom = 0.0
                 dom_signals.append(prac_dom)
-                dom_weights_list.append(wn.get("practice", 0.10))
+                dom_weights_list.append(wn["practice"])
+
+            # Contender signal — derived from raw_finish (which already
+            # integrates ALL the finish-side inputs: history avg-finish/ARP,
+            # odds, team, recency, qual, practice). A driver projected to
+            # finish well is by definition expected to spend time near the
+            # front, where laps led happen. Without this, top-finish contenders
+            # whose specific TRACK LL HISTORY was thin (a newer driver, or a
+            # rare-on-the-calendar venue) collapsed to dom-rank 5+ on the
+            # empirical curve and got <1 lap led — while drivers projected
+            # 20th could float up to dom-rank 1 on an outlier LL signal. This
+            # connects the finish projection to the laps-led projection so
+            # they tell a consistent story.
+            _DOM_CONTENDER_WEIGHT = 0.30
+            contender_base = max(0.0, min(1.0, (field_size + 1 - raw_finish) / field_size))
+            contender_dom = (contender_base ** 1.5) * 100
+            dom_signals.append(contender_dom)
+            dom_weights_list.append(_DOM_CONTENDER_WEIGHT)
 
             if dom_signals:
                 total_dw = sum(dom_weights_list)

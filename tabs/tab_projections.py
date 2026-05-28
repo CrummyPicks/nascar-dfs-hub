@@ -250,7 +250,23 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         s = sum(curve)
         if s <= 0:
             return None
-        return [c / s for c in curve]
+        curve = [c / s for c in curve]
+
+        # Sample-size-aware temperature smoothing. With few historical races
+        # the empirical curve can be extremely top-heavy by random luck — e.g.
+        # Nashville Trucks (5 races, dominated 1-2 cars each) yields rank 5 =
+        # 0.5% of laps, so a real contender stuck at dom-rank 5 by chance
+        # would only get ~1 lap in a 150-lap race. Raising each share to a
+        # sub-1 power flattens the curve while preserving rank ordering (a
+        # principled "shrinkage to prior" for small samples). Full trust at
+        # n ≥ 10 races; T floor 0.75 protects against extreme cliffs.
+        T = max(0.75, min(1.0, n_races / 10.0))
+        if T < 1.0:
+            curve = [c ** T for c in curve]
+            s2 = sum(curve)
+            if s2 > 0:
+                curve = [c / s2 for c in curve]
+        return curve
 
     try:
         conn = sqlite3.connect(PROJ_DB)
