@@ -21,15 +21,21 @@ from src.config import DK_FINISH_POINTS, TRACK_TYPE_PARENT
 #     let a fast car work forward, so a moderate, gentle dampener.
 # Values are (floor, slope): for a start beyond P10 the multiplier is
 # max(floor, 1 - (start-10)*slope). P1-P3 get a small boost, P4-P10 are neutral.
+# NOTE: As of the start-aware laps-led gate (_start_avail in tab_projections.py),
+# the laps-led MAGNITUDE suppression for deep starters lives in the allocator.
+# This score-level multiplier is now SOFT — it only nudges dominator rank ORDER
+# (which feeds dominator identification), so a deep starter isn't penalized twice
+# (once in the score, once in the allocation). Floors raised toward 1.0 and slopes
+# roughly halved vs the pre-gate values.
 _DOM_START_PENALTY = {
-    "superspeedway":     (0.93, 0.004),
-    "road":              (0.80, 0.011),
-    "intermediate":      (0.80, 0.009),
-    "intermediate_worn": (0.80, 0.009),
-    "short":             (0.60, 0.020),
-    "short_concrete":    (0.57, 0.022),
+    "superspeedway":     (0.96, 0.002),
+    "road":              (0.88, 0.005),
+    "intermediate":      (0.88, 0.005),
+    "intermediate_worn": (0.88, 0.005),
+    "short":             (0.85, 0.010),
+    "short_concrete":    (0.85, 0.011),
 }
-_DOM_START_PENALTY_DEFAULT = (0.78, 0.011)
+_DOM_START_PENALTY_DEFAULT = (0.88, 0.005)
 # Longer races give a deep starter more time to recover track position, so the
 # per-position cut is softened as race length grows past this reference — e.g.
 # the Charlotte 600 (400 laps) gets a gentler dampener than a 267-lap
@@ -642,11 +648,31 @@ def compute_projections(
     for rank_idx, (d, _) in enumerate(sorted_drivers):
         driver_proj_finish[d] = rank_idx + 1
 
+    # ── Resolve each driver's projected START for the laps-led start gate ──
+    # Same fallback chain used below for the displayed start (qual → track-history
+    # avg start → track-type avg start → odds → mid-field), lifted here so the
+    # allocator can damp a deep starter's laps led and the displayed start matches
+    # the start that actually gated those laps.
+    def _resolve_start(d):
+        if qual_pos.get(d):
+            return qual_pos[d]
+        th_s = th_data.get(d)
+        if th_s and th_s.get("avg_start"):
+            return round(th_s["avg_start"])
+        tt_s = tt_data.get(d)
+        if isinstance(tt_s, dict) and tt_s.get("avg_start"):
+            return round(tt_s["avg_start"])
+        if odds_finish.get(d):
+            return round(odds_finish[d])
+        return round(field_size * 0.5)
+    start_for_alloc = {d: _resolve_start(d) for d in drivers}
+
     # ── Allocate laps led and fastest laps ──
     allocated_ll = _allocate_laps_led(
         dom_raw_scores, race_laps, track_name, track_type,
         calibration=calibration,
         odds_display=odds_display,
+        start_positions=start_for_alloc,
     ) if race_laps > 0 else {}
     allocated_fl = _allocate_fastest_laps(
         fl_raw_scores, race_laps, track_type,
@@ -662,22 +688,9 @@ def compute_projections(
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
-        # Start position fallback
-        th_s = th_data.get(d)
-        tt_s = tt_data.get(d)
-        hist_start = th_s.get("avg_start") if th_s else None
-        tt_start = tt_s.get("avg_start") if isinstance(tt_s, dict) else None
-        odds_start = odds_finish.get(d)
-        if qual_pos.get(d):
-            start_pos = qual_pos[d]
-        elif hist_start:
-            start_pos = round(hist_start)
-        elif tt_start:
-            start_pos = round(tt_start)
-        elif odds_start:
-            start_pos = round(odds_start)
-        else:
-            start_pos = round(field_size * 0.5)
+        # Start position — reuse the resolution computed for the laps-led start
+        # gate so the displayed start matches the start that gated the laps.
+        start_pos = start_for_alloc[d]
 
         finish_pts = _expected_finish_pts(proj_finish)
         diff_pts = start_pos - proj_finish

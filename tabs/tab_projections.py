@@ -428,9 +428,67 @@ def _soft_rank_shares(scores: dict, dist: list, tau: float, top_k: int) -> dict:
     return out
 
 
+# ── Start-position availability gate for laps led ────────────────────────────
+# The soft-rank allocator maps PACE rank onto the empirical laps-led-by-rank
+# curve, but that curve is start-BLIND — it only encodes how concentrated laps
+# are among whoever led them. So a fast car starting deep inherits the leader's
+# ~40% share even though, empirically, a P18+ starter leads ~0.6% of laps on
+# average (Cup 2022+, 90th pctl ~0%). This gate multiplies each driver's curve
+# share by an availability factor in [floor, 1.0] that is ~1.0 through P10 and
+# decays for deeper starts, then RE-NORMALIZES so the freed laps flow to the
+# front-runners and the total stays == race_laps. It is continuous in start_pos
+# (logistic), preserving the soft-rank allocator's no-step-jump property.
+#
+# Decay is track-type aware: steep on concrete/short (track position is king,
+# dirty air makes advancing slow), moderate on intermediate/road (long green
+# runs and tire falloff let a fast car work forward), near-flat on superspeedway
+# (the pack cycles the lead through the whole field regardless of start).
+#   (floor, p50): p50 = the start at which availability is halfway from 1.0 to
+#   floor; the transition spans ~13 positions either side of p50.
+_LL_AVAIL = {
+    "superspeedway":     (0.82, 22),
+    "road":              (0.45, 16),
+    "intermediate":      (0.45, 16),
+    "intermediate_worn": (0.45, 16),
+    "short":             (0.30, 15),
+    "short_concrete":    (0.25, 15),
+}
+_LL_AVAIL_DEFAULT = (0.45, 16)
+
+
+def _start_avail(start_pos, floor: float, p50: float) -> float:
+    """Laps-led availability multiplier in [floor, 1.0] as a function of start.
+
+    Flat ~1.0 through ~P10, smooth logistic decay deeper, asymptote `floor`.
+    Continuous in start_pos so it never reintroduces rank step-jumps."""
+    if start_pos is None or start_pos <= 10:
+        return 1.0
+    decay = 1.0 / (1.0 + math.exp((start_pos - p50) / 6.0))
+    return floor + (1.0 - floor) * decay
+
+
+def _apply_start_gate(alloc: dict, start_positions: dict,
+                      track_type: str, parent: str) -> dict:
+    """Damp each driver's laps-led allocation by start availability, then
+    renormalize so the total is unchanged (the laps a deep starter loses flow to
+    the front-runners). No-op when start_positions is empty. Operates on either
+    fractional shares or absolute lap counts — it preserves the input's total."""
+    if not start_positions:
+        return alloc
+    floor, p50 = _LL_AVAIL.get(track_type, _LL_AVAIL.get(parent, _LL_AVAIL_DEFAULT))
+    gated = {d: v * _start_avail(start_positions.get(d), floor, p50)
+             for d, v in alloc.items()}
+    target = sum(alloc.values())
+    tot = sum(gated.values())
+    if tot > 0 and target > 0:
+        return {d: v * target / tot for d, v in gated.items()}
+    return alloc
+
+
 def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
                         track_type: str, calibration: dict = None,
-                        odds_display: dict = None) -> dict:
+                        odds_display: dict = None,
+                        start_positions: dict = None) -> dict:
     """Allocate projected laps led across the field.
 
     Uses historical data to determine:
@@ -456,6 +514,7 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
     if ll_dist:
         shares = _soft_rank_shares(driver_scores, ll_dist,
                                    tau=_LL_SOFT_TAU, top_k=_LL_SOFT_TOPK)
+        shares = _apply_start_gate(shares, start_positions, track_type, parent)
         return {d: race_laps * frac for d, frac in shares.items()}
 
     # ── Fallback path (no historical LL shape for this track/type): parametric
@@ -501,6 +560,11 @@ def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
 
     # Every lap has a leader — distribute ALL race laps
     result = {d: (s / total) * race_laps for d, s in powered.items()}
+
+    # Start-position gate (same as the empirical path): pull deep starters' laps
+    # toward the front-runners BEFORE capping, so cap/redistribute still
+    # guarantees the total stays == race_laps and respects the per-driver ceiling.
+    result = _apply_start_gate(result, start_positions, track_type, parent)
 
     # Per-driver cap: use average top leader with generous headroom
     # A dominant favorite (-100) routinely exceeds the average leader's laps

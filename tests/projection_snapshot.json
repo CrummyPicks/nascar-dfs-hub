@@ -2,8 +2,8 @@
   "A Elite1": {
     "diff_pts": 1,
     "fast_laps": 100,
-    "laps_led": 178,
-    "proj_dk": 135.5,
+    "laps_led": 179,
+    "proj_dk": 135.8,
     "proj_finish": 1
   },
   "A Elite2": {
@@ -65,8 +65,8 @@
   "C Value2": {
     "diff_pts": 4,
     "fast_laps": 2,
-    "laps_led": 3,
-    "proj_dk": 41.6,
+    "laps_led": 2,
+    "proj_dk": 41.4,
     "proj_finish": 8
   },
   "D Back1": {
@@ -86,15 +86,15 @@
   "E Rookie1": {
     "diff_pts": 8,
     "fast_laps": 7,
-    "laps_led": 4,
-    "proj_dk": 51.1,
+    "laps_led": 3,
+    "proj_dk": 50.9,
     "proj_finish": 5
   },
   "E Rookie2": {
     "diff_pts": 16,
     "fast_laps": 2,
-    "laps_led": 3,
-    "proj_dk": 55.6,
+    "laps_led": 2,
+    "proj_dk": 55.4,
     "proj_finish": 6
   },
   "F LongShot": {
