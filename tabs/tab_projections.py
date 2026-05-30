@@ -958,7 +958,7 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
             WITH ranked AS (
                 SELECT d.id AS did, d.full_name AS Driver,
                        rr.finish_pos, rr.start_pos, rr.laps_led, rr.fastest_laps,
-                       rr.avg_running_position AS arp, rr.status,
+                       rr.avg_running_position AS arp, rr.rating AS rating, rr.status,
                        ROW_NUMBER() OVER (PARTITION BY d.id
                                           ORDER BY r.race_date DESC, r.id DESC) AS rn
                 FROM race_results rr
@@ -975,6 +975,8 @@ def _query_db_track_history(track_name, series_id, exclude_race_id=None,
                    SUM(fastest_laps) as "Fastest Laps",
                    ROUND(SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
                          NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0), 1) as "Avg Run Pos",
+                   ROUND(SUM(CASE WHEN rating IS NOT NULL THEN rating*{w} END)/
+                         NULLIF(SUM(CASE WHEN rating IS NOT NULL THEN {w} END),0), 1) as "Avg Rating",
                    SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                    SUM(CASE WHEN finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
                    SUM(CASE WHEN finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
