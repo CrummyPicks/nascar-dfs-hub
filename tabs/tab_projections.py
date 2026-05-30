@@ -1345,7 +1345,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 }
 
     if not th_df.empty:
-        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF"]:
+        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF", "Avg Rating"]:
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
@@ -1381,6 +1381,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                     "avg_finish": af,
                     "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
                     "avg_running_pos": arp,
+                    "th_rating": row.get("Avg Rating") if pd.notna(row.get("Avg Rating", None)) else None,
                     "laps_led": laps_led,
                     "fastest_laps": fastest_laps,
                     "laps_led_per_race": laps_led / races,
