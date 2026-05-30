@@ -5,7 +5,9 @@ from datetime import datetime as _dt
 import pandas as pd
 import streamlit as st
 
-from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
+from src.config import (
+    TRACK_TYPE_MAP, TRACK_TYPE_PARENT, CONCRETE_GROUP_LABEL, resolve_track_group,
+)
 from src.data import (
     query_track_type_stats, query_season_stats, query_db_track_history,
 )
@@ -64,12 +66,8 @@ def _format_type_label(t):
 
 
 def _tracks_for_type(track_type: str) -> list:
-    """Get track names belonging to a type or parent group."""
-    if track_type.startswith("All "):
-        parent = track_type.replace("All ", "").lower()
-        return sorted(t for t, tt in TRACK_TYPE_MAP.items()
-                      if TRACK_TYPE_PARENT.get(tt, tt) == parent)
-    return sorted(t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type)
+    """Get track names belonging to a type or parent group (incl. All Concrete)."""
+    return resolve_track_group(track_type)
 
 
 def render(*, track_name, track_type, series_id, entry_list_df=None):
@@ -95,7 +93,7 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
             f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())
             if sum(1 for v in TRACK_TYPE_PARENT.values() if v == p) > 1
         ))
-        type_options = ["This Track"] + all_types + parent_groups
+        type_options = ["This Track"] + all_types + parent_groups + [CONCRETE_GROUP_LABEL]
         type_filter = st.selectbox("Track Type Filter", type_options,
                                     key="th_type_filter", label_visibility="collapsed",
                                     format_func=_format_type_label,
@@ -195,6 +193,36 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
             )
         else:
             st.info(f"No {_cy} data at {track_name}. Data appears after races are completed and synced.")
+
+
+def render_concrete_tab(*, series_id, entry_list_df=None):
+    """Dedicated 'Concrete' tab, shown only on concrete race weeks.
+
+    Aggregates the All-Concrete surface group (Nashville + Dover + Bristol) by
+    reusing the same renderer the track-type filter uses. Concrete is a SURFACE
+    group independent of track size, so this complements (does not replace) the
+    intermediate / short-concrete views available elsewhere.
+    """
+    from src.config import CONCRETE_GROUP_LABEL
+    section_header("Concrete Tracks", "Nashville · Dover · Bristol")
+    st.caption(
+        "Concrete is a racing **surface** (not a track size). Dirty air punishes "
+        "following cars and laps led concentrate in the front-runners — so these "
+        "tracks race alike regardless of length. Nashville still appears under "
+        "**All Intermediate** too."
+    )
+    active_drivers = set()
+    if entry_list_df is not None and not entry_list_df.empty and "Driver" in entry_list_df.columns:
+        active_drivers = set(entry_list_df["Driver"].dropna().astype(str).str.strip().tolist())
+
+    _cy = _current_season()
+    hist_view = st.radio("View", ["Next Gen (2022+)", f"{_cy} Season"],
+                         horizontal=True, label_visibility="collapsed",
+                         key="concrete_hist_view")
+    _render_track_type_filtered(
+        CONCRETE_GROUP_LABEL, hist_view, series_id,
+        active_drivers=active_drivers, highlight_active=bool(active_drivers),
+    )
 
 
 def _filter_and_sort_history(df: pd.DataFrame, *, active_drivers: set,

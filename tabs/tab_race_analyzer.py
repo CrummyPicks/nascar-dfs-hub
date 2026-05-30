@@ -4,7 +4,10 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT, TRACK_TYPE_DISPLAY
+from src.config import (
+    TRACK_TYPE_MAP, TRACK_TYPE_PARENT, TRACK_TYPE_DISPLAY,
+    CONCRETE_GROUP_LABEL, resolve_track_group,
+)
 from src.components import (
     section_header, style_results_table, interactive_drill_down_dataframe,
 )
@@ -27,12 +30,8 @@ def _format_track_type_label(t: str) -> str:
 
 
 def _get_tracks_for_type(track_type: str) -> list:
-    """Get list of track names that belong to a given type or parent group."""
-    if track_type.startswith("All "):
-        parent = track_type.replace("All ", "").lower()
-        return sorted(t for t, tt in TRACK_TYPE_MAP.items()
-                      if TRACK_TYPE_PARENT.get(tt, tt) == parent)
-    return sorted(t for t, tt in TRACK_TYPE_MAP.items() if tt == track_type)
+    """Get list of track names for a type or group (incl. All Concrete)."""
+    return resolve_track_group(track_type)
 
 
 def render(*, completed_races, series_id, selected_year, series_name="Cup"):
@@ -72,7 +71,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
             # Track type filter
             subtypes = sorted(set(TRACK_TYPE_MAP.values()))
             parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
-            type_options = ["All Types"] + parent_groups + subtypes
+            type_options = ["All Types"] + parent_groups + subtypes + [CONCRETE_GROUP_LABEL]
             ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type",
                                          format_func=_format_track_type_label)
         with f_cols[2]:
@@ -590,7 +589,7 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
     # Track type selector — subtypes + parent groups
     subtypes = sorted(set(TRACK_TYPE_MAP.values()))
     parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
-    track_types = parent_groups + subtypes
+    track_types = parent_groups + subtypes + [CONCRETE_GROUP_LABEL]
     type_badges = {
         "superspeedway": "🔴", "intermediate": "🟡",
         "short": "🟢", "road": "🔵", "dirt": "🟤",

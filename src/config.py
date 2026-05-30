@@ -103,6 +103,49 @@ TRACK_TYPE_DISPLAY = {
 }
 
 # ----------------------------
+# CONCRETE SURFACE (second axis, overlaid on track_type)
+# ----------------------------
+# Surface is independent of track SIZE. These tracks share a concrete surface:
+# dirty air punishes following cars, advancing is slow, and laps led concentrate
+# more in the top few than on comparable asphalt. They keep their normal
+# track_type (Nashville stays "intermediate", Bristol/Dover "short_concrete") so
+# Nashville still appears in "All Intermediate" and its driver popup still shows
+# intermediate history — concrete is an ADDITIONAL grouping, not a replacement.
+CONCRETE_TRACKS = {
+    "Nashville Superspeedway",   # 1.33mi concrete intermediate
+    "Dover Motor Speedway",      # 1.0mi concrete (short_concrete)
+    "Bristol Motor Speedway",    # 0.533mi concrete (short_concrete)
+}
+# Virtual group label used in the track-type filter dropdowns / drill-downs.
+CONCRETE_GROUP_LABEL = "All Concrete"
+# For dominator calibration & the laps-led start gate, concrete tracks behave
+# like short_concrete (steep concentration, hard to advance) regardless of size.
+CONCRETE_GATE_PROFILE = "short_concrete"
+
+
+def is_concrete_track(track_name: str) -> bool:
+    """True if the track has a concrete racing surface."""
+    return track_name in CONCRETE_TRACKS
+
+
+def resolve_track_group(group: str) -> list:
+    """Resolve a track-type / 'All X' group string to a sorted list of track names.
+
+    Single source of truth for every filter dropdown, drill-down popup, and DB
+    family-folding query. Handles:
+      • the 'All Concrete' surface group  -> CONCRETE_TRACKS
+      • 'All <Parent>' parent groups      -> all tracks folding to that parent
+      • a plain subtype (e.g. short_concrete) or base type -> exact matches
+    """
+    if group == CONCRETE_GROUP_LABEL or group.lower() == "concrete":
+        return sorted(CONCRETE_TRACKS)
+    if group.startswith("All "):
+        parent = group.replace("All ", "").lower()
+        return sorted(t for t, tt in TRACK_TYPE_MAP.items()
+                      if TRACK_TYPE_PARENT.get(tt, tt) == parent)
+    return sorted(t for t, tt in TRACK_TYPE_MAP.items() if tt == group)
+
+# ----------------------------
 # DRIVERAVERAGES.COM TRACK IDS
 # ----------------------------
 DA_TRACK_IDS = {

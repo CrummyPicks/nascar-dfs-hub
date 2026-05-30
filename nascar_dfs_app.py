@@ -912,6 +912,10 @@ with tab_history:
         entry_list_df=entry_list_df,
     )
 
+if tab_concrete is not None:
+    with tab_concrete:
+        tth.render_concrete_tab(series_id=series_id, entry_list_df=entry_list_df)
+
 with tab_race_analyzer:
     tra.render(
         completed_races=completed_races, series_id=series_id,

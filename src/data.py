@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 
 from src.config import (
     NASCAR_API_BASE, DB_PATH, DA_TRACK_IDS, EXHIBITION_KEYWORDS,
+    CONCRETE_TRACKS, CONCRETE_GROUP_LABEL,
 )
 from src.utils import int_col, calc_dk_points, calc_fd_points, normalize_driver_name
 import re
@@ -968,15 +969,19 @@ def query_driver_race_log(
         where.append("t.name = ?")
         params.append(track_name)
     elif track_type:
-        # Same family-folding rules used elsewhere
-        parent = TRACK_TYPE_PARENT.get(track_type, track_type)
-        include_types = {track_type}
-        for tt, p in TRACK_TYPE_PARENT.items():
-            if tt == track_type or p == parent:
-                include_types.add(tt)
-        if track_type == "short_concrete":
-            include_types.add("short")
-        matching_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt in include_types]
+        if track_type in (CONCRETE_GROUP_LABEL, "concrete"):
+            # Concrete is a SURFACE group (Nashville+Dover+Bristol) by name.
+            matching_tracks = sorted(CONCRETE_TRACKS)
+        else:
+            # Same family-folding rules used elsewhere
+            parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+            include_types = {track_type}
+            for tt, p in TRACK_TYPE_PARENT.items():
+                if tt == track_type or p == parent:
+                    include_types.add(tt)
+            if track_type == "short_concrete":
+                include_types.add("short")
+            matching_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt in include_types]
         if not matching_tracks:
             return []
         placeholders = ",".join("?" for _ in matching_tracks)
@@ -1665,7 +1670,12 @@ def query_track_type_stats(track_type: str, season: int = None,
     parent = TRACK_TYPE_PARENT.get(track_type, track_type)
     is_subtype = (parent != track_type)
 
-    if is_parent_group:
+    if track_type in (CONCRETE_GROUP_LABEL, "concrete"):
+        # Concrete is a SURFACE group (Nashville+Dover+Bristol) by track name,
+        # not a track_type. "All Concrete" also matches is_parent_group, so this
+        # MUST be checked first.
+        filter_tracks = sorted(CONCRETE_TRACKS)
+    elif is_parent_group:
         parent_name = track_type.replace("All ", "").lower()
         # Get ALL tracks whose parent resolves to this group
         filter_tracks = [t for t, tt in TRACK_TYPE_MAP.items()

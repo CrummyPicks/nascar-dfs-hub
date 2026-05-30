@@ -7,7 +7,10 @@ their own data-loading layer, guaranteeing identical math.
 
 import math
 import numpy as np
-from src.config import DK_FINISH_POINTS, TRACK_TYPE_PARENT
+from src.config import (
+    DK_FINISH_POINTS, TRACK_TYPE_PARENT,
+    is_concrete_track, CONCRETE_GATE_PROFILE,
+)
 
 # ── Deep-start dominator dampener, BY TRACK TYPE ──────────────────────────────
 # Starting deep hurts your chance to LEAD LAPS far more at some tracks than
@@ -91,6 +94,17 @@ def compute_projections(
         cross_th_lookup = {}
 
     mid_field = field_size * 0.5
+
+    # Concrete surface (Nashville/Dover/Bristol) concentrates laps led and makes
+    # advancing from deep starts slow — like a short concrete track regardless of
+    # the track's SIZE. So for the laps-led concentration, the deep-start score
+    # penalty and the start-availability gate, a concrete track uses the
+    # short_concrete profile even though its track_type stays "intermediate"
+    # (Nashville) for finish projection and All-Intermediate history. This is the
+    # lever that makes the model race Nashville like concrete, not like Kansas.
+    gate_track_type = (CONCRETE_GATE_PROFILE if is_concrete_track(track_name)
+                       else track_type)
+
     # Track history reaches full trust at 1 race. Most ovals run only once a
     # year, so requiring 5 races meant "5 years" before a driver's own track
     # results were trusted — far too punitive. A driver with 0 track races
@@ -627,7 +641,7 @@ def compute_projections(
         # rank allocator so the resulting laps are also stable to small weight
         # changes.
         if qp and qp <= field_size and dom_score > 0:
-            dom_score = dom_score * _dom_start_multiplier(qp, race_laps, track_type)
+            dom_score = dom_score * _dom_start_multiplier(qp, race_laps, gate_track_type)
 
         dom_raw_scores[d] = dom_score
         fl_raw_scores[d] = fl_score
@@ -669,7 +683,7 @@ def compute_projections(
 
     # ── Allocate laps led and fastest laps ──
     allocated_ll = _allocate_laps_led(
-        dom_raw_scores, race_laps, track_name, track_type,
+        dom_raw_scores, race_laps, track_name, gate_track_type,
         calibration=calibration,
         odds_display=odds_display,
         start_positions=start_for_alloc,
