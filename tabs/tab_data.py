@@ -173,7 +173,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     if not th_df.empty:
         th_rename = {
             "Races": "TH_Races", "Avg Finish": "TH_Avg Finish", "Avg Start": "TH_Avg Start",
-            "Avg Run Pos": "TH_Avg Run Pos", "Wins": "TH_Wins", "Top 5": "TH_T5",
+            "Avg Run Pos": "TH_Avg Run Pos", "Avg Rating": "TH_Rating",
+            "Wins": "TH_Wins", "Top 5": "TH_T5",
             "Top 10": "TH_T10", "Laps Led": "TH_Laps Led",
             "DNF": "TH_DNF",
         }

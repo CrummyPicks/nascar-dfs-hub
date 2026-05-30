@@ -113,6 +113,7 @@ def create_database():
         points         INTEGER,
         money          REAL,
         avg_running_position REAL,  -- avg position across all race laps
+        rating         REAL,   -- NASCAR official Driver Rating (0-150), from loop-stats
         UNIQUE(race_id, driver_id)
     );
 
@@ -222,6 +223,15 @@ def create_database():
     CREATE INDEX IF NOT EXISTS idx_proj_race           ON projections(race_id);
     CREATE INDEX IF NOT EXISTS idx_proj_driver         ON projections(driver_id);
     """)
+
+    # ── Idempotent migrations for existing DBs ──────────────────
+    # CREATE TABLE IF NOT EXISTS won't add a new column to a table that already
+    # exists, so add late-arriving columns here. Safe to run repeatedly.
+    _existing = [r[1] for r in c.execute("PRAGMA table_info(race_results)")]
+    if "rating" not in _existing:
+        c.execute("ALTER TABLE race_results ADD COLUMN rating REAL")
+        print("[migrate] added race_results.rating (NASCAR Driver Rating)")
+
     conn.commit()
     conn.close()
     print(f"[OK] Database created at {DB_PATH}")

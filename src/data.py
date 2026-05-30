@@ -805,6 +805,7 @@ def query_db_track_history(track_name: str, series_id: int = 1,
                    SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
                    SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
                    SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+                   ROUND(AVG(rr.rating), 1) as "Avg Rating",
                    SUM(rr.laps_led) as "Laps Led",
                    ROUND(AVG(rr.laps_led), 1) as "Avg Laps Led",
                    SUM(rr.fastest_laps) as "Fast Laps",
@@ -1702,6 +1703,7 @@ def query_track_type_stats(track_type: str, season: int = None,
                    ROUND(AVG(rr.finish_pos),1) as "Avg Finish",
                    ROUND(AVG(rr.start_pos),1) as "Avg Start",
                    COALESCE(ROUND(AVG(rr.avg_running_position),1), 99) as "Avg Run Pos",
+                   ROUND(AVG(rr.rating),1) as "Avg Rating",
                    ROUND(AVG(dp.dfs_score),1) as "Avg DFS",
                    ROUND(MAX(dp.dfs_score),1) as "Best DFS",
                    SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
@@ -3244,6 +3246,7 @@ def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> d
         fastest = d.get("fast_laps", 0) or 0
         laps_completed = d.get("laps", 0) or 0
         arp = d.get("avg_ps")
+        rating = d.get("rating")  # NASCAR official Driver Rating (0-150)
 
         # Loopstats doesn't include team name — infer from driver's nearest
         # same-season race. Without this, team ends up NULL and team-based
@@ -3259,16 +3262,17 @@ def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> d
         conn.execute('''
             INSERT INTO race_results (race_id, driver_id, start_pos, finish_pos,
                                        laps_completed, laps_led, fastest_laps,
-                                       avg_running_position, team, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Running')
+                                       avg_running_position, rating, team, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Running')
             ON CONFLICT(race_id, driver_id) DO UPDATE SET
               start_pos=excluded.start_pos, finish_pos=excluded.finish_pos,
               laps_completed=excluded.laps_completed, laps_led=excluded.laps_led,
               fastest_laps=excluded.fastest_laps,
               avg_running_position=excluded.avg_running_position,
+              rating=COALESCE(excluded.rating, race_results.rating),
               team=COALESCE(excluded.team, race_results.team)
         ''', (db_race_id, driver_id, start_pos, finish_pos, laps_completed,
-              laps_led, fastest, arp, team_name))
+              laps_led, fastest, arp, rating, team_name))
 
         dk = calc_dk_points(finish_pos, start_pos, laps_led, fastest)
         fd = calc_fd_points(finish_pos, start_pos, laps_led, fastest)
