@@ -18,7 +18,7 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
-# DK pts (LL*0.25 + FL*0.5) required to count as a dominator, per track type.
+# DK pts (LL*0.25 + FL*0.45) required to count as a dominator, per track type.
 # Based on Cup 2022-26 historical distribution analysis.
 DOM_THRESHOLDS = {
     "superspeedway":    20.0,  # ~0-1 dominators typical (pack racing disperses LL)
@@ -73,7 +73,7 @@ def _compute_dominator_stats(conn, series_id, track_name=None, track_type=None, 
     per_race = {}
     race_ttype = {}
     for rid, ttype, ll, fl in rows:
-        pts = (ll or 0) * 0.25 + (fl or 0) * 0.5
+        pts = (ll or 0) * 0.25 + (fl or 0) * 0.45
         per_race.setdefault(rid, []).append(pts)
         race_ttype[rid] = ttype
 
@@ -215,6 +215,6 @@ def identify_dominators_in_projection(
     for driver, det in (proj_detail or {}).items():
         ll = det.get("laps_led", 0) or 0
         fl = det.get("fast_laps", 0) or 0
-        if ll * 0.25 + fl * 0.5 >= threshold:
+        if ll * 0.25 + fl * 0.45 >= threshold:
             doms.add(driver)
     return doms
