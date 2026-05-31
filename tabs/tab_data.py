@@ -284,11 +284,18 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     elif "Qual" in display_df.columns:
         display_df = display_df.sort_values("Qual", na_position="last")
 
-    # Replace null odds with dash for display (after sorting)
+    # Replace null odds with dash for display (after sorting). Cast the WHOLE
+    # column to clean strings: a numeric column with .fillna("—") becomes a MIX
+    # of ints and the "—" string, which Streamlit/pyarrow cannot serialize
+    # ("Could not convert '—' ... tried to convert to int64"). Stringifying the
+    # whole column keeps Arrow happy and the dash visible.
     for odds_col in ["Win Odds", "Top 3 Odds", "Top 5 Odds", "Top 10 Odds",
                       "Est. Odds", "Est. Impl %"]:
         if odds_col in display_df.columns:
-            display_df[odds_col] = display_df[odds_col].astype(object).fillna("—")
+            display_df[odds_col] = [
+                "—" if pd.isna(v) else (str(int(v)) if isinstance(v, float) and float(v).is_integer() else str(v))
+                for v in display_df[odds_col]
+            ]
 
     # Build MultiIndex columns for grouped headers
     group_map = {}
