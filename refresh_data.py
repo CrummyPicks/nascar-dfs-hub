@@ -620,6 +620,22 @@ def main():
         series_id = SERIES_MAP.get(args.series.lower(), 1)
         fetch_and_save_odds(series_id, args.year)
 
+    # Backfill NASCAR Driver Rating for any races missing it (newly-fetched
+    # races + historical gaps). Update-only and idempotent.
+    print("\nBackfilling NASCAR Driver Rating...")
+    try:
+        import sqlite3 as _sql
+        from src.config import DB_PATH as _DBP
+        from scrapers.backfill_ratings import store_all_ratings
+        _rconn = _sql.connect(str(_DBP))
+        try:
+            r_races, r_rows = store_all_ratings(_rconn, only_missing=True)
+            print(f"  Backfilled {r_rows} ratings across {r_races} races")
+        finally:
+            _rconn.close()
+    except Exception as e:
+        print(f"  Rating backfill skipped: {e}")
+
     print("\nDone! Start the app with: streamlit run nascar_dfs_app.py\n")
 
 
