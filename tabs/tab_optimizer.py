@@ -795,7 +795,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     # Salary vs Projection scatter
     sal_fig = salary_vs_projection_scatter(pool)
     if sal_fig:
-        st.plotly_chart(sal_fig, use_container_width=True)
+        st.plotly_chart(sal_fig, width="stretch")
 
     # ─── OPTIMAL LINEUP PANEL ───────────────────────────────────────────────
     st.divider()
@@ -1067,7 +1067,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 safe_fillna(exp_df),
                 key=f"opt_exposure_{race_id}",
                 series_id=series_id, track_name=track_name,
-                use_container_width=True, hide_index=True, height=350,
+                width="stretch", hide_index=True, height=350,
             )
 
         # Lineup cards
@@ -1090,7 +1090,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                     lu_df,
                     key=f"opt_lineup_{race_id}_{i}",
                     series_id=series_id, track_name=track_name,
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
         # Export
@@ -1136,4 +1136,4 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         Avg_Proj=("Proj Score", "mean"),
         Avg_Value=("Value", "mean"),
     ).round(1)
-    st.dataframe(tier_summary, use_container_width=True)
+    st.dataframe(tier_summary, width="stretch")

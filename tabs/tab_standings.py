@@ -103,7 +103,7 @@ def _render_manufacturer_standings(mfr_df):
             yaxis_title="", xaxis_title="Total Points",
         )
         fig.update_traces(textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 def _render_owner_standings(owner_df):
@@ -163,4 +163,4 @@ def _render_points_progression(races_df, driver_df):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
