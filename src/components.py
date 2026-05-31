@@ -475,21 +475,39 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
                          selection_mode="single-row", on_select="rerun",
                          key=scope_key)
 
-    # Resolve the clicked race → its DB race id (RaceId column on the full df)
-    # → render the whole field for that race below.
-    sel_rows = []
+    # Resolve the chosen race → DB race id → render the whole field below.
+    # Two paths: (1) clicking a row, which is NICE but UNRELIABLE inside an
+    # @st.dialog (Streamlit often doesn't deliver the selection event there —
+    # this is the reported "nothing pops up"); (2) a selectbox, which works
+    # reliably inside dialogs. We honor whichever produced a race.
+    chosen_race_id = None
     selection = getattr(event, "selection", None) if event is not None else None
+    sel_rows = []
     if selection is not None:
         sel_rows = (getattr(selection, "rows", None)
                     or (selection.get("rows", []) if hasattr(selection, "get") else []))
     if sel_rows and "RaceId" in df.columns:
         ridx = sel_rows[0]
-        if 0 <= ridx < len(df):
-            race_id = df.iloc[ridx]["RaceId"]
-            if pd.notna(race_id):
-                st.caption("Click the selected race again to close the full field.")
-                _render_full_field_results(int(race_id), highlight_driver=driver_name,
-                                           key_prefix=scope_key)
+        if 0 <= ridx < len(df) and pd.notna(df.iloc[ridx]["RaceId"]):
+            chosen_race_id = int(df.iloc[ridx]["RaceId"])
+
+    if "RaceId" in df.columns and len(df):
+        race_opts = {"— select a race to see the full field —": None}
+        for _, rr in df.iterrows():
+            if pd.isna(rr.get("RaceId")):
+                continue
+            bits = [str(rr.get("Date", "")), str(rr.get("Race", ""))]
+            if pd.notna(rr.get("Finish")):
+                bits.append(f"(P{int(rr['Finish'])})")
+            race_opts[" ".join(b for b in bits if b)] = int(rr["RaceId"])
+        picked = st.selectbox("See full field for race:", list(race_opts.keys()),
+                              key=scope_key + "_pick", label_visibility="collapsed")
+        if race_opts.get(picked) is not None:
+            chosen_race_id = race_opts[picked]
+
+    if chosen_race_id is not None:
+        _render_full_field_results(chosen_race_id, highlight_driver=driver_name,
+                                   key_prefix=scope_key)
 
 
 @st.dialog("Driver History", width="large")
