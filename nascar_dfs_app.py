@@ -870,9 +870,24 @@ if fd_file and not fd_df.empty:
 from src.components import reset_driver_dialog_guard
 reset_driver_dialog_guard()
 
-tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj, tab_optimizer, tab_acc, tab_standings, tab_dbhealth = st.tabs([
-    "Race Data", "Practice", "Track History", "Race Analyzer", "Projections", "Optimizer", "Accuracy", "Standings", "DB Health"
-])
+# A dedicated "Concrete" tab appears ONLY on concrete race weeks (Nashville,
+# Dover, Bristol) — surfacing the All-Concrete surface group when it's relevant,
+# without cluttering asphalt weeks.
+_concrete_week = is_concrete_track(track_name)
+_tab_labels = [
+    "Race Data", "Practice", "Track History", "Race Analyzer",
+    "Projections", "Optimizer", "Accuracy", "Standings", "DB Health",
+]
+if _concrete_week:
+    _tab_labels.insert(3, "Concrete")  # right after Track History
+_app_tabs = st.tabs(_tab_labels)
+if _concrete_week:
+    (tab_data, tab_practice, tab_history, tab_concrete, tab_race_analyzer,
+     tab_proj, tab_optimizer, tab_acc, tab_standings, tab_dbhealth) = _app_tabs
+else:
+    tab_concrete = None
+    (tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj,
+     tab_optimizer, tab_acc, tab_standings, tab_dbhealth) = _app_tabs
 
 from tabs import tab_data as td
 from tabs import tab_practice as tp
