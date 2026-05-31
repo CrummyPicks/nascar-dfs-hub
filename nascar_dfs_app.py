@@ -10,6 +10,7 @@ import pandas as pd
 try:
     from src.config import (
         SERIES_OPTIONS, SERIES_LABELS, TRACK_TYPE_MAP, TRACK_TYPE_COLORS, DB_PATH,
+        is_concrete_track,
     )
     from src.data import (
         fetch_race_list, fetch_weekend_feed, fetch_lap_times, fetch_lap_averages,
