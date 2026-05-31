@@ -46,6 +46,15 @@ _DOM_START_PENALTY_DEFAULT = (0.88, 0.005)
 # how long the race is (a 500-lap Bristol is still a track-position race).
 _DOM_START_LONGRACE_REF = 320
 
+# NASCAR Driver Rating blend weights into the track-history finish signal.
+# Rating is ~0.92 collinear with avg running position (already in base_finish),
+# so the weight is deliberately small when ARP is present (anti-double-count)
+# and larger when ARP is missing (rating pseudo-finish is a real gap-fill).
+# Tunable via backtest_weights.py; set both to 0 to disable rating in the
+# projection (it remains a stored/displayed metric).
+_RATING_BLEND_W = 0.10
+_RATING_BLEND_W_NOARP = 0.50
+
 
 def _dom_start_multiplier(qp, race_laps, track_type):
     """Track-type-aware start-position multiplier on the dominator score."""
@@ -154,6 +163,21 @@ def compute_projections(
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
             base_finish = arp_finish_blend(arp, af, track_type)
+
+            # NASCAR Driver Rating refinement. Rating (0-150) is a richer
+            # composite than ARP alone — it folds in quality passes, top-15
+            # laps, lead-lap finishes and fastest laps — but it is ~0.92
+            # collinear with ARP, which base_finish already uses, so it is
+            # applied as a SMALL nudge (not a co-equal signal) to avoid
+            # double-counting. Empirically finish ≈ 40.05 − 0.304·rating
+            # (Cup 2022+, r=−0.78). When ARP is MISSING, the rating pseudo-
+            # finish is a far better anchor than raw avg_finish, so it gets
+            # heavier weight there (a genuine gap-fill, not a duplicate).
+            th_rating = th.get("th_rating")
+            if th_rating is not None:
+                pseudo = max(1.0, min(float(field_size), 40.05 - 0.304 * th_rating))
+                k = _RATING_BLEND_W if arp is not None else _RATING_BLEND_W_NOARP
+                base_finish = base_finish * (1 - k) + pseudo * k
 
             t_adj = team_adj_data.get(d) if team_adj_data else None
             if t_adj and t_adj.get("team_adj", 0) != 0:

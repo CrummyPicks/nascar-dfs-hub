@@ -98,7 +98,7 @@ def load_race(conn, race_id, series_id, track_name, race_date):
                                           exclude_track=track_name, before_date=race_date)
     th_data = {}
     if not th_df.empty:
-        for c in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Avg Run Pos"]:
+        for c in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Avg Run Pos", "Avg Rating"]:
             if c in th_df.columns:
                 th_df[c] = pd.to_numeric(th_df[c], errors="coerce")
         idx = th_df.drop_duplicates("Driver").set_index("Driver")
@@ -107,8 +107,9 @@ def load_race(conn, race_id, series_id, track_name, race_date):
             if m and m in idx.index:
                 r = idx.loc[m]; races = r.get("Races", 1) or 1
                 arp = r.get("Avg Run Pos") if pd.notna(r.get("Avg Run Pos")) and r.get("Avg Run Pos") != 99 else None
+                rating = r.get("Avg Rating") if pd.notna(r.get("Avg Rating")) else None
                 th_data[d] = {"avg_finish": r.get("Avg Finish", 20), "avg_start": r.get("Avg Start", 20),
-                              "avg_running_pos": arp, "laps_led": r.get("Laps Led", 0) or 0,
+                              "avg_running_pos": arp, "th_rating": rating, "laps_led": r.get("Laps Led", 0) or 0,
                               "fastest_laps": r.get("Fastest Laps", 0) or 0, "races": int(races),
                               "laps_led_per_race": (r.get("Laps Led", 0) or 0)/races, "fastest_laps_per_race": 0}
     tt_data = {d: tt_raw[d] for d in drivers if d in tt_raw}
