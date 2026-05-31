@@ -524,7 +524,7 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         [This Track] [Track Type] [YYYY Season] [Pick a Track] [All-Time]
     The first tab is whichever scope the caller considered primary.
     """
-    from src.config import TRACK_TYPE_MAP
+    from src.config import TRACK_TYPE_MAP, is_concrete_track
     from src.data import query_driver_tracks_raced
 
     # Derive missing context
@@ -572,6 +572,11 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     if track_type:
         specs.append((_TRACK_TYPE_LABELS.get(track_type, track_type.replace("_", " ").title()),
                       dict(track_type=track_type, show_track_col=True)))
+    # Concrete-surface scope (Nashville/Dover/Bristol) — shown ALONGSIDE the
+    # normal track-type tab on concrete weeks so a driver's concrete-surface
+    # history (which races alike regardless of size) is one click away.
+    if track_name and is_concrete_track(track_name):
+        specs.append(("Concrete", dict(track_type="concrete", show_track_col=True)))
     specs.append((f"{season} Season", dict(season=season, show_track_col=True)))
     specs.append(("Pick a Track", dict(_picker=True)))
     specs.append(("All-Time", dict(_alltime=True, show_track_col=True)))
