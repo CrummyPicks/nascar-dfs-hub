@@ -813,24 +813,23 @@ if not lap_averages_df.empty and not practice_data:
                                    "30 Lap Rank"])
     if _has_rank_cols:
         from src.utils import (normalize_driver_name, fuzzy_match_name,
-                               compute_practice_rank_signal)
+                               compute_practice_signals)
         _entry_drivers = entry_list_df["Driver"].tolist() if not entry_list_df.empty else []
         _norm_entry = {normalize_driver_name(d): d for d in _entry_drivers}
-        for _, row in lap_averages_df.iterrows():
-            driver = row.get("Driver")
-            if not driver:
-                continue
-            signal = compute_practice_rank_signal(row)
-            if signal is None:
+        # Coverage-weighted, long-run-weighted practice signal computed across the
+        # WHOLE field at once (so each lap-window is scored by participation —
+        # sparse buckets like a 3-driver 30-lap run don't inflate those runners).
+        _prac_signals = compute_practice_signals(lap_averages_df,
+                                                 field_size=len(lap_averages_df))
+        for driver, signal in _prac_signals.items():
+            if not driver or signal is None:
                 continue
             key = driver
             if _entry_drivers and driver not in _entry_drivers:
-                # Try normalized match
                 norm_key = normalize_driver_name(driver)
                 if norm_key in _norm_entry:
                     key = _norm_entry[norm_key]
                 else:
-                    # Fuzzy fallback
                     matched = fuzzy_match_name(driver, _entry_drivers)
                     if matched:
                         key = matched

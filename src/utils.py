@@ -49,6 +49,106 @@ def compute_practice_rank_signal(rank_row, field_size: int = None) -> Optional[f
     return sum(vals) / len(vals)
 
 
+# Per-lap-window base weights for the practice signal. Longer green-flag runs
+# predict RACE pace far better than a single fast lap (which is qualifying-style
+# speed), so they carry more weight. "Moderate" tilt: a fast 5-lap run still
+# counts, but 10-30 lap runs dominate.
+_PRACTICE_BUCKET_WEIGHTS = {
+    "1 Lap Rank":  0.5,
+    "5 Lap Rank":  0.8,
+    "10 Lap Rank": 1.2,
+    "15 Lap Rank": 1.5,
+    "20 Lap Rank": 1.8,
+    "25 Lap Rank": 2.0,
+    "30 Lap Rank": 2.0,
+}
+
+
+def compute_practice_signals(lap_averages_df, field_size: int = None) -> dict:
+    """Coverage-weighted practice signal for the whole field at once.
+
+    Fixes two flaws in the old simple-mean-of-ranks approach:
+
+    1. SPARSE-BUCKET INFLATION. NASCAR ranks each lap-window only among the
+       drivers who actually ran that many consecutive laps. If just 3 cars ran
+       a 30-lap run, their 30-lap ranks are 1/2/3 — small, elite-looking numbers
+       — even though "3rd of 3" is dead LAST in that group. Averaging raw ranks
+       rewarded drivers merely for running long. We fix this two ways:
+         • Convert each rank to a PERCENTILE within its bucket:
+               pct = (rank - 1) / (n_in_bucket - 1)
+           so 1st-of-3 = 0.0 (best) and 3rd-of-3 = 1.0 (worst) — comparable to
+           1st-of-38 = 0.0 and 38th-of-38 = 1.0.
+         • Weight each bucket by COVERAGE = n_in_bucket / field_size, so a
+           2-of-38 bucket contributes ~5% as much as a fully-run bucket. A
+           handful of drivers running a long run can't manufacture value for
+           themselves. Lone-runner buckets (n < 2) are dropped entirely.
+
+    2. NO LONG-RUN EMPHASIS. Each window counted equally. Long runs predict
+       race pace better, so they get higher BASE weight (_PRACTICE_BUCKET_WEIGHTS).
+
+    Crucially this neither punishes a driver for running few laps nor rewards one
+    for running many: a driver is judged purely on WHERE they placed in each
+    bucket they ran, with sparsely-run buckets discounted for everyone.
+
+    Args:
+        lap_averages_df: DataFrame with a "Driver" column and any of the
+            "{N} Lap Rank" columns (ranks are 1-based, lower = faster).
+        field_size: denominator for coverage. Defaults to the row count.
+
+    Returns:
+        {driver_name: signal} where signal is in rank-like units (~1..field_size,
+        lower = better) so it drops into the projection engine unchanged. Drivers
+        with no usable buckets are omitted.
+    """
+    if lap_averages_df is None or lap_averages_df.empty:
+        return {}
+    df = lap_averages_df
+    if "Driver" not in df.columns:
+        return {}
+    n_field = field_size or len(df)
+    if n_field <= 1:
+        n_field = max(len(df), 2)
+
+    # Per-bucket participation counts (non-null ranks) and coverage weights.
+    bucket_info = {}  # col -> (n_in_bucket, coverage * base_weight)
+    for col, base_w in _PRACTICE_BUCKET_WEIGHTS.items():
+        if col not in df.columns:
+            continue
+        n_b = int(pd.to_numeric(df[col], errors="coerce").notna().sum())
+        if n_b < 2:
+            continue  # lone runner (or none) → no meaningful place to score
+        coverage = n_b / n_field
+        bucket_info[col] = (n_b, base_w * coverage)
+    if not bucket_info:
+        return {}
+
+    out = {}
+    for _, row in df.iterrows():
+        driver = row.get("Driver")
+        if not driver:
+            continue
+        wsum = 0.0
+        wpct = 0.0
+        for col, (n_b, eff_w) in bucket_info.items():
+            v = row.get(col)
+            try:
+                if v is None or pd.isna(v):
+                    continue
+                r = float(v)
+            except (TypeError, ValueError):
+                continue
+            pct = (r - 1.0) / (n_b - 1.0)        # 0 = fastest in bucket, 1 = slowest
+            pct = min(1.0, max(0.0, pct))
+            wpct += pct * eff_w
+            wsum += eff_w
+        if wsum <= 0:
+            continue
+        avg_pct = wpct / wsum
+        # Back to rank-like units (lower = better) for the projection engine.
+        out[driver] = 1.0 + avg_pct * (n_field - 1)
+    return out
+
+
 def parse_american_odds(value) -> Optional[int]:
     """Parse a single American-odds value into a signed integer.
 
