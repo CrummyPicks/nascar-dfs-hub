@@ -26,6 +26,52 @@ from src.utils import (
 PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
 
+# ── Shared accuracy helpers ──────────────────────────────────────────────────
+# Status strings that mean the car did NOT finish under power. A DNF's actual DK
+# is dominated by wreck/mechanical LUCK, not projectable pace, so by default the
+# accuracy views grade only running finishers (toggle in render()). Backtest
+# evidence: filtering DNFs lifts measured rho ~0.37 -> ~0.45, far more than any
+# weight change — the model was always better than the all-finishers metric said.
+def _is_dnf(status) -> bool:
+    """True if a finishing status indicates a DNF (not 'running'/classified)."""
+    s = str(status or "").strip().lower()
+    return bool(s) and ("running" not in s)
+
+
+def _metric_color(value, elite_thresh, good_thresh, lower_is_better=True):
+    """Hex color for a metric card: green=elite, amber=good, red=needs work."""
+    if value is None or (isinstance(value, float) and value != value):  # NaN
+        return "#64748b"
+    if lower_is_better:
+        if value <= elite_thresh:
+            return "#22c55e"
+        if value <= good_thresh:
+            ratio = (value - elite_thresh) / max(good_thresh - elite_thresh, 1e-9)
+            return f"#{int(34 + ratio*(234-34)):02x}{int(197 - ratio*(197-179)):02x}3e"
+        return "#ef4444"
+    else:
+        if value >= elite_thresh:
+            return "#22c55e"
+        if value >= good_thresh:
+            ratio = (elite_thresh - value) / max(elite_thresh - good_thresh, 1e-9)
+            return f"#{int(34 + ratio*(234-34)):02x}{int(197 - ratio*(197-179)):02x}3e"
+        return "#ef4444"
+
+
+def _metric_cards(metrics):
+    """Render a row of colored metric cards. `metrics` = list of (label, value_str,
+    color). Single source of truth so every accuracy section looks identical."""
+    cols = st.columns(len(metrics))
+    for col, (label, value, color) in zip(cols, metrics):
+        col.markdown(
+            f'<div style="background:{color}22; border:2px solid {color}; '
+            f'border-radius:8px; padding:12px 16px; text-align:center;">'
+            f'<span style="color:#8892a4; font-size:0.75rem; text-transform:uppercase;">{label}</span><br>'
+            f'<span style="color:{color}; font-size:1.5rem; font-weight:700;">{value}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _api_race_id_to_db(api_race_id):
@@ -734,22 +780,34 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     section_header("Projection Accuracy")
     st.caption("Compare projections vs actual results to improve future weight tuning")
 
-    mode = st.radio("Mode",
-                    ["Race Comparison", "Accuracy Dashboard", "Weight Optimizer"],
-                    horizontal=True, label_visibility="collapsed",
-                    key="acc_mode")
+    ctl = st.columns([3, 2])
+    with ctl[0]:
+        mode = st.radio("Mode",
+                        ["Race Comparison", "Accuracy Dashboard", "Weight Optimizer"],
+                        horizontal=True, label_visibility="collapsed",
+                        key="acc_mode")
+    with ctl[1]:
+        # ONE toggle governs every section's grading. Default ON: a DNF's actual
+        # DK is wreck/mechanical luck, not projectable pace, so the truer measure
+        # of the model is how it ranks the cars that actually ran.
+        exclude_dnf = st.toggle("Running finishers only (exclude DNFs)",
+                                value=True, key="acc_exclude_dnf",
+                                help="Grade accuracy only on cars classified as running "
+                                     "at the finish. DNFs are dominated by luck, so this "
+                                     "is the truer measure of projection skill.")
+    st.divider()
 
     if mode == "Race Comparison":
-        _render_race_comparison(completed_races, series_id, selected_year)
+        _render_race_comparison(completed_races, series_id, selected_year, exclude_dnf)
     elif mode == "Accuracy Dashboard":
-        _render_accuracy_dashboard(series_id, selected_year, series_name)
+        _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dnf)
     elif mode == "Weight Optimizer":
-        _render_weight_optimizer(completed_races, series_id, selected_year, series_name)
+        _render_weight_optimizer(completed_races, series_id, selected_year, series_name, exclude_dnf)
 
 
 # ── Race Comparison ──────────────────────────────────────────────────────────
 
-def _render_race_comparison(completed_races, series_id, selected_year):
+def _render_race_comparison(completed_races, series_id, selected_year, exclude_dnf=True):
     """Compare projections vs actuals for a single race.
 
     Works for ANY completed race — auto-generates projections using default
@@ -881,97 +939,42 @@ def _render_race_comparison(completed_races, series_id, selected_year):
     else:
         comp_filtered = comp
 
-    # Accuracy metrics (computed on filtered set)
-    mae_dk = comp_filtered["DK Error"].abs().mean()
-    mae_finish = comp_filtered["Finish Error"].abs().mean()
-    mae_dk_finish = comp_filtered["DK Finish Error"].abs().mean()
-    corr_dk = comp_filtered["Proj DK"].corr(comp_filtered["Actual DK"])
-    corr_finish = comp_filtered["Proj Finish"].corr(comp_filtered["Actual Finish"])
-    rank_corr = comp_filtered["Proj DK Finish"].corr(comp_filtered["Actual DK Finish"])
+    # Apply the unified DNF filter to the GRADED set (the projection itself was
+    # computed over the full field; we only change which drivers we score on).
+    n_dnf = int(comp_filtered["DNF"].sum()) if "DNF" in comp_filtered.columns else 0
+    graded = comp_filtered
+    if exclude_dnf and n_dnf > 0 and "DNF" in comp_filtered.columns:
+        _no_dnf = comp_filtered[~comp_filtered["DNF"]].copy()
+        if len(_no_dnf) >= 3:        # keep enough rows for a meaningful metric
+            graded = _no_dnf
 
-    def _metric_color(value, elite_thresh, good_thresh, lower_is_better=True):
-        """Return hex color: green=elite, yellow=good, red=needs work."""
-        if lower_is_better:
-            if value <= elite_thresh:
-                # Interpolate green (elite) — the lower the better
-                return "#22c55e"
-            elif value <= good_thresh:
-                # Interpolate from green toward yellow/orange
-                ratio = (value - elite_thresh) / (good_thresh - elite_thresh)
-                r = int(34 + ratio * (234 - 34))
-                g = int(197 - ratio * (197 - 179))
-                return f"#{r:02x}{g:02x}3e"
-            else:
-                # Red zone
-                return "#ef4444"
-        else:
-            if value >= elite_thresh:
-                return "#22c55e"
-            elif value >= good_thresh:
-                ratio = (elite_thresh - value) / (elite_thresh - good_thresh)
-                r = int(34 + ratio * (234 - 34))
-                g = int(197 - ratio * (197 - 179))
-                return f"#{r:02x}{g:02x}3e"
-            else:
-                return "#ef4444"
+    # Accuracy metrics (computed on the graded set)
+    mae_dk = graded["DK Error"].abs().mean()
+    mae_finish = graded["Finish Error"].abs().mean()
+    mae_dk_finish = graded["DK Finish Error"].abs().mean()
+    corr_dk = graded["Proj DK"].corr(graded["Actual DK"])
+    corr_finish = graded["Proj Finish"].corr(graded["Actual Finish"])
+    rank_corr = graded["Proj DK Finish"].corr(graded["Actual DK Finish"])
 
-    metrics = [
+    _metric_cards([
         ("DK Pts MAE", f"{mae_dk:.1f}", _metric_color(mae_dk, 15, 25, True)),
         ("DK Finish MAE", f"{mae_dk_finish:.1f}", _metric_color(mae_dk_finish, 5, 10, True)),
         ("Finish MAE", f"{mae_finish:.1f}", _metric_color(mae_finish, 5, 10, True)),
         ("DK Pts Correlation", f"{corr_dk:.3f}", _metric_color(corr_dk, 0.70, 0.45, False)),
         ("Finish Correlation", f"{corr_finish:.3f}", _metric_color(corr_finish, 0.55, 0.30, False)),
         ("DK Finish Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.70, 0.45, False)),
-    ]
+    ])
 
-    m_cols = st.columns(6)
-    for col, (label, value, color) in zip(m_cols, metrics):
-        col.markdown(
-            f'<div style="background:{color}22; border:2px solid {color}; '
-            f'border-radius:8px; padding:12px 16px; text-align:center;">'
-            f'<span style="color:#8892a4; font-size:0.75rem; text-transform:uppercase;">{label}</span><br>'
-            f'<span style="color:{color}; font-size:1.5rem; font-weight:700;">{value}</span></div>',
-            unsafe_allow_html=True,
-        )
-
+    _scope = (f"running finishers only — {n_dnf} DNF{'s' if n_dnf != 1 else ''} excluded"
+              if (exclude_dnf and graded is not comp_filtered)
+              else f"all {len(graded)} finishers")
     st.caption(
+        f"Graded on **{_scope}**.  "
         "**MAE** = Mean Absolute Error (lower is better) | "
         "**Correlation** = how well projected order matches actual (1.0 = perfect) | "
         "**Rank Correlation** = Spearman rank correlation of projected vs actual DK points"
     )
     st.caption(f"Weights: {weights_str}")
-
-    # DNF-excluded metrics
-    n_dnf = comp_filtered["DNF"].sum() if "DNF" in comp_filtered.columns else 0
-    if n_dnf > 0:
-        comp_no_dnf = comp_filtered[~comp_filtered["DNF"]].copy()
-        if len(comp_no_dnf) >= 3:
-            mae_dk_nd = comp_no_dnf["DK Error"].abs().mean()
-            mae_finish_nd = comp_no_dnf["Finish Error"].abs().mean()
-            mae_dk_finish_nd = comp_no_dnf["DK Finish Error"].abs().mean()
-            corr_dk_nd = comp_no_dnf["Proj DK"].corr(comp_no_dnf["Actual DK"])
-            corr_finish_nd = comp_no_dnf["Proj Finish"].corr(comp_no_dnf["Actual Finish"])
-            rank_corr_nd = comp_no_dnf["Proj DK Finish"].corr(comp_no_dnf["Actual DK Finish"])
-
-            metrics_nd = [
-                ("DK Pts MAE", f"{mae_dk_nd:.1f}", _metric_color(mae_dk_nd, 15, 25, True)),
-                ("DK Finish MAE", f"{mae_dk_finish_nd:.1f}", _metric_color(mae_dk_finish_nd, 5, 10, True)),
-                ("Finish MAE", f"{mae_finish_nd:.1f}", _metric_color(mae_finish_nd, 5, 10, True)),
-                ("DK Pts Correlation", f"{corr_dk_nd:.3f}", _metric_color(corr_dk_nd, 0.70, 0.45, False)),
-                ("Finish Correlation", f"{corr_finish_nd:.3f}", _metric_color(corr_finish_nd, 0.55, 0.30, False)),
-                ("DK Finish Rank Corr", f"{rank_corr_nd:.3f}", _metric_color(rank_corr_nd, 0.70, 0.45, False)),
-            ]
-
-            st.markdown(f"**Excluding DNFs** ({n_dnf} drivers removed)")
-            nd_cols = st.columns(6)
-            for col, (label, value, color) in zip(nd_cols, metrics_nd):
-                col.markdown(
-                    f'<div style="background:{color}22; border:2px solid {color}; '
-                    f'border-radius:8px; padding:12px 16px; text-align:center;">'
-                    f'<span style="color:#8892a4; font-size:0.75rem; text-transform:uppercase;">{label}</span><br>'
-                    f'<span style="color:{color}; font-size:1.5rem; font-weight:700;">{value}</span></div>',
-                    unsafe_allow_html=True,
-                )
 
     with st.expander("Target Ranges"):
         st.markdown(
@@ -1074,7 +1077,7 @@ def _render_race_comparison(completed_races, series_id, selected_year):
 
 # ── Accuracy Dashboard ───────────────────────────────────────────────────────
 
-def _render_accuracy_dashboard(series_id, selected_year, series_name):
+def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dnf=True):
     """Cross-race accuracy metrics — auto-generates projections for all completed races."""
     # Get all completed races for this series/year
     races = fetch_race_list(series_id, selected_year)
@@ -1110,6 +1113,13 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
         proj_dk, proj_detail_agg, actuals, meta = _generate_race_projections(race, series_id)
         if proj_dk is None or actuals is None:
             continue
+
+        # Unified DNF filter: grade only running finishers when the toggle is on
+        # (projection saw the full field; we just don't score ourselves on wrecks).
+        if exclude_dnf and "Status" in actuals.columns:
+            _running = actuals[~actuals["Status"].map(_is_dnf)]
+            if len(_running) >= 5:   # keep enough rows for a meaningful metric
+                actuals = _running
 
         proj_list = []
         actual_list = []
@@ -1189,12 +1199,16 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name):
     overall_rank_corr = metrics_df["Rank Corr"].mean()
     overall_bias = all_comp_df["Error"].mean()
 
-    m_cols = st.columns(4)
-    m_cols[0].metric("Overall DK MAE", f"{overall_mae:.1f}")
-    m_cols[1].metric("Overall DK Correlation", f"{overall_corr:.3f}")
-    m_cols[2].metric("Avg Rank Correlation", f"{overall_rank_corr:.3f}")
-    m_cols[3].metric("Avg Bias", f"{overall_bias:+.1f}",
-                     help="Positive = over-projecting on average, Negative = under-projecting")
+    _metric_cards([
+        ("Overall DK MAE", f"{overall_mae:.1f}", _metric_color(overall_mae, 15, 25, True)),
+        ("DK Correlation", f"{overall_corr:.3f}", _metric_color(overall_corr, 0.70, 0.45, False)),
+        ("Avg Rank Corr", f"{overall_rank_corr:.3f}", _metric_color(overall_rank_corr, 0.70, 0.45, False)),
+        ("Avg Bias", f"{overall_bias:+.1f}", _metric_color(abs(overall_bias), 3, 8, True)),
+    ])
+    _scope = ("running finishers only (DNFs excluded)" if exclude_dnf
+              else "all finishers")
+    st.caption(f"Across {len(metrics_df)} races, graded on **{_scope}**.  "
+               "Avg Bias: positive = over-projecting, negative = under-projecting.")
 
     st.markdown("**Race-by-Race Accuracy**")
     race_disp = metrics_df.copy()
@@ -1287,7 +1301,7 @@ def _query_db_completed_races(series_ids, track_type=None, track_name=None):
     return result
 
 
-def _render_weight_optimizer(completed_races, series_id, selected_year, series_name):
+def _render_weight_optimizer(completed_races, series_id, selected_year, series_name, exclude_dnf=True):
     """Find optimal weights by backtesting against completed races."""
     from src.config import SERIES_OPTIONS, SERIES_LABELS
 
@@ -1313,8 +1327,15 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
                                     key="acc_cross_series",
                                     help="Add races from other series for more sample size")
     with ctrl_cols[3]:
-        include_dnf = st.checkbox("DNF adjustment", value=True,
-                                   key="acc_dnf_toggle")
+        # NOTE: this is the DNF RISK ADJUSTMENT — a projection INPUT that
+        # penalizes crash-prone drivers' projected finish. It is NOT the
+        # accuracy-grading filter (that's the page-level "Running finishers
+        # only" toggle, passed in as exclude_dnf).
+        include_dnf = st.checkbox("DNF risk adjustment", value=True,
+                                   key="acc_dnf_toggle",
+                                   help="Projection input: penalize crash-prone "
+                                        "drivers' projected finish. Separate from the "
+                                        "'Running finishers only' grading toggle above.")
 
     # Build series list
     if cross_series:
@@ -1417,7 +1438,7 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
     if run_clicked:
         st.session_state["acc_cancel"] = False
         _run_backtest(test_races, primary_sid, selected_year,
-                      context_label, include_dnf)
+                      context_label, include_dnf, exclude_dnf=exclude_dnf)
     elif "acc_opt_results" in st.session_state:
         _display_backtest_results(
             st.session_state["acc_opt_results"],
@@ -1426,15 +1447,18 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
 
 
 def _run_backtest(test_races, series_id, selected_year, context_label,
-                  include_dnf=True, grid_step=5):
+                  include_dnf=True, grid_step=5, exclude_dnf=True):
     """Run full-signal backtest across weight combinations.
 
     Args:
         test_races: list of (index, race_dict) — each race_dict has series_id
         series_id: primary series (used as fallback)
         context_label: display label for results (e.g. "Short Track" or "Bristol")
-        include_dnf: include DNF risk adjustment
+        include_dnf: include the DNF RISK ADJUSTMENT (a projection INPUT)
         grid_step: weight grid step size
+        exclude_dnf: GRADE only running finishers (drop DNFs from the error/rank
+            metrics). Distinct from include_dnf — this filters the SCORING set,
+            not the projection. Default True (the truer measure of model skill).
     """
     from src.utils import fuzzy_match_name
 
@@ -1869,10 +1893,15 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
 
         calibration = _get_track_dominator_calibration(track_name, track_type, race_sid)
 
-        # Pre-index actual DK pts per driver for fast lookup in combo loop
+        # Pre-index actual DK pts per driver for fast lookup in combo loop.
+        # Also flag DNFs so the grading set can exclude them (the projection
+        # still ran over the full field; we only drop wrecks from the SCORING).
         actual_dk = {}
+        dnf_set = set()
         for _, row in results.iterrows():
             actual_dk[row["Driver"]] = row["DK Pts"]
+            if "Status" in results.columns and _is_dnf(row.get("Status")):
+                dnf_set.add(row["Driver"])
 
         race_data.append({
             "race": race,
@@ -1895,6 +1924,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
             "track_name": race.get("track_name", ""),
             "series_id": race_sid,
             "actual_dk": actual_dk,
+            "dnf_set": dnf_set,
             "dnf_data": dnf_data,
             "calibration": calibration,
         })
@@ -1994,11 +2024,16 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     except (TypeError, ValueError):
                         actual_fl_map[dn] = 0
 
-            # Compute errors using pre-indexed actual_dk dict
+            # Compute errors using pre-indexed actual_dk dict. When the unified
+            # DNF toggle is on, skip DNF drivers in the GRADING (their actual DK
+            # is wreck luck, not projectable pace).
             actual_dk = rd["actual_dk"]
+            dnf_set = rd.get("dnf_set", set())
             proj_vals = []
             actual_vals = []
             for d in drivers:
+                if exclude_dnf and d in dnf_set:
+                    continue
                 if d in proj_dk and d in actual_dk:
                     all_errors.append(abs(proj_dk[d] - actual_dk[d]))
                     proj_vals.append(proj_dk[d])
