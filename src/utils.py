@@ -109,8 +109,8 @@ def compute_practice_signals(lap_averages_df, field_size: int = None) -> dict:
     if n_field <= 1:
         n_field = max(len(df), 2)
 
-    # Per-bucket participation counts (non-null ranks) and coverage weights.
-    bucket_info = {}  # col -> (n_in_bucket, coverage * base_weight)
+    # Per-bucket participation counts, coverage, and base length-weight.
+    bucket_info = {}  # col -> (n_in_bucket, coverage, base_weight)
     for col, base_w in _PRACTICE_BUCKET_WEIGHTS.items():
         if col not in df.columns:
             continue
@@ -118,7 +118,7 @@ def compute_practice_signals(lap_averages_df, field_size: int = None) -> dict:
         if n_b < 2:
             continue  # lone runner (or none) → no meaningful place to score
         coverage = n_b / n_field
-        bucket_info[col] = (n_b, base_w * coverage)
+        bucket_info[col] = (n_b, coverage, base_w)
     if not bucket_info:
         return {}
 
@@ -129,7 +129,7 @@ def compute_practice_signals(lap_averages_df, field_size: int = None) -> dict:
             continue
         wsum = 0.0
         wpct = 0.0
-        for col, (n_b, eff_w) in bucket_info.items():
+        for col, (n_b, coverage, base_w) in bucket_info.items():
             v = row.get(col)
             try:
                 if v is None or pd.isna(v):
@@ -139,7 +139,19 @@ def compute_practice_signals(lap_averages_df, field_size: int = None) -> dict:
                 continue
             pct = (r - 1.0) / (n_b - 1.0)        # 0 = fastest in bucket, 1 = slowest
             pct = min(1.0, max(0.0, pct))
-            wpct += pct * eff_w
+            # COVERAGE SHRINKAGE: a placement in a sparsely-run bucket is weak
+            # evidence, so pull its value toward neutral (0.5) by how poorly the
+            # bucket was covered. 1st-of-38 (coverage~1) stays elite (~0.0);
+            # 1st-of-5 (coverage~0.13) lands ~0.44 (barely better than neutral);
+            # 3rd-of-3 (~0.07) lands ~0.54 (near neutral, NOT "dead last"). This
+            # fixes the single-sparse-bucket hole that weighting alone couldn't:
+            # a driver whose ONLY run is 1st-of-3 no longer projects as the #1
+            # practice car off a 3-car sample.
+            pct_adj = pct * coverage + 0.5 * (1.0 - coverage)
+            # Run-length emphasis (long runs predict race pace better) still
+            # rides on top as the relative weight between a driver's buckets.
+            eff_w = base_w * coverage
+            wpct += pct_adj * eff_w
             wsum += eff_w
         if wsum <= 0:
             continue
