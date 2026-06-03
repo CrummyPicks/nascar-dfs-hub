@@ -46,14 +46,45 @@ _DOM_START_PENALTY_DEFAULT = (0.88, 0.005)
 # how long the race is (a 500-lap Bristol is still a track-position race).
 _DOM_START_LONGRACE_REF = 320
 
-# NASCAR Driver Rating blend weights into the track-history finish signal.
-# Rating is ~0.92 collinear with avg running position (already in base_finish),
-# so the weight is deliberately small when ARP is present (anti-double-count)
-# and larger when ARP is missing (rating pseudo-finish is a real gap-fill).
-# Tunable via backtest_weights.py; set both to 0 to disable rating in the
-# projection (it remains a stored/displayed metric).
-_RATING_BLEND_W = 0.10
-_RATING_BLEND_W_NOARP = 0.50
+# NASCAR Driver Rating blend into the history finish signals (track + track-type).
+# When a driver has a rating, the projected finish from history is an explicit
+# 40/30/30 weighted blend of: rating-pseudo-finish / avg running position / avg
+# finish. Rating (0-150) is the richest single race-quality measure NASCAR
+# publishes (folds in quality passes, top-15 laps, lead-lap finishes, fast laps)
+# and is less wreck-distorted than raw finish, so it gets the plurality weight.
+# Empirically finish ≈ 40.05 − 0.304·rating (Cup 2022+, r=−0.78).
+_ARP_W    = 0.40   # average running position (strongest backtested predictor)
+_RATING_W = 0.30   # NASCAR Driver Rating (as a pseudo-finish)
+_AF_W     = 0.30   # average finish
+# Note: rating is ~0.92 collinear with ARP, so a heavier rating weight didn't
+# improve backtest accuracy (rho). Kept at 30% as a genuine co-signal — it folds
+# in quality passes / top-15 laps / lead-lap finishes that ARP alone misses —
+# with ARP holding the plurality. Revisit as more rated races accumulate.
+
+
+def _rating_pseudo_finish(rating, field_size):
+    """Convert a 0-150 NASCAR Driver Rating to a projected finish position
+    (1..field_size, lower = better) via the empirical Cup 2022+ regression."""
+    return max(1.0, min(float(field_size), 40.05 - 0.304 * rating))
+
+
+def _history_finish(arp, avg_finish, rating, field_size, track_type):
+    """Projected finish from history, blending rating / ARP / avg-finish.
+
+    With a rating present: explicit 40/30/30 (rating / ARP / finish). When ARP
+    is missing, its 30% is reallocated to rating (the better anchor) so we never
+    blend toward a phantom mid-field. With NO rating (≈1% of rows: DNQs, the two
+    unrated historical races): fall back to the prior track-type-aware ARP/finish
+    blend (arp_finish_blend), leaving those drivers' projections unchanged."""
+    from src.utils import arp_finish_blend
+    if rating is None:
+        return arp_finish_blend(arp, avg_finish, track_type)
+    pseudo = _rating_pseudo_finish(rating, field_size)
+    if arp is None:
+        # No ARP — give its weight to rating (keep finish at its 30% share).
+        rw, fw = _RATING_W + _ARP_W, _AF_W
+        return (pseudo * rw + avg_finish * fw) / (rw + fw)
+    return pseudo * _RATING_W + arp * _ARP_W + avg_finish * _AF_W
 
 
 def _dom_start_multiplier(qp, race_laps, track_type):
@@ -162,22 +193,10 @@ def compute_projections(
 
             arp = th.get("avg_running_pos")
             af = th["avg_finish"]
-            base_finish = arp_finish_blend(arp, af, track_type)
-
-            # NASCAR Driver Rating refinement. Rating (0-150) is a richer
-            # composite than ARP alone — it folds in quality passes, top-15
-            # laps, lead-lap finishes and fastest laps — but it is ~0.92
-            # collinear with ARP, which base_finish already uses, so it is
-            # applied as a SMALL nudge (not a co-equal signal) to avoid
-            # double-counting. Empirically finish ≈ 40.05 − 0.304·rating
-            # (Cup 2022+, r=−0.78). When ARP is MISSING, the rating pseudo-
-            # finish is a far better anchor than raw avg_finish, so it gets
-            # heavier weight there (a genuine gap-fill, not a duplicate).
-            th_rating = th.get("th_rating")
-            if th_rating is not None:
-                pseudo = max(1.0, min(float(field_size), 40.05 - 0.304 * th_rating))
-                k = _RATING_BLEND_W if arp is not None else _RATING_BLEND_W_NOARP
-                base_finish = base_finish * (1 - k) + pseudo * k
+            # Projected finish from THIS-TRACK history: 40/30/30 blend of NASCAR
+            # Driver Rating / avg running position / avg finish (see _history_finish).
+            base_finish = _history_finish(arp, af, th.get("th_rating"),
+                                          field_size, track_type)
 
             t_adj = team_adj_data.get(d) if team_adj_data else None
             if t_adj and t_adj.get("team_adj", 0) != 0:
@@ -200,7 +219,9 @@ def compute_projections(
                 tt_trust *= 0.8
             tt_arp = tt.get("avg_running_pos") if isinstance(tt, dict) else None
             tt_af = tt.get("avg_finish", mid_field) if isinstance(tt, dict) else mid_field
-            tt_avg = arp_finish_blend(tt_arp, tt_af, track_type)
+            tt_rating = tt.get("tt_rating") if isinstance(tt, dict) else None
+            # Same 40/30/30 rating/ARP/finish blend as the single-track signal.
+            tt_avg = _history_finish(tt_arp, tt_af, tt_rating, field_size, track_type)
             # Apply the SAME team-change adjustment used for track history:
             # a driver's track-type form was also earned in past equipment, so
             # moving to a better/worse team should shift it too (their team

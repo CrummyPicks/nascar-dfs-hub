@@ -1059,7 +1059,7 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
             WITH ranked AS (
                 SELECT d.id AS did, d.full_name AS name,
                        rr.finish_pos, rr.avg_running_position AS arp,
-                       rr.laps_led, rr.status,
+                       rr.rating AS rating, rr.laps_led, rr.status,
                        ROW_NUMBER() OVER (PARTITION BY d.id
                                           ORDER BY r.race_date DESC, r.id DESC) AS rn
                 FROM race_results rr
@@ -1075,6 +1075,8 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
                    COALESCE({fnum}/NULLIF({fden},0), AVG(finish_pos)) as avg_finish,
                    SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
                      NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0) as avg_running_pos,
+                   SUM(CASE WHEN rating IS NOT NULL THEN rating*{w} END)/
+                     NULLIF(SUM(CASE WHEN rating IS NOT NULL THEN {w} END),0) as avg_rating,
                    SUM(laps_led) as total_laps_led
             FROM ranked
             GROUP BY did
@@ -1082,11 +1084,12 @@ def _query_db_track_type_history(track_type, series_id, exclude_track=None,
         rows = conn.execute(query, params).fetchall()
         result = {}
         for row in rows:
-            name, races, avg_f, avg_arp, ll = row
+            name, races, avg_f, avg_arp, avg_rating, ll = row
             if races and races > 0:
                 result[name] = {
                     "avg_finish": avg_f or 20,
                     "avg_running_pos": avg_arp,
+                    "tt_rating": avg_rating,
                     "laps_led_per_race": (ll or 0) / races,
                     "races": races,
                 }

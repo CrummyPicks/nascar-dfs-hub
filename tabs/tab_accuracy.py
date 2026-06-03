@@ -357,7 +357,7 @@ def _generate_race_projections(race, series_id, weights=None):
                 }
 
     if not th_df.empty:
-        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF"]:
+        for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF", "Avg Rating"]:
             if col in th_df.columns:
                 th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
         th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
@@ -373,6 +373,7 @@ def _generate_race_projections(race, series_id, weights=None):
 
                 arp = row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None
                 af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
+                th_rating = row.get("Avg Rating") if pd.notna(row.get("Avg Rating", None)) else None
 
                 # Cross-series blending: only blend if cross-series is BETTER
                 cross = cross_th_lookup.get(d)
@@ -390,6 +391,7 @@ def _generate_race_projections(race, series_id, weights=None):
                     "avg_finish": af,
                     "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
                     "avg_running_pos": arp,
+                    "th_rating": th_rating,
                     "laps_led": laps_led,
                     "fastest_laps": fastest_laps,
                     "laps_led_per_race": laps_led / races,
@@ -1566,7 +1568,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     }
 
         if not th_df.empty:
-            for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF"]:
+            for col in ["Avg Finish", "Avg Start", "Laps Led", "Fastest Laps", "Races", "Wins", "Top 5", "Top 10", "DNF", "Avg Rating"]:
                 if col in th_df.columns:
                     th_df[col] = pd.to_numeric(th_df[col], errors="coerce")
             th_idx = th_df.drop_duplicates("Driver").set_index("Driver")
@@ -1581,6 +1583,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                     dk_hist_entry = dk_history.get(matched) or dk_history.get(d) or {}
                     arp = row.get("Avg Run Pos") if pd.notna(row.get("Avg Run Pos", None)) else None
                     af = row.get("Avg Finish", 20) if pd.notna(row.get("Avg Finish")) else 20
+                    th_rating = row.get("Avg Rating") if pd.notna(row.get("Avg Rating", None)) else None
                     cross = cross_th_lookup.get(d)
                     if cross and cross["races"] >= 2:
                         c_af = cross["avg_finish"]
@@ -1595,6 +1598,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                         "avg_finish": af,
                         "avg_start": row.get("Avg Start", 20) if pd.notna(row.get("Avg Start")) else 20,
                         "avg_running_pos": arp,
+                        "th_rating": th_rating,
                         "laps_led": laps_led, "fastest_laps": fastest_laps,
                         "laps_led_per_race": laps_led / races,
                         "fastest_laps_per_race": fastest_laps / races,
