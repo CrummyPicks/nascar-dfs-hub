@@ -813,6 +813,8 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
     Works for ANY completed race — auto-generates projections using default
     weights when no saved projections exist.
     """
+    st.markdown("**Race Comparison**")
+    st.caption("Projected vs actual results for a single race, with accuracy metrics.")
     if not completed_races:
         st.info("No completed races available for this series/year.")
         return
@@ -1079,6 +1081,8 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
 
 def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dnf=True):
     """Cross-race accuracy metrics — auto-generates projections for all completed races."""
+    st.markdown("**Accuracy Dashboard**")
+    st.caption("Model accuracy aggregated across every completed race this season.")
     # Get all completed races for this series/year
     races = fetch_race_list(series_id, selected_year)
     point_races = filter_point_races(races) if races else []
@@ -2330,11 +2334,16 @@ def _display_backtest_results(results_df, context_label):
                 # Summary metrics for this combo
                 valid = detail_df.dropna(subset=["Actual DK"])
                 if len(valid) > 5:
-                    mc = st.columns(4)
-                    mc[0].metric("MAE", f"{valid['Error'].abs().mean():.1f}")
-                    mc[1].metric("Avg Error", f"{valid['Error'].mean():+.1f}")
-                    mc[2].metric("LL MAE", f"{(valid['Proj LL'] - valid['Actual LL']).abs().mean():.1f}")
-                    mc[3].metric("FL MAE", f"{(valid['Proj FL'] - valid['Actual FL']).abs().mean():.1f}")
+                    _dk_mae = valid['Error'].abs().mean()
+                    _avg_err = valid['Error'].mean()
+                    _ll_mae = (valid['Proj LL'] - valid['Actual LL']).abs().mean()
+                    _fl_mae = (valid['Proj FL'] - valid['Actual FL']).abs().mean()
+                    _metric_cards([
+                        ("DK MAE", f"{_dk_mae:.1f}", _metric_color(_dk_mae, 15, 25, True)),
+                        ("Avg Error", f"{_avg_err:+.1f}", _metric_color(abs(_avg_err), 3, 8, True)),
+                        ("LL MAE", f"{_ll_mae:.1f}", _metric_color(_ll_mae, 10, 25, True)),
+                        ("FL MAE", f"{_fl_mae:.1f}", _metric_color(_fl_mae, 5, 12, True)),
+                    ])
 
                     # Scatter: Projected vs Actual DK Points with trend line
                     import plotly.graph_objects as go
