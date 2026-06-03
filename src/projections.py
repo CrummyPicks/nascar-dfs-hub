@@ -54,12 +54,15 @@ _DOM_START_LONGRACE_REF = 320
 # and is less wreck-distorted than raw finish, so it gets the plurality weight.
 # Empirically finish ≈ 40.05 − 0.304·rating (Cup 2022+, r=−0.78).
 _ARP_W    = 0.40   # average running position (strongest backtested predictor)
-_RATING_W = 0.30   # NASCAR Driver Rating (as a pseudo-finish)
-_AF_W     = 0.30   # average finish
-# Note: rating is ~0.92 collinear with ARP, so a heavier rating weight didn't
-# improve backtest accuracy (rho). Kept at 30% as a genuine co-signal — it folds
-# in quality passes / top-15 laps / lead-lap finishes that ARP alone misses —
-# with ARP holding the plurality. Revisit as more rated races accumulate.
+_RATING_W = 0.20   # NASCAR Driver Rating (as a pseudo-finish)
+_AF_W     = 0.40   # average finish
+# Note: rating is ~0.92 collinear with ARP, so heavier rating weight does NOT
+# improve accuracy. On a DNF-filtered backtest (grading only running finishers,
+# which removes wreck-luck noise) 40/20/40 tested best on deep starters
+# (rho_deep 0.485 vs 0.477 at 30% rating). Rating kept at 20% as a genuine
+# co-signal — it folds in quality passes / top-15 laps / lead-lap finishes ARP
+# alone misses — with ARP + finish carrying the plurality. Revisit as more
+# rated races accumulate (rating may decouple from ARP with more data).
 
 
 def _rating_pseudo_finish(rating, field_size):
