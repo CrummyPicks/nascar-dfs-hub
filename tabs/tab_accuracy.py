@@ -72,6 +72,53 @@ def _metric_cards(metrics):
         )
 
 
+# Elite / Good / Needs-Work bands for every metric we surface — single source of
+# truth so the same thresholds drive both the card COLORS (_metric_color calls)
+# and the "Target Ranges" reference table shown beside each metric block.
+_TARGET_RANGES = {
+    # MAE family (lower is better)
+    "DK Pts MAE":     "< 15 | 15 - 25 | > 25",
+    "DK MAE":         "< 15 | 15 - 25 | > 25",
+    "Overall DK MAE": "< 15 | 15 - 25 | > 25",
+    "DK Finish MAE":  "< 5 | 5 - 10 | > 10",
+    "Finish MAE":     "< 5 | 5 - 10 | > 10",
+    "LL MAE":         "< 10 | 10 - 25 | > 25",
+    "FL MAE":         "< 5 | 5 - 12 | > 12",
+    # Correlation family (higher is better)
+    "DK Pts Correlation": "> 0.70 | 0.45 - 0.70 | < 0.45",
+    "DK Correlation":     "> 0.70 | 0.45 - 0.70 | < 0.45",
+    "Finish Correlation": "> 0.55 | 0.30 - 0.55 | < 0.30",
+    "DK Finish Rank Corr": "> 0.70 | 0.45 - 0.70 | < 0.45",
+    "Rank Corr":      "> 0.70 | 0.45 - 0.70 | < 0.45",
+    "Avg Rank Corr":  "> 0.70 | 0.45 - 0.70 | < 0.45",
+    # Bias (closer to 0 is better)
+    "Avg Bias":       "|bias| < 3 | 3 - 8 | > 8",
+    "Avg Error":      "|err| < 3 | 3 - 8 | > 8",
+}
+
+
+def _target_ranges_expander(metric_keys, key=None):
+    """Reference table of Elite/Good/Needs-Work bands for the given metrics.
+
+    Placed beside every MAE/correlation/bias block so the numbers are always
+    interpretable in-context (not just in Race Comparison). `metric_keys` is the
+    subset of _TARGET_RANGES to show, in display order."""
+    with st.expander("Target Ranges", expanded=False):
+        rows = ["| Metric | Elite | Good | Needs Work |",
+                "|--------|-------|------|------------|"]
+        for k in metric_keys:
+            band = _TARGET_RANGES.get(k)
+            if not band:
+                continue
+            elite, good, needs = [b.strip() for b in band.split("|")]
+            rows.append(f"| **{k}** | {elite} | {good} | {needs} |")
+        st.markdown("\n".join(rows) +
+            "\n\nNASCAR has high variance — even sharp models have off races. "
+            "A consistent **Good** band across multiple races is the real signal. "
+            "Lower MAE is better; higher correlation is better; bias near 0 means "
+            "no systematic over/under-projection.")
+
+
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _api_race_id_to_db(api_race_id):
@@ -978,19 +1025,10 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
     )
     st.caption(f"Weights: {weights_str}")
 
-    with st.expander("Target Ranges"):
-        st.markdown(
-            "| Metric | Elite | Good | Needs Work |\n"
-            "|--------|-------|------|------------|\n"
-            "| **DK Pts MAE** | < 15 | 15 - 25 | > 25 |\n"
-            "| **DK Finish MAE** | < 5 | 5 - 10 | > 10 |\n"
-            "| **Finish MAE** | < 5 | 5 - 10 | > 10 |\n"
-            "| **DK Pts Correlation** | > 0.70 | 0.45 - 0.70 | < 0.45 |\n"
-            "| **Finish Correlation** | > 0.55 | 0.30 - 0.55 | < 0.30 |\n"
-            "| **DK Finish Rank Corr** | > 0.70 | 0.45 - 0.70 | < 0.45 |\n\n"
-            "NASCAR has high variance — even sharp models will have off races. "
-            "Consistent **Good** range across multiple races is a strong sign."
-        )
+    _target_ranges_expander([
+        "DK Pts MAE", "DK Finish MAE", "Finish MAE",
+        "DK Pts Correlation", "Finish Correlation", "DK Finish Rank Corr",
+    ])
 
     st.dataframe(safe_fillna(format_display_df(comp)), width="stretch",
                  hide_index=False, height=500)
@@ -1213,6 +1251,8 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dn
               else "all finishers")
     st.caption(f"Across {len(metrics_df)} races, graded on **{_scope}**.  "
                "Avg Bias: positive = over-projecting, negative = under-projecting.")
+    _target_ranges_expander(["Overall DK MAE", "DK Correlation",
+                             "Avg Rank Corr", "Avg Bias"])
 
     st.markdown("**Race-by-Race Accuracy**")
     race_disp = metrics_df.copy()
@@ -2344,6 +2384,7 @@ def _display_backtest_results(results_df, context_label):
                         ("LL MAE", f"{_ll_mae:.1f}", _metric_color(_ll_mae, 10, 25, True)),
                         ("FL MAE", f"{_fl_mae:.1f}", _metric_color(_fl_mae, 5, 12, True)),
                     ])
+                    _target_ranges_expander(["DK MAE", "Avg Error", "LL MAE", "FL MAE"])
 
                     # Scatter: Projected vs Actual DK Points with trend line
                     import plotly.graph_objects as go
