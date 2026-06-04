@@ -123,6 +123,27 @@ def create_database():
         UNIQUE(race_id, driver_id)
     );
 
+    -- ── STAGE RESULTS (per-driver, per-stage race breakdown) ─────
+    -- Computed from lap-times sliced by the stage lap boundaries in the
+    -- weekend-feed. Powers the Race Lab tab + the driver-popup stage arc:
+    -- who was fast early and faded, who built through the race, etc.
+    CREATE TABLE IF NOT EXISTS stage_results (
+        id              INTEGER PRIMARY KEY,
+        race_id         INTEGER NOT NULL REFERENCES races(id),
+        driver_id       INTEGER NOT NULL REFERENCES drivers(id),
+        stage_number    INTEGER NOT NULL,   -- 1,2,3 (4 for road-course extra)
+        green_lap_speed REAL,               -- median green-flag mph in this stage
+        green_speed_rank INTEGER,           -- 1=fastest green pace in the stage
+        avg_running_pos REAL,               -- avg running position over the stage
+        start_pos       INTEGER,            -- running position entering the stage
+        end_pos         INTEGER,            -- running position at stage end
+        pos_change      INTEGER,            -- start_pos - end_pos (+ = gained)
+        laps            INTEGER,            -- laps run in the stage
+        stage_points    INTEGER,            -- NASCAR stage points (top 10 only)
+        UNIQUE(race_id, driver_id, stage_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stage_race ON stage_results(race_id);
+
     -- ── DFS POINTS ──────────────────────────────────────────────
     CREATE TABLE IF NOT EXISTS dfs_points (
         id          INTEGER PRIMARY KEY,

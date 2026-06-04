@@ -873,21 +873,30 @@ reset_driver_dialog_guard()
 # A dedicated "Concrete" tab appears ONLY on concrete race weeks (Nashville,
 # Dover, Bristol) — surfacing the All-Concrete surface group when it's relevant,
 # without cluttering asphalt weeks.
+# Build the tab set from an ordered label list, then map labels -> tab objects.
+# Dict-keyed (not positional tuple-unpacking) so optional tabs like "Concrete"
+# can't desync the assignments. "Concrete" only appears on concrete race weeks
+# (Nashville/Dover/Bristol).
 _concrete_week = is_concrete_track(track_name)
 _tab_labels = [
     "Race Data", "Practice", "Track History", "Race Analyzer",
-    "Projections", "Optimizer", "Accuracy", "Standings", "DB Health",
+    "Projections", "Optimizer", "Race Lab", "Accuracy", "Standings", "DB Health",
 ]
 if _concrete_week:
     _tab_labels.insert(3, "Concrete")  # right after Track History
-_app_tabs = st.tabs(_tab_labels)
-if _concrete_week:
-    (tab_data, tab_practice, tab_history, tab_concrete, tab_race_analyzer,
-     tab_proj, tab_optimizer, tab_acc, tab_standings, tab_dbhealth) = _app_tabs
-else:
-    tab_concrete = None
-    (tab_data, tab_practice, tab_history, tab_race_analyzer, tab_proj,
-     tab_optimizer, tab_acc, tab_standings, tab_dbhealth) = _app_tabs
+_tabs = dict(zip(_tab_labels, st.tabs(_tab_labels)))
+
+tab_data        = _tabs["Race Data"]
+tab_practice    = _tabs["Practice"]
+tab_history     = _tabs["Track History"]
+tab_concrete    = _tabs.get("Concrete")
+tab_race_analyzer = _tabs["Race Analyzer"]
+tab_proj        = _tabs["Projections"]
+tab_optimizer   = _tabs["Optimizer"]
+tab_racelab     = _tabs["Race Lab"]
+tab_acc         = _tabs["Accuracy"]
+tab_standings   = _tabs["Standings"]
+tab_dbhealth    = _tabs["DB Health"]
 
 from tabs import tab_data as td
 from tabs import tab_practice as tp
@@ -895,6 +904,7 @@ from tabs import tab_track_history as tth
 from tabs import tab_race_analyzer as tra
 from tabs import tab_projections as tproj
 from tabs import tab_optimizer as topt
+from tabs import tab_race_lab as trl
 from tabs import tab_accuracy as tacc
 from tabs import tab_standings as tstand
 from tabs import tab_db_health as tdbh
@@ -954,6 +964,12 @@ with tab_optimizer:
         is_prerace=is_prerace, race_name=race_name, race_id=race_id,
         track_name=track_name, series_id=series_id, dk_df=dk_df,
         odds_data=odds_data,
+    )
+
+with tab_racelab:
+    trl.render(
+        completed_races=completed_races, series_id=series_id,
+        selected_year=selected_year, series_name=series_name,
     )
 
 with tab_acc:

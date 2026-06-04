@@ -136,6 +136,120 @@ def _green_flag_speeds(season, series_id, api_race_id):
     return out
 
 
+def _median(vals):
+    if not vals:
+        return None
+    v = sorted(vals); n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+
+def _stage_bounds_and_points(season, series_id, api_race_id):
+    """From the weekend-feed: stage lap boundaries + NASCAR stage points.
+
+    Returns (stage_bounds, stage_points) where stage_bounds is a list of
+    (stage_number, lo_lap, hi_lap) inclusive ranges and stage_points is
+    {(driver_id, stage_number): points}. Empty if the feed lacks stage data.
+    """
+    url = f"{NASCAR_API_BASE}/{season}/{series_id}/{api_race_id}/weekend-feed.json"
+    feed = fetch_json(url)
+    wr = (feed.get("weekend_race") or [{}])[0] if isinstance(feed, dict) else {}
+    if not wr:
+        return [], {}
+    s1 = wr.get("stage_1_laps") or 0
+    s2 = wr.get("stage_2_laps") or 0
+    s3 = wr.get("stage_3_laps") or 0
+    s4 = wr.get("stage_4_laps") or 0
+    if not s1:
+        return [], {}
+    bounds = []
+    lo = 1
+    cum = 0
+    for snum, slaps in [(1, s1), (2, s2), (3, s3), (4, s4)]:
+        if slaps <= 0:
+            continue
+        cum += slaps
+        # Final stage: extend hi to a big number so overtime laps are included.
+        is_last = (snum == 3 and s4 <= 0) or snum == 4
+        hi = 99999 if is_last else cum
+        bounds.append((snum, lo, hi))
+        lo = cum + 1
+    points = {}
+    for sr in (wr.get("stage_results") or []):
+        snum = sr.get("stage_number")
+        for row in (sr.get("results") or []):
+            did = row.get("driver_id")
+            if did is not None and snum is not None:
+                points[(did, snum)] = row.get("stage_points")
+    return bounds, points
+
+
+def _stage_metrics(season, series_id, api_race_id, stage_bounds, stage_points):
+    """Per-driver, per-stage breakdown computed by slicing the lap-times feed at
+    the stage lap boundaries.
+
+    Args:
+        stage_bounds: list of (stage_number, lo_lap, hi_lap) inclusive ranges.
+        stage_points: {(driver_id, stage_number): points} from the weekend-feed
+            stage_results (top-10 only).
+    Returns: {driver_id: [ {stage_number, green_lap_speed, avg_running_pos,
+        start_pos, end_pos, pos_change, laps, stage_points}, ... ]}.
+    The per-stage green_speed_rank is assigned by the caller (needs the field).
+    """
+    url = f"{NASCAR_API_BASE}/{season}/{series_id}/{api_race_id}/lap-times.json"
+    feed = fetch_json(url)
+    if not isinstance(feed, dict):
+        return {}
+    flags = feed.get("flags") or []
+    change = {f["LapsCompleted"]: f["FlagState"] for f in flags
+             if "LapsCompleted" in f and "FlagState" in f}
+    out = {}
+    for blk in feed.get("laps", []):
+        nid = blk.get("NASCARDriverID")
+        if nid is None:
+            continue
+        # Pre-scan: assign each lap its carried-forward flag state.
+        laps = blk.get("Laps", [])
+        cur = 0
+        lap_state = {}
+        for lp in laps:
+            ln = lp.get("Lap")
+            if ln in change:
+                cur = change[ln]
+            lap_state[ln] = cur
+        stage_rows = []
+        for snum, lo, hi in stage_bounds:
+            sp, rp = [], []
+            for lp in laps:
+                ln = lp.get("Lap")
+                if ln is None or ln < lo or ln > hi:
+                    continue
+                pos = lp.get("RunningPos")
+                if pos:
+                    rp.append(pos)
+                spd = lp.get("LapSpeed")
+                if lap_state.get(ln) == 1 and spd:
+                    try:
+                        sp.append(float(spd))
+                    except (TypeError, ValueError):
+                        pass
+            if not rp:
+                continue
+            gs = _median(sp)
+            stage_rows.append({
+                "stage_number": snum,
+                "green_lap_speed": round(gs, 3) if gs is not None else None,
+                "avg_running_pos": round(sum(rp) / len(rp), 1),
+                "start_pos": rp[0],
+                "end_pos": rp[-1],
+                "pos_change": rp[0] - rp[-1],   # + = gained positions
+                "laps": len(rp),
+                "stage_points": stage_points.get((nid, snum)),
+            })
+        if stage_rows:
+            out[nid] = stage_rows
+    return out
+
+
 def store_ratings_for_race(conn, series_id, api_race_id, season, db_race_id,
                            name_to_dbid=None):
     """Fetch one race's loop-stats metrics + green-flag speed and UPDATE the six
@@ -204,6 +318,48 @@ def store_ratings_for_race(conn, series_id, api_race_id, season, db_race_id,
              db_race_id, db_id),
         )
         updated += cur.rowcount
+
+    # ── Per-stage breakdown into stage_results (best-effort; never fatal) ──
+    try:
+        bounds, spoints = _stage_bounds_and_points(season, series_id, api_race_id)
+        if bounds:
+            stages = _stage_metrics(season, series_id, api_race_id, bounds, spoints)
+            # Per-stage green-speed rank (1=fastest) across drivers in that stage.
+            rank_in_stage = {}  # (driver_id, stage) -> rank
+            by_stage = {}
+            for nid, rows_ in stages.items():
+                for sr in rows_:
+                    if sr["green_lap_speed"] is not None:
+                        by_stage.setdefault(sr["stage_number"], []).append((nid, sr["green_lap_speed"]))
+            for snum, lst in by_stage.items():
+                for r, (nid, _s) in enumerate(sorted(lst, key=lambda x: x[1], reverse=True), 1):
+                    rank_in_stage[(nid, snum)] = r
+            for nid, rows_ in stages.items():
+                db_id = name_to_dbid.get(normalize_driver_name(id_to_name.get(nid, "")))
+                if db_id is None:
+                    continue
+                for sr in rows_:
+                    conn.execute(
+                        """INSERT INTO stage_results
+                             (race_id, driver_id, stage_number, green_lap_speed,
+                              green_speed_rank, avg_running_pos, start_pos, end_pos,
+                              pos_change, laps, stage_points)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(race_id, driver_id, stage_number) DO UPDATE SET
+                             green_lap_speed=excluded.green_lap_speed,
+                             green_speed_rank=excluded.green_speed_rank,
+                             avg_running_pos=excluded.avg_running_pos,
+                             start_pos=excluded.start_pos, end_pos=excluded.end_pos,
+                             pos_change=excluded.pos_change, laps=excluded.laps,
+                             stage_points=excluded.stage_points""",
+                        (db_race_id, db_id, sr["stage_number"], sr["green_lap_speed"],
+                         rank_in_stage.get((nid, sr["stage_number"])), sr["avg_running_pos"],
+                         sr["start_pos"], sr["end_pos"], sr["pos_change"], sr["laps"],
+                         sr["stage_points"]),
+                    )
+    except Exception:
+        pass  # stage data is enrichment — never fail the rating/metric write over it
+
     return (updated, n_matched)
 
 
@@ -237,7 +393,10 @@ def store_all_ratings(conn, only_missing=True, verbose=False):
                 "AND finish_pos > 0 AND (rating IS NULL OR green_speed_rank IS NULL)",
                 (race_id,),
             ).fetchone()[0]
-            if missing == 0:
+            has_stages = conn.execute(
+                "SELECT COUNT(*) FROM stage_results WHERE race_id = ?", (race_id,)
+            ).fetchone()[0]
+            if missing == 0 and has_stages > 0:
                 continue
 
         upd, n_rated = store_ratings_for_race(

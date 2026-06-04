@@ -333,7 +333,7 @@ def _render_full_field_results(race_id, highlight_driver=None, key_prefix=""):
     highlighted for orientation. Streamlit doesn't allow nested st.dialog, so
     this renders inline within the already-open dialog.
     """
-    from src.data import query_race_field_results
+    from src.data import query_race_field_results, query_driver_stage_arc
 
     data = query_race_field_results(race_id)
     if not data or not data.get("rows"):
@@ -341,6 +341,34 @@ def _render_full_field_results(race_id, highlight_driver=None, key_prefix=""):
         return
 
     bits = [b for b in [data.get("race_name"), data.get("track"), data.get("date")] if b]
+
+    # Stage arc for the highlighted driver — how their race developed stage by
+    # stage (green pace + position change). Shown above the full field when we
+    # have stage data for this race.
+    if highlight_driver:
+        arc = query_driver_stage_arc(race_id, highlight_driver)
+        if arc:
+            st.markdown(
+                f'<div style="margin:0.3rem 0 0.2rem 0;color:#7dd3fc;font-size:0.82rem;'
+                f'font-weight:700;">{highlight_driver} — race arc by stage</div>',
+                unsafe_allow_html=True)
+            arc_df = pd.DataFrame(arc)
+            arc_df["Stage"] = arc_df["Stage"].map(lambda s: f"Stage {s}")
+            arc_disp = arc_df.rename(columns={"Green Speed": "Green Speed (mph)",
+                                              "Rank": "Speed Rank",
+                                              "Chg": "Pos Chg"})
+
+            def _chg_color(col):
+                if col.name != "Pos Chg":
+                    return ["" for _ in col]
+                return ["color:#22c55e;font-weight:600" if (pd.notna(v) and v > 0)
+                        else "color:#ef4444;font-weight:600" if (pd.notna(v) and v < 0)
+                        else "color:#94a3b8" for v in col]
+            arc_styled = arc_disp.style.apply(_chg_color, axis=0).format(
+                {"Green Speed (mph)": "{:.1f}", "Avg Pos": "{:.1f}"}, na_rep="—")
+            st.dataframe(arc_styled, width="stretch", hide_index=True,
+                         key=f"{key_prefix}__arc_{race_id}")
+
     st.markdown(
         f'<div style="margin:0.3rem 0 0.3rem 0;color:#7dd3fc;font-size:0.82rem;'
         f'font-weight:700;">Full field — {" · ".join(bits)}</div>',

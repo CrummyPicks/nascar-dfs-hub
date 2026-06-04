@@ -1061,6 +1061,84 @@ def query_driver_race_log(
     return out
 
 
+def query_race_stage_breakdown(db_race_id: int) -> dict:
+    """Per-driver, per-stage race breakdown for the Race Lab tab.
+
+    Returns {"stages": [1,2,3,...], "rows": [ {Driver, Car, Finish, and per
+    stage: S{n} Speed / S{n} Rank / S{n} AvgPos / S{n} Chg / S{n} Pts}, ... ]}
+    ordered by finish position. Empty if no stage data for this race.
+    `db_race_id` is the internal races.id.
+    """
+    if not DB_PATH.exists() or db_race_id is None:
+        return {"stages": [], "rows": []}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        srows = conn.execute('''
+            SELECT d.full_name, rr.car_number, rr.finish_pos,
+                   sr.stage_number, sr.green_lap_speed, sr.green_speed_rank,
+                   sr.avg_running_pos, sr.pos_change, sr.stage_points
+            FROM stage_results sr
+            JOIN drivers d ON d.id = sr.driver_id
+            JOIN race_results rr ON rr.race_id = sr.race_id
+                                AND rr.driver_id = sr.driver_id
+            WHERE sr.race_id = ?
+            ORDER BY rr.finish_pos, sr.stage_number
+        ''', (db_race_id,)).fetchall()
+        conn.close()
+    except Exception:
+        return {"stages": [], "rows": []}
+    if not srows:
+        return {"stages": [], "rows": []}
+
+    stages = sorted({r[3] for r in srows})
+    by_driver = {}
+    for name, car, fin, snum, spd, rank, apos, chg, pts in srows:
+        d = by_driver.setdefault(name, {"Driver": name, "Car": car, "Finish": fin})
+        d[f"S{snum} Speed"] = round(spd, 1) if spd is not None else None
+        d[f"S{snum} Rank"] = rank
+        d[f"S{snum} AvgPos"] = apos
+        d[f"S{snum} Chg"] = chg
+        d[f"S{snum} Pts"] = pts
+    rows = sorted(by_driver.values(),
+                  key=lambda x: (x["Finish"] if x["Finish"] else 999))
+    return {"stages": stages, "rows": rows}
+
+
+def query_driver_stage_arc(db_race_id: int, driver_name: str) -> list:
+    """One driver's per-stage breakdown for a single race (the popup arc).
+
+    Returns a list of dicts (one per stage, ascending):
+        {Stage, Green Speed, Rank, Avg Pos, Chg, Pts}
+    Empty if no stage data. `db_race_id` is the internal races.id.
+    """
+    if not DB_PATH.exists() or db_race_id is None or not driver_name:
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT sr.stage_number, sr.green_lap_speed, sr.green_speed_rank,
+                   sr.avg_running_pos, sr.pos_change, sr.stage_points
+            FROM stage_results sr
+            JOIN drivers d ON d.id = sr.driver_id
+            WHERE sr.race_id = ? AND d.full_name = ?
+            ORDER BY sr.stage_number
+        ''', (db_race_id, driver_name)).fetchall()
+        conn.close()
+    except Exception:
+        return []
+    out = []
+    for snum, spd, rank, apos, chg, pts in rows:
+        out.append({
+            "Stage": snum,
+            "Green Speed": round(spd, 1) if spd is not None else None,
+            "Rank": rank,
+            "Avg Pos": apos,
+            "Chg": chg,
+            "Pts": pts,
+        })
+    return out
+
+
 def query_race_field_results(race_id: int) -> dict:
     """Full-field results for a single race (every driver).
 
