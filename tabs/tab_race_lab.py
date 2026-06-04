@@ -80,19 +80,28 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
 def _render_stage_table(rows, stages):
     """Wide table: one row per driver, grouped columns per stage."""
     df = pd.DataFrame(rows)
-    # Column order: identity, then each stage's block.
+    # Column order: identity, then each stage's block. Drop any all-empty
+    # column so e.g. "S3 Pts" (no stage points in a final stage) disappears
+    # instead of showing a column of dashes.
     cols = ["Finish", "Driver", "Car"]
     for s in stages:
-        cols += [f"S{s} Speed", f"S{s} Rank", f"S{s} AvgPos", f"S{s} Chg", f"S{s} Pts"]
+        for c in [f"S{s} Speed", f"S{s} Rank", f"S{s} AvgPos", f"S{s} Chg", f"S{s} Pts"]:
+            if c in df.columns and df[c].notna().any():
+                cols.append(c)
     cols = [c for c in cols if c in df.columns]
     disp = df[cols].copy()
 
-    # Format: speeds 1-dec, the rest clean ints where possible.
+    # Per-column number formats: speeds/avg-pos 1-decimal; everything else that's
+    # integer-valued (Finish, Rank, Chg, Pts) gets {:.0f} so it renders clean
+    # ("7" not "7.000000" — those cols are float64 only because NaN forces it).
     fmt = {}
-    for s in stages:
-        for c, f in [(f"S{s} Speed", "{:.1f}"), (f"S{s} AvgPos", "{:.1f}")]:
-            if c in disp.columns:
-                fmt[c] = f
+    for c in disp.columns:
+        if c in ("Driver", "Car"):
+            continue
+        if c.endswith("Speed") or c.endswith("AvgPos"):
+            fmt[c] = "{:.1f}"   # genuinely decimal
+        else:
+            fmt[c] = "{:.0f}"   # integer-valued (Finish, Rank, Chg, Pts)
 
     def _chg_style(col):
         # Color the per-stage position change: green gained, red lost.
@@ -110,9 +119,7 @@ def _render_stage_table(rows, stages):
                 out.append("color:#94a3b8")
         return out
 
-    styled = disp.style.apply(_chg_style, axis=0)
-    if fmt:
-        styled = styled.format(fmt, na_rep="—")
+    styled = disp.style.apply(_chg_style, axis=0).format(fmt, na_rep="—")
     st.dataframe(styled, width="stretch", hide_index=True, height=620)
 
 
@@ -139,7 +146,9 @@ def _render_green_summary(rows, stages):
             out.append(f"background-color: rgba({rr},{gg},68,0.25)")
         return out
 
-    styled = disp.style.apply(_rank_heat, axis=0)
+    # Integer-format the rank + Finish columns (float64 only because of NaN).
+    int_fmt = {c: "{:.0f}" for c in disp.columns if c not in ("Driver", "Car")}
+    styled = disp.style.apply(_rank_heat, axis=0).format(int_fmt, na_rep="—")
     st.dataframe(styled, width="stretch", hide_index=True, height=620)
     st.caption("Per-stage green-flag speed RANK (1 = fastest). Read left→right to "
                "see whether a driver got faster or faded as the race went on.")
