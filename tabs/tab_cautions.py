@@ -129,9 +129,13 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                      height=min(300, 60 + len(ic_df) * 36))
 
     # ── Pit Road ──
+    st.divider()
+    st.markdown("**Pit Road** — crew execution (sorted by avg box time)")
+    if not pit_rows:
+        st.caption("No pit-road data available for this race (NASCAR doesn't "
+                   "publish pit timing for every event — most common for some "
+                   "Truck/Xfinity races).")
     if pit_rows:
-        st.divider()
-        st.markdown("**Pit Road** — crew execution (sorted by avg box time)")
         st.caption("Avg/Best Box = stationary stop time (the crew's speed). "
                    "Net Pos = total positions gained (＋) / lost (−) across all "
                    "stops. Green Stops = stops taken under green.")
