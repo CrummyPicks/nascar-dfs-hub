@@ -9,7 +9,9 @@ import pandas as pd
 import streamlit as st
 
 from src.components import section_header
-from src.data import query_race_stage_breakdown, query_race_field_results
+from src.data import (query_race_stage_breakdown, query_race_field_results,
+                      fetch_lap_times)
+from src.charts import race_speed_chart
 from src.utils import safe_fillna, format_display_df
 
 
@@ -68,13 +70,26 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         "(＋) or lost (−) within the stage. Pts = NASCAR stage points."
     )
 
-    view = st.radio("View", ["Per-Stage Breakdown", "Green Speed Summary"],
+    view = st.radio("View",
+                    ["Per-Stage Breakdown", "Green Speed Summary", "Speed Over Time"],
                     horizontal=True, label_visibility="collapsed", key="racelab_view")
 
     if view == "Per-Stage Breakdown":
         _render_stage_table(rows, stages)
-    else:
+    elif view == "Green Speed Summary":
         _render_green_summary(rows, stages)
+    else:
+        _render_speed_over_time(race, series_id, selected_year, rows)
+
+
+def _heat_low_good(v, lo=1.0, hi=36.0):
+    """Background color for a 'lower is better' value (green=good, red=bad),
+    scaled between lo (best) and hi (worst). Returns a CSS string or ''."""
+    if pd.isna(v):
+        return ""
+    r = max(0.0, min(1.0, (float(v) - lo) / max(hi - lo, 1e-9)))
+    rr = int(34 + r * (239 - 34)); gg = int(197 - r * (197 - 68))
+    return f"background-color: rgba({rr},{gg},68,0.22)"
 
 
 def _render_stage_table(rows, stages):
@@ -103,23 +118,31 @@ def _render_stage_table(rows, stages):
         else:
             fmt[c] = "{:.0f}"   # integer-valued (Finish, Rank, Chg, Pts)
 
-    def _chg_style(col):
-        # Color the per-stage position change: green gained, red lost.
-        if not col.name.endswith("Chg"):
-            return ["" for _ in col]
-        out = []
-        for v in col:
-            if pd.isna(v):
-                out.append("")
-            elif v > 0:
-                out.append("color:#22c55e; font-weight:600")
-            elif v < 0:
-                out.append("color:#ef4444; font-weight:600")
-            else:
-                out.append("color:#94a3b8")
-        return out
+    def _cell_style(col):
+        name = col.name
+        # Position change: green text for gained, red for lost.
+        if name.endswith("Chg"):
+            out = []
+            for v in col:
+                if pd.isna(v):
+                    out.append("")
+                elif v > 0:
+                    out.append("color:#22c55e; font-weight:600")
+                elif v < 0:
+                    out.append("color:#ef4444; font-weight:600")
+                else:
+                    out.append("color:#94a3b8")
+            return out
+        # Finish + per-stage Rank + AvgPos are all "lower is better" → heatmap.
+        if name == "Finish" or name.endswith("Rank") or name.endswith("AvgPos"):
+            return [_heat_low_good(v) for v in col]
+        # Stage points: higher is better → light green when present.
+        if name.endswith("Pts"):
+            return ["background-color: rgba(34,197,94,0.18)" if pd.notna(v) and v > 0
+                    else "" for v in col]
+        return ["" for _ in col]
 
-    styled = disp.style.apply(_chg_style, axis=0).format(fmt, na_rep="—")
+    styled = disp.style.apply(_cell_style, axis=0).format(fmt, na_rep="—")
     st.dataframe(styled, width="stretch", hide_index=True, height=620)
 
 
@@ -134,17 +157,10 @@ def _render_green_summary(rows, stages):
     rank_cols = [f"Stage {s}" for s in stages if f"Stage {s}" in disp.columns]
 
     def _rank_heat(col):
-        if col.name not in rank_cols:
+        # Rank + Finish are "lower is better" → shared heatmap helper.
+        if col.name not in rank_cols and col.name != "Finish":
             return ["" for _ in col]
-        out = []
-        for v in col:
-            if pd.isna(v):
-                out.append(""); continue
-            # green (fast, rank 1) -> red (slow). Scale to ~40-car field.
-            r = max(0.0, min(1.0, (float(v) - 1) / 35.0))
-            rr = int(34 + r * (239 - 34)); gg = int(197 - r * (197 - 68))
-            out.append(f"background-color: rgba({rr},{gg},68,0.25)")
-        return out
+        return [_heat_low_good(v) for v in col]
 
     # Integer-format the rank + Finish columns (float64 only because of NaN).
     int_fmt = {c: "{:.0f}" for c in disp.columns if c not in ("Driver", "Car")}
@@ -152,6 +168,47 @@ def _render_green_summary(rows, stages):
     st.dataframe(styled, width="stretch", hide_index=True, height=620)
     st.caption("Per-stage green-flag speed RANK (1 = fastest). Read left→right to "
                "see whether a driver got faster or faded as the race went on.")
+
+
+def _render_speed_over_time(race, series_id, selected_year, rows):
+    """Driver-selectable overlay of lap speed across the race (from lap-times)."""
+    api_id = race.get("race_id")
+    yr = (race.get("race_date", "") or "")[:4]
+    try:
+        yr = int(yr)
+    except (TypeError, ValueError):
+        yr = selected_year
+
+    with st.spinner("Loading lap-by-lap data..."):
+        lap_data = fetch_lap_times(series_id, api_id, yr)
+    if not lap_data or "laps" not in lap_data:
+        st.info("Lap-by-lap data isn't available for this race.")
+        return
+
+    all_drivers = sorted(d.get("FullName") for d in lap_data["laps"] if d.get("FullName"))
+    # Default to the top 5 finishers (from the stage breakdown, already finish-sorted).
+    top5 = [r["Driver"] for r in rows[:5] if r.get("Driver") in all_drivers]
+    default = top5 or all_drivers[:5]
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        picks = st.multiselect("Drivers to overlay", all_drivers, default=default,
+                               key="racelab_speed_drivers")
+    with c2:
+        green_only = st.toggle("Green-flag laps only", value=False,
+                               key="racelab_speed_greenonly",
+                               help="Drop caution laps so only racing pace shows.")
+    if not picks:
+        st.info("Select at least one driver.")
+        return
+
+    fig = race_speed_chart(lap_data, selected_drivers=picks, green_only=green_only)
+    if fig is None:
+        st.info("No lap-speed data to plot for the selected drivers.")
+        return
+    st.plotly_chart(fig, width="stretch")
+    st.caption("Each line is a driver's lap speed (mph). Shaded bands are caution "
+               "periods. Toggle 'green-flag laps only' to compare pure racing pace.")
 
 
 def _render_field_fallback(db_id):

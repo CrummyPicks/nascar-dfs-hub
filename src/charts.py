@@ -684,6 +684,76 @@ def season_trend_line(series_id: int = 1, season: int = None,
     return apply_dark_theme(fig)
 
 
+def race_speed_chart(lap_data: dict, selected_drivers: list = None,
+                     height: int = 520, green_only: bool = False) -> go.Figure:
+    """Overlay each selected driver's lap SPEED across the race, with caution
+    periods shaded so you can read pace runs vs. yellow-flag laps.
+
+    Args:
+        lap_data: raw lap-times.json dict ("laps" + "flags").
+        selected_drivers: driver full names to plot (None/empty = none).
+        green_only: if True, drop caution laps (FlagState != 1) from each line.
+    """
+    if not lap_data or "laps" not in lap_data or not selected_drivers:
+        return None
+
+    # Lap -> FlagState (carry change-points forward) for caution shading.
+    change = {f["LapsCompleted"]: f["FlagState"]
+              for f in (lap_data.get("flags") or [])
+              if "LapsCompleted" in f and "FlagState" in f}
+    fig = go.Figure()
+    plotted = False
+    for d in lap_data["laps"]:
+        driver = d.get("FullName", d.get("NickName", "Unknown"))
+        if driver not in selected_drivers:
+            continue
+        xs, ys = [], []
+        cur = 0
+        for lap in d.get("Laps", []):
+            ln = lap.get("Lap", 0)
+            if ln in change:
+                cur = change[ln]
+            spd = lap.get("LapSpeed")
+            if not ln or not spd:
+                continue
+            try:
+                spd = float(spd)
+            except (TypeError, ValueError):
+                continue
+            if green_only and cur != 1:
+                continue
+            xs.append(ln)
+            ys.append(spd)
+        if not xs:
+            continue
+        plotted = True
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", name=_last_name(driver),
+            hovertemplate=f"{driver}<br>Lap %{{x}}: %{{y:.1f}} mph<extra></extra>",
+            connectgaps=True,
+        ))
+    if not plotted:
+        return None
+
+    # Shade caution segments (FlagState 2) as vertical bands.
+    if not green_only and change:
+        pts = sorted(change.items())
+        for i, (lap, state) in enumerate(pts):
+            if state == 2:
+                end = pts[i + 1][0] if i + 1 < len(pts) else lap + 1
+                fig.add_vrect(x0=lap, x1=end, fillcolor="#fbbf24",
+                              opacity=0.10, line_width=0, layer="below")
+
+    fig.update_layout(
+        **DARK_LAYOUT, height=height,
+        title="Lap Speed Over the Race" + (" (green-flag laps only)" if green_only else ""),
+        xaxis_title="Lap Number", yaxis_title="Lap Speed (mph)",
+        legend=dict(orientation="h", yanchor="top", y=-0.12, font=dict(size=10)),
+        hovermode="x unified",
+    )
+    return apply_dark_theme(fig)
+
+
 def race_lap_chart(lap_data: dict, selected_drivers: list = None,
                    height: int = 500) -> go.Figure:
     """Line chart showing each driver's race lap times (from lap-times.json).
