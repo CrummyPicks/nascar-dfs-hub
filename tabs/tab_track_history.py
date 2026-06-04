@@ -250,6 +250,7 @@ def _build_history_format_map(df: pd.DataFrame) -> dict:
     INT_COLS = {"Races", "Wins", "Top 5", "Top 10", "Top 20",
                 "Laps Led", "Fast Laps", "Fastest Laps", "DNF"}
     ONE_DEC_COLS = {"Avg Finish", "Avg Start", "Avg Run Pos", "Avg Rating",
+                    "Avg Green Rank",
                     "Avg DFS", "Best DFS", "Worst DFS",
                     "Avg Laps Led", "Avg Fastest Laps", "Avg Fast Laps",
                     "Avg DK", "Best DK", "Worst DK"}

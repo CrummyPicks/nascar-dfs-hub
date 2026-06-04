@@ -806,6 +806,7 @@ def query_db_track_history(track_name: str, series_id: int = 1,
                    SUM(CASE WHEN rr.finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
                    SUM(CASE WHEN rr.finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
                    ROUND(AVG(rr.rating), 1) as "Avg Rating",
+                   ROUND(AVG(rr.green_speed_rank), 1) as "Avg Green Rank",
                    SUM(rr.laps_led) as "Laps Led",
                    ROUND(AVG(rr.laps_led), 1) as "Avg Laps Led",
                    SUM(rr.fastest_laps) as "Fast Laps",
@@ -1003,7 +1004,8 @@ def query_driver_race_log(
                    rr.start_pos, rr.finish_pos,
                    rr.laps_led, rr.fastest_laps,
                    rr.avg_running_position, rr.status, r.series_id, r.id,
-                   rr.rating
+                   rr.rating, rr.green_speed_rank, rr.quality_passes,
+                   rr.closing_pos, rr.top15_laps, rr.laps_completed
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r   ON r.id = rr.race_id
@@ -1021,13 +1023,18 @@ def query_driver_race_log(
     from src.utils import calc_dk_points
     _series_label = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
     out = []
-    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status, sid, rid, rating in rows:
+    for (rdate, rname, track, car, team, start, finish, ll, fl, arp, status,
+         sid, rid, rating, grank, qpass, closing, t15, laps_comp) in rows:
         ll_v = ll or 0
         fl_v = fl or 0
         try:
             dk = calc_dk_points(finish, start or 0, ll_v, fl_v) if (start is not None and finish) else None
         except Exception:
             dk = None
+        # Top-15 laps as a PERCENT of laps run — comparable across race lengths.
+        t15_pct = None
+        if t15 is not None and laps_comp:
+            t15_pct = round(100.0 * t15 / laps_comp, 0)
         # Trim ISO time off the date for display
         date_str = (str(rdate) or "")[:10]
         out.append({
@@ -1044,6 +1051,10 @@ def query_driver_race_log(
             "Fast Laps": fl_v,
             "Avg Run": round(arp, 1) if arp is not None else None,
             "Rating": round(rating, 1) if rating is not None else None,
+            "Green Rank": grank,
+            "Quality Passes": qpass,
+            "Closing Pos": round(closing, 1) if closing is not None else None,
+            "Top15 %": t15_pct,
             "DK Pts": round(dk, 2) if dk is not None else None,
             "Status": status,
         })
@@ -1706,6 +1717,7 @@ def query_track_type_stats(track_type: str, season: int = None,
                    ROUND(AVG(rr.start_pos),1) as "Avg Start",
                    COALESCE(ROUND(AVG(rr.avg_running_position),1), 99) as "Avg Run Pos",
                    ROUND(AVG(rr.rating),1) as "Avg Rating",
+                   ROUND(AVG(rr.green_speed_rank),1) as "Avg Green Rank",
                    ROUND(AVG(dp.dfs_score),1) as "Avg DFS",
                    ROUND(MAX(dp.dfs_score),1) as "Best DFS",
                    SUM(CASE WHEN rr.finish_pos = 1 THEN 1 ELSE 0 END) as Wins,

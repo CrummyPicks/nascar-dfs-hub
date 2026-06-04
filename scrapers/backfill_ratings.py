@@ -1,23 +1,37 @@
-"""Backfill NASCAR official Driver Rating into race_results.
+"""Backfill loop-stats driver metrics into race_results.
 
-NASCAR publishes a per-race Driver Rating (0-150 scale) in its loop-stats feed:
+NASCAR publishes per-race driver metrics in its loop-stats feed:
     https://cf.nascar.com/loopstats/prod/{season}/{series_id}/{race_id}.json
-That feed is the same one the app already uses as an ingestion fallback. It is
-free, updates after every race, and (verified) covers 2022-2026 for all three
-series.
+plus per-lap speed + green/yellow flags in the lap-times feed:
+    {NASCAR_API_BASE}/{season}/{series_id}/{race_id}/lap-times.json
+Both are free, update after every race, and (verified) cover 2022-2026 for all
+three series.
+
+This module populates SIX columns, all UPDATE-ONLY (never touches finish /
+laps_led / etc., safe to run repeatedly):
+  • rating            — NASCAR Driver Rating (0-150), loop-stats
+  • quality_passes    — passes of cars running in the top 15, loop-stats
+  • passing_diff      — green-flag passes made minus passed, loop-stats
+  • closing_pos       — avg running position over the closing laps, loop-stats
+  • top15_laps        — laps run inside the top 15, loop-stats
+  • green_lap_speed   — MEDIAN green-flag lap speed (mph), computed from
+                        lap-times (per-lap LapSpeed filtered to FlagState==1)
+  • green_speed_rank  — 1=fastest green-flag pace IN THAT RACE. Raw mph isn't
+                        comparable across tracks (Atlanta ~182 vs Martinsville
+                        ~100), so the rank is the track-normalized, projectable
+                        form that drops into the position-units signal framework.
 
 The loop-stats records key on NASCAR's `driver_id` (== NASCARDriverID). Our
-`drivers` table has no NASCAR id column, so — exactly like the loop-stats
-ingestion path in src.data._fetch_and_store_via_loopstats — we resolve
-driver_id -> name via the lap-times feed, then name -> drivers.id by
-(normalized) full-name match, and UPDATE race_results.rating.
+`drivers` table has no NASCAR id column, so — like the loop-stats ingestion path
+in src.data._fetch_and_store_via_loopstats — we resolve driver_id -> name via
+the lap-times feed, then name -> drivers.id by (normalized) full-name match.
 
-UPDATE-ONLY: never touches finish/laps_led/etc., only the rating column, so it
-is safe to run repeatedly. New races are picked up automatically because
-refresh_data.py calls store_all_ratings() after fetching results.
+New races self-populate: refresh_data.py calls store_all_ratings() after
+fetching results, and fetch_and_store_race() calls store_ratings_for_race()
+inline at ingest. (Names kept for back-compat; they now fill ALL six columns.)
 
 Usage:
-    python scrapers/backfill_ratings.py            # only races missing rating
+    python scrapers/backfill_ratings.py            # only races missing metrics
     python scrapers/backfill_ratings.py --force    # re-fetch every race
 """
 import argparse
@@ -79,14 +93,59 @@ def _build_id_to_name(season, series_id, api_race_id):
     return id_to_name
 
 
+def _green_flag_speeds(season, series_id, api_race_id):
+    """Median green-flag lap speed (mph) per NASCARDriverID from the lap-times feed.
+
+    The feed carries per-lap LapSpeed plus a `flags` change-point list
+    (FlagState 1=green, 2=yellow, 8=warmup/checkered). We carry the flag state
+    forward lap-by-lap, keep only green laps with a real speed, and take the
+    MEDIAN (robust to a single fast/slow outlier lap). Returns {driver_id: mph}.
+    Drivers with < MIN_GREEN_LAPS green laps are omitted (too small to trust).
+    """
+    MIN_GREEN_LAPS = 10
+    url = f"{NASCAR_API_BASE}/{season}/{series_id}/{api_race_id}/lap-times.json"
+    feed = fetch_json(url)
+    if not isinstance(feed, dict):
+        return {}
+    # Build lap -> FlagState by carrying change-points forward.
+    flags = feed.get("flags") or []
+    change = {f["LapsCompleted"]: f["FlagState"] for f in flags
+             if "LapsCompleted" in f and "FlagState" in f}
+    out = {}
+    for blk in feed.get("laps", []):
+        nid = blk.get("NASCARDriverID")
+        if nid is None:
+            continue
+        speeds = []
+        cur_state = 0
+        for lp in blk.get("Laps", []):
+            lap_no = lp.get("Lap")
+            if lap_no in change:
+                cur_state = change[lap_no]
+            spd = lp.get("LapSpeed")
+            if cur_state == 1 and spd:
+                try:
+                    speeds.append(float(spd))
+                except (TypeError, ValueError):
+                    pass
+        if len(speeds) >= MIN_GREEN_LAPS:
+            speeds.sort()
+            n = len(speeds)
+            med = speeds[n // 2] if n % 2 else (speeds[n // 2 - 1] + speeds[n // 2]) / 2
+            out[nid] = round(med, 3)
+    return out
+
+
 def store_ratings_for_race(conn, series_id, api_race_id, season, db_race_id,
                            name_to_dbid=None):
-    """Fetch one race's loop-stats ratings and UPDATE race_results.rating.
+    """Fetch one race's loop-stats metrics + green-flag speed and UPDATE the six
+    derived columns on race_results.
 
     Resolves loop-stats driver_id -> name (lap-times) -> drivers.id (exact then
-    normalized). Returns (rows_updated, n_with_rating_in_feed). Reusable from the
-    primary ingestion path so a freshly-stored race gets its rating in the same
-    refresh run.
+    normalized). Returns (rows_updated, n_matched). Reusable from the primary
+    ingestion path so a freshly-stored race gets its metrics in the same run.
+    (Name retained for back-compat — it now fills all six columns, not just
+    rating.)
     """
     loop_url = f"{LOOPSTATS_BASE}/{season}/{series_id}/{api_race_id}.json"
     drivers = _loopstats_drivers(fetch_json(loop_url))
@@ -97,19 +156,25 @@ def store_ratings_for_race(conn, series_id, api_race_id, season, db_race_id,
     if not id_to_name:
         return (0, 0)
 
-    # Cache of driver-name -> drivers.id, normalized. Built lazily so a single
-    # backfill run doesn't re-query the same name repeatedly.
+    green = _green_flag_speeds(season, series_id, api_race_id)
+    # Per-race green-speed RANK (1 = fastest). Track-normalized so it's
+    # comparable across venues; this is the projectable form of green pace.
+    rank_by_id = {}
+    for r, (nid, _spd) in enumerate(
+            sorted(green.items(), key=lambda kv: kv[1], reverse=True), start=1):
+        rank_by_id[nid] = r
+
+    # Cache of normalized driver-name -> drivers.id, built lazily.
     if name_to_dbid is None:
         name_to_dbid = {}
         for row in conn.execute("SELECT id, full_name FROM drivers"):
             name_to_dbid[normalize_driver_name(row[1])] = row[0]
 
     updated = 0
-    n_rated = 0
+    n_matched = 0
     for d in drivers:
         nascar_id = d.get("driver_id")
-        rating = d.get("rating")
-        if nascar_id is None or rating is None:
+        if nascar_id is None:
             continue
         name = id_to_name.get(nascar_id)
         if not name:
@@ -117,13 +182,29 @@ def store_ratings_for_race(conn, series_id, api_race_id, season, db_race_id,
         db_id = name_to_dbid.get(normalize_driver_name(name))
         if db_id is None:
             continue
-        n_rated += 1
+        # Skip rows with nothing to write (no rating AND no green data).
+        rating = d.get("rating")
+        gspeed = green.get(nascar_id)
+        grank = rank_by_id.get(nascar_id)
+        if rating is None and gspeed is None:
+            continue
+        n_matched += 1
         cur = conn.execute(
-            "UPDATE race_results SET rating = ? WHERE race_id = ? AND driver_id = ?",
-            (rating, db_race_id, db_id),
+            """UPDATE race_results SET
+                 rating = COALESCE(?, rating),
+                 quality_passes = COALESCE(?, quality_passes),
+                 passing_diff = COALESCE(?, passing_diff),
+                 closing_pos = COALESCE(?, closing_pos),
+                 top15_laps = COALESCE(?, top15_laps),
+                 green_lap_speed = COALESCE(?, green_lap_speed),
+                 green_speed_rank = COALESCE(?, green_speed_rank)
+               WHERE race_id = ? AND driver_id = ?""",
+            (rating, d.get("quality_passes"), d.get("passing_diff"),
+             d.get("closing_ps"), d.get("top15_laps"), gspeed, grank,
+             db_race_id, db_id),
         )
         updated += cur.rowcount
-    return (updated, n_rated)
+    return (updated, n_matched)
 
 
 def store_all_ratings(conn, only_missing=True, verbose=False):
@@ -148,8 +229,12 @@ def store_all_ratings(conn, only_missing=True, verbose=False):
         if not api_race_id:
             continue
         if only_missing:
+            # A race needs a pass if it's missing rating OR the green-speed
+            # metrics (so a rating-only DB from before this change gets the new
+            # columns filled). finish_pos>0 limits to real classified rows.
             missing = conn.execute(
-                "SELECT COUNT(*) FROM race_results WHERE race_id = ? AND rating IS NULL",
+                "SELECT COUNT(*) FROM race_results WHERE race_id = ? "
+                "AND finish_pos > 0 AND (rating IS NULL OR green_speed_rank IS NULL)",
                 (race_id,),
             ).fetchone()[0]
             if missing == 0:

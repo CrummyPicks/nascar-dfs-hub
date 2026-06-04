@@ -427,6 +427,33 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     row2[3].metric("Top 20", int((finishes <= 20).sum()))
     row2[4].metric("Best", f"{int(best)}" if pd.notna(best) else "—")
     row2[5].metric("Worst", f"{int(worst)}" if pd.notna(worst) else "—")
+
+    # Race Craft — deeper loop-stats / green-flag context. Collapsed by default
+    # so it enriches without crowding the headline cards above. Only shown when
+    # at least one of these advanced metrics is present for this scope.
+    _craft = {
+        "Green Speed Rank": pd.to_numeric(df.get("Green Rank"), errors="coerce"),
+        "Quality Passes":   pd.to_numeric(df.get("Quality Passes"), errors="coerce"),
+        "Closing Pos":      pd.to_numeric(df.get("Closing Pos"), errors="coerce"),
+        "Top 15 Laps %":    pd.to_numeric(df.get("Top15 %"), errors="coerce"),
+    }
+    if any(s.notna().any() for s in _craft.values()):
+        with st.expander("Race Craft — green-flag pace & passing", expanded=False):
+            st.caption(
+                "Green Speed Rank: avg finishing rank of green-flag lap speed "
+                "(1 = fastest car). Quality Passes: avg passes of top-15 cars per "
+                "race. Closing Pos: avg running position over the final laps. "
+                "Top 15 Laps %: share of laps run inside the top 15."
+            )
+            cc = st.columns(4)
+            gsr = _craft["Green Speed Rank"].mean()
+            qp = _craft["Quality Passes"].mean()
+            cpos = _craft["Closing Pos"].mean()
+            t15 = _craft["Top 15 Laps %"].mean()
+            cc[0].metric("Green Speed Rank", f"{gsr:.1f}" if pd.notna(gsr) else "—")
+            cc[1].metric("Quality Passes/Race", f"{qp:.0f}" if pd.notna(qp) else "—")
+            cc[2].metric("Closing Pos", f"{cpos:.1f}" if pd.notna(cpos) else "—")
+            cc[3].metric("Top 15 Laps %", f"{t15:.0f}%" if pd.notna(t15) else "—")
     st.markdown("")
 
     # Per-race table. Show the Track column for any multi-track view, and the

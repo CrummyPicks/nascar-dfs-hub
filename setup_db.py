@@ -114,6 +114,12 @@ def create_database():
         money          REAL,
         avg_running_position REAL,  -- avg position across all race laps
         rating         REAL,   -- NASCAR official Driver Rating (0-150), from loop-stats
+        green_lap_speed REAL,  -- median green-flag lap speed (mph), from lap-times
+        green_speed_rank INTEGER,  -- 1=fastest green-flag pace in the race (track-normalized)
+        quality_passes INTEGER,    -- passes of cars running in the top 15 (loop-stats)
+        passing_diff   INTEGER,    -- green-flag passes made minus passed (loop-stats)
+        closing_pos    REAL,       -- avg running position over the closing laps (loop-stats)
+        top15_laps     INTEGER,    -- laps run inside the top 15 (loop-stats)
         UNIQUE(race_id, driver_id)
     );
 
@@ -228,9 +234,18 @@ def create_database():
     # CREATE TABLE IF NOT EXISTS won't add a new column to a table that already
     # exists, so add late-arriving columns here. Safe to run repeatedly.
     _existing = [r[1] for r in c.execute("PRAGMA table_info(race_results)")]
-    if "rating" not in _existing:
-        c.execute("ALTER TABLE race_results ADD COLUMN rating REAL")
-        print("[migrate] added race_results.rating (NASCAR Driver Rating)")
+    for _col, _type, _desc in [
+        ("rating", "REAL", "NASCAR Driver Rating"),
+        ("green_lap_speed", "REAL", "median green-flag lap speed (mph)"),
+        ("green_speed_rank", "INTEGER", "green-flag pace rank (1=fastest)"),
+        ("quality_passes", "INTEGER", "passes of top-15 cars"),
+        ("passing_diff", "INTEGER", "green-flag passes made minus passed"),
+        ("closing_pos", "REAL", "avg running position over closing laps"),
+        ("top15_laps", "INTEGER", "laps run inside the top 15"),
+    ]:
+        if _col not in _existing:
+            c.execute(f"ALTER TABLE race_results ADD COLUMN {_col} {_type}")
+            print(f"[migrate] added race_results.{_col} ({_desc})")
 
     conn.commit()
     conn.close()
