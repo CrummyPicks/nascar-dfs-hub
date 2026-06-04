@@ -1119,16 +1119,18 @@ def query_race_cautions(series_id: int, api_race_id: int, year: int,
     cautions = []
     for i, seg in enumerate(wr.get("caution_segments") or [], 1):
         start, end = seg.get("start_lap"), seg.get("end_lap")
-        # Caution comments lead with the involved car list, e.g.
-        #   "#3, 9, 10 Incident Turn 1"  or  "#17 Spin Turn 4".
-        # Scheduled cautions ("Stage 1 Conclusion", "Competition") have no cars.
-        # Extract the leading "#..." run only — text before the first keyword
-        # (Incident/Spin/Accident/Stage/Turn/Conclusion) — so we don't pick up
-        # lap/turn numbers from the description.
+        # Caution comments lead with the involved car list in one of two formats:
+        #   "#3, 9, 10 Incident Turn 1"   /   "#17 Spin Turn 4"   (Truck/older)
+        #   "No. 88 Incident Turn 1"      /   "Nos. 1, 71 Incident ..."  (Cup)
+        # Scheduled cautions ("Stage 1 Conclusion", "Competition Caution") list
+        # no cars. Take only the leading car run (text before the first incident
+        # keyword) so we don't pick up lap/turn numbers from the description.
         comment = seg.get("comment") or ""
         head = _re.split(r"\b(?:Incident|Spin|Accident|Stage|Turn|Conclusion|Debris|"
-                         r"Competition|Weather|Rain|Red)\b", comment, maxsplit=1)[0]
-        cars = _re.findall(r"\d+", head) if comment.lstrip().startswith("#") else []
+                         r"Competition|Weather|Rain|Red|Caution)\b", comment, maxsplit=1)[0]
+        _hl = comment.lstrip()
+        has_car_list = _hl.startswith("#") or _re.match(r"Nos?\.", _hl)
+        cars = _re.findall(r"\d+", head) if has_car_list else []
         cars_csv = ", ".join(cars)
         bene = seg.get("beneficiary_car_number")
         cautions.append({
