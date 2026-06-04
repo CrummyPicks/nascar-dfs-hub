@@ -1071,6 +1071,103 @@ def query_driver_race_log(
     return out
 
 
+def _car_to_driver_map(db_race_id: int) -> dict:
+    """car_number (str) -> driver full name for a stored race."""
+    if not DB_PATH.exists() or db_race_id is None:
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT rr.car_number, d.full_name
+            FROM race_results rr JOIN drivers d ON d.id = rr.driver_id
+            WHERE rr.race_id = ? AND rr.car_number IS NOT NULL
+        ''', (db_race_id,)).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    return {str(c).strip(): n for c, n in rows if c is not None}
+
+
+def query_race_cautions(series_id: int, api_race_id: int, year: int,
+                        db_race_id: int = None) -> dict:
+    """Caution timeline + pre-race penalties for one race, from the weekend-feed.
+
+    Returns {
+      "cautions": [ {Caution, "Laps": "3-10", Reason, Laps#, "Involved": [names],
+                     "Cars": "3, 9, ...", "Lucky Dog": name} ],
+      "prerace_penalties": [ {Cars, Reason, Drivers: [names]} ],
+      "summary": {n_cautions, caution_laps},
+    }
+    Cautions are live from the weekend-feed (cached); car numbers are resolved to
+    driver names via the stored race (db_race_id). Empty if no feed.
+    """
+    import re as _re
+    feed = fetch_weekend_feed(series_id, api_race_id, year)
+    wr = (feed.get("weekend_race") or [{}])[0] if isinstance(feed, dict) else {}
+    if not wr:
+        return {"cautions": [], "prerace_penalties": [], "summary": {}}
+
+    car2drv = _car_to_driver_map(db_race_id) if db_race_id else {}
+
+    def _names(car_csv):
+        out = []
+        for c in _re.findall(r"\d+", car_csv or ""):
+            nm = car2drv.get(c)
+            out.append(nm if nm else f"#{c}")
+        return out
+
+    cautions = []
+    for i, seg in enumerate(wr.get("caution_segments") or [], 1):
+        start, end = seg.get("start_lap"), seg.get("end_lap")
+        # Caution comments lead with the involved car list, e.g.
+        #   "#3, 9, 10 Incident Turn 1"  or  "#17 Spin Turn 4".
+        # Scheduled cautions ("Stage 1 Conclusion", "Competition") have no cars.
+        # Extract the leading "#..." run only — text before the first keyword
+        # (Incident/Spin/Accident/Stage/Turn/Conclusion) — so we don't pick up
+        # lap/turn numbers from the description.
+        comment = seg.get("comment") or ""
+        head = _re.split(r"\b(?:Incident|Spin|Accident|Stage|Turn|Conclusion|Debris|"
+                         r"Competition|Weather|Rain|Red)\b", comment, maxsplit=1)[0]
+        cars = _re.findall(r"\d+", head) if comment.lstrip().startswith("#") else []
+        cars_csv = ", ".join(cars)
+        bene = seg.get("beneficiary_car_number")
+        cautions.append({
+            "Caution": i,
+            "Laps": f"{start}-{end}" if start is not None else "—",
+            "Reason": seg.get("reason") or "—",
+            "Laps#": (end - start + 1) if (start is not None and end is not None) else None,
+            "Involved": _names(cars_csv),
+            "Cars": cars_csv or "—",
+            "Comment": comment,
+            "Lucky Dog": car2drv.get(str(bene).strip(), f"#{bene}") if bene else "—",
+        })
+
+    # Pre-race penalties live in race_comments narrative, e.g.:
+    #   "...dropped to the rear ... for the reason(s) indicated: Nos. 38, 77
+    #    (Unapproved Adjustments)."
+    prerace = []
+    rc = wr.get("race_comments") or ""
+    for m in _re.finditer(r"Nos?\.\s*([\d,\s and]+?)\s*\(([^)]+)\)", rc):
+        cars_txt, reason = m.group(1), m.group(2).strip()
+        cars = _re.findall(r"\d+", cars_txt)
+        prerace.append({
+            "Cars": ", ".join(cars),
+            "Reason": reason,
+            "Drivers": _names(", ".join(cars)),
+        })
+
+    return {
+        "cautions": cautions,
+        "prerace_penalties": prerace,
+        "summary": {
+            "n_cautions": wr.get("number_of_cautions"),
+            "caution_laps": wr.get("number_of_caution_laps"),
+            "lead_changes": wr.get("number_of_lead_changes"),
+            "leaders": wr.get("number_of_leaders"),
+        },
+    }
+
+
 def query_race_stage_breakdown(db_race_id: int) -> dict:
     """Per-driver, per-stage race breakdown for the Race Lab tab.
 

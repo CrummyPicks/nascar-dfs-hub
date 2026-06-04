@@ -880,7 +880,8 @@ reset_driver_dialog_guard()
 _concrete_week = is_concrete_track(track_name)
 _tab_labels = [
     "Race Data", "Practice", "Track History", "Race Analyzer",
-    "Projections", "Optimizer", "Race Lab", "Accuracy", "Standings", "DB Health",
+    "Projections", "Optimizer", "Race Lab", "Cautions", "Accuracy",
+    "Standings", "DB Health",
 ]
 if _concrete_week:
     _tab_labels.insert(3, "Concrete")  # right after Track History
@@ -894,6 +895,7 @@ tab_race_analyzer = _tabs["Race Analyzer"]
 tab_proj        = _tabs["Projections"]
 tab_optimizer   = _tabs["Optimizer"]
 tab_racelab     = _tabs["Race Lab"]
+tab_cautions    = _tabs["Cautions"]
 tab_acc         = _tabs["Accuracy"]
 tab_standings   = _tabs["Standings"]
 tab_dbhealth    = _tabs["DB Health"]
@@ -905,6 +907,7 @@ from tabs import tab_race_analyzer as tra
 from tabs import tab_projections as tproj
 from tabs import tab_optimizer as topt
 from tabs import tab_race_lab as trl
+from tabs import tab_cautions as tcau
 from tabs import tab_accuracy as tacc
 from tabs import tab_standings as tstand
 from tabs import tab_db_health as tdbh
@@ -968,6 +971,12 @@ with tab_optimizer:
 
 with tab_racelab:
     trl.render(
+        completed_races=completed_races, series_id=series_id,
+        selected_year=selected_year, series_name=series_name,
+    )
+
+with tab_cautions:
+    tcau.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
     )
