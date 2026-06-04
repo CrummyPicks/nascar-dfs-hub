@@ -3520,6 +3520,21 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = None) -> dict
             driver_count += 1
 
         conn.commit()
+
+        # Inline NASCAR Driver Rating: the weekend-feed has no rating field, so
+        # pull it from the loop-stats feed right after storing results. Reuses
+        # the backfill's fetch + name-resolution so a freshly-completed race has
+        # ratings immediately (no waiting for a separate backfill pass). The
+        # backfill in refresh_data.py remains a safety net for any race this
+        # misses (e.g. loop-stats not yet published at ingest time).
+        try:
+            from scrapers.backfill_ratings import store_ratings_for_race
+            n_upd, _ = store_ratings_for_race(conn, series_id, race_id, year, db_race_id)
+            if n_upd:
+                conn.commit()
+        except Exception:
+            pass  # never fail ingestion over ratings — backfill will catch it
+
         return {"drivers": driver_count, "race_name": race_name, "status": "success",
                 "error": None}
 
