@@ -406,27 +406,27 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     avg_run = pd.to_numeric(df.get("Avg Run"), errors="coerce").mean() if "Avg Run" in df.columns else None
     avg_fin, avg_st = finishes.mean(), starts.mean()
     best, worst = finishes.min(), finishes.max()
-    n_dnf = int(df["Status"].astype(str).str.lower().isin(
-        ["accident", "engine", "crash", "dnf", "mechanical", "rear gear",
-         "transmission", "suspension", "overheating", "brakes", "electrical",
-         "fuel pump", "ignition", "vibration"]
-    ).sum()) if "Status" in df.columns else 0
+    # Avg NASCAR Driver Rating across the races in this scope (None if unrated).
+    avg_rating = pd.to_numeric(df.get("Rating"), errors="coerce").mean() if "Rating" in df.columns else None
 
+    # Row 1: pace / volume metrics, ending with Driver Rating.
     row1 = st.columns(6)
     row1[0].metric("Avg Run Pos", f"{avg_run:.1f}" if avg_run is not None and pd.notna(avg_run) else "—")
     row1[1].metric("Avg Finish", f"{avg_fin:.1f}" if pd.notna(avg_fin) else "—")
     row1[2].metric("Avg Start", f"{avg_st:.1f}" if pd.notna(avg_st) else "—")
-    row1[3].metric("Best", f"{int(best)}" if pd.notna(best) else "—")
-    row1[4].metric("Worst", f"{int(worst)}" if pd.notna(worst) else "—")
-    row1[5].metric("DNFs", n_dnf)
+    row1[3].metric("Laps Led", int(laps_led.sum()))
+    row1[4].metric("Fast Laps", int(fast_laps.sum()))
+    row1[5].metric("Driver Rating",
+                   f"{avg_rating:.1f}" if avg_rating is not None and pd.notna(avg_rating) else "—")
 
+    # Row 2: result-quality counts, ending with Best / Worst finish.
     row2 = st.columns(6)
     row2[0].metric("Wins", int((finishes == 1).sum()))
     row2[1].metric("Top 5", int((finishes <= 5).sum()))
     row2[2].metric("Top 10", int((finishes <= 10).sum()))
     row2[3].metric("Top 20", int((finishes <= 20).sum()))
-    row2[4].metric("Laps Led", int(laps_led.sum()))
-    row2[5].metric("Fast Laps", int(fast_laps.sum()))
+    row2[4].metric("Best", f"{int(best)}" if pd.notna(best) else "—")
+    row2[5].metric("Worst", f"{int(worst)}" if pd.notna(worst) else "—")
     st.markdown("")
 
     # Per-race table. Show the Track column for any multi-track view, and the
@@ -437,18 +437,20 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     if show_series_col:
         show_cols.append("Series")
     show_cols.extend(["Car", "Team", "Start", "Finish", "Laps Led",
-                      "Fast Laps", "Avg Run", "DK Pts", "Status"])
+                      "Fast Laps", "Avg Run", "Rating", "DK Pts", "Status"])
     show_cols = [c for c in show_cols if c in df.columns]
     disp = df[show_cols].copy()
     for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce").astype("Int64")
-    for c in ["Avg Run", "DK Pts"]:
+    for c in ["Avg Run", "Rating", "DK Pts"]:
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce")
     fmt_map = {}
     if "Avg Run" in disp.columns:
         fmt_map["Avg Run"] = "{:.1f}"
+    if "Rating" in disp.columns:
+        fmt_map["Rating"] = "{:.1f}"
     if "DK Pts" in disp.columns:
         fmt_map["DK Pts"] = "{:.2f}"
 

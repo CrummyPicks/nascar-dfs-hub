@@ -1002,7 +1002,8 @@ def query_driver_race_log(
                    rr.car_number, rr.team,
                    rr.start_pos, rr.finish_pos,
                    rr.laps_led, rr.fastest_laps,
-                   rr.avg_running_position, rr.status, r.series_id, r.id
+                   rr.avg_running_position, rr.status, r.series_id, r.id,
+                   rr.rating
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r   ON r.id = rr.race_id
@@ -1020,7 +1021,7 @@ def query_driver_race_log(
     from src.utils import calc_dk_points
     _series_label = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
     out = []
-    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status, sid, rid in rows:
+    for rdate, rname, track, car, team, start, finish, ll, fl, arp, status, sid, rid, rating in rows:
         ll_v = ll or 0
         fl_v = fl or 0
         try:
@@ -1042,6 +1043,7 @@ def query_driver_race_log(
             "Laps Led": ll_v,
             "Fast Laps": fl_v,
             "Avg Run": round(arp, 1) if arp is not None else None,
+            "Rating": round(rating, 1) if rating is not None else None,
             "DK Pts": round(dk, 2) if dk is not None else None,
             "Status": status,
         })
