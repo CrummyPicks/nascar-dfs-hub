@@ -738,14 +738,34 @@ def race_speed_chart(lap_data: dict, selected_drivers: list = None,
             if greens:
                 gs = sorted(greens); n = len(gs)
                 ref = gs[n // 2] if n % 2 else (gs[n // 2 - 1] + gs[n // 2]) / 2
+            # A green-flag pit stop is the obvious slow lap (the pit-lane lap, far
+            # off pace) PLUS the in-lap (slowing to enter) and out-lap (getting
+            # back up to speed) on either side. Those neighbours are only ~5-10%
+            # off median, so a single threshold misses them and they show up as
+            # sharp V-spikes. Detect the obvious pit lap, then drop it and its
+            # immediate neighbours; a tighter backstop catches any stray out-lap.
+            pit_lns = set()
+            if ref is not None:
+                for ln, v, c in seq:
+                    if c != 1:
+                        continue
+                    if use_time and v > ref * 1.10:
+                        pit_lns.add(ln)
+                    elif (not use_time) and v < ref * 0.90:
+                        pit_lns.add(ln)
+            drop_lns = set()
+            for ln in pit_lns:
+                drop_lns.update((ln - 1, ln, ln + 1))
             kept = []
             for ln, v, c in seq:
                 if c != 1:
                     continue  # caution lap
-                if ref is not None:
-                    if use_time and v > ref * 1.15:
-                        continue  # slow green lap = pit stop
-                    if (not use_time) and v < ref * 0.85:
+                if ln in drop_lns:
+                    continue  # pit lap or its in-/out-lap
+                if ref is not None:  # backstop: any remaining off-pace lap
+                    if use_time and v > ref * 1.05:
+                        continue
+                    if (not use_time) and v < ref * 0.95:
                         continue
                 kept.append((ln, v))
             seq = kept
