@@ -927,6 +927,7 @@ def query_driver_race_log(
     all_tracks: bool = False,
     min_season: int = 2022,
     before_date: str = None,
+    track_names: list = None,
 ) -> list:
     """Per-race log for a single driver, filtered to a track OR a track type
     OR an entire season — or ALL races (all_tracks=True).
@@ -945,7 +946,8 @@ def query_driver_race_log(
     """
     if not DB_PATH.exists() or not driver_name:
         return []
-    if not track_name and not track_type and not season and not all_tracks:
+    if (not track_name and not track_type and not season and not all_tracks
+            and not track_names):
         return []
 
     from src.config import TRACK_TYPE_MAP, TRACK_TYPE_PARENT
@@ -967,7 +969,15 @@ def query_driver_race_log(
         where.append("r.season >= ?")
         params.append(min_season)
 
-    if track_name:
+    if track_names:
+        # Explicit list of tracks (e.g. the similar-track guide tiers).
+        tl = [t for t in track_names if t]
+        if not tl:
+            return []
+        placeholders = ",".join("?" for _ in tl)
+        where.append(f"t.name IN ({placeholders})")
+        params.extend(tl)
+    elif track_name:
         where.append("t.name = ?")
         params.append(track_name)
     elif track_type:

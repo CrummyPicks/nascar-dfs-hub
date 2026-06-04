@@ -103,6 +103,249 @@ TRACK_TYPE_DISPLAY = {
 }
 
 # ----------------------------
+# SIMILAR-TRACK GUIDE (hand-curated, separate from TRACK_TYPE_MAP)
+# ----------------------------
+# A nuanced "study these tracks to prep for this one" map, distinct from the
+# mechanical track_type grouping the projection uses. Keys + the names inside
+# primary/secondary are CANONICAL DB track names (so they join cleanly). Tracks
+# marked "unique" have no primary comps — lead with the note, show secondary as
+# a stretch comparison. Descriptive comps the guide gives without a clean track
+# list (e.g. "high-speed 1.5-mile tracks") are preserved in the note text.
+# Edit freely — this is a curated guide, not derived data.
+SIMILAR_TRACKS = {
+    "Atlanta Motor Speedway": {
+        "profile": "1.5-mile narrow superspeedway",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Daytona International Speedway", "Talladega Superspeedway"],
+        "note": "Narrow superspeedway — races more like Daytona than Talladega, "
+                "but ultimately view it as unique.",
+    },
+    "Bowman Gray Stadium": {
+        "profile": "0.25-mile super short track",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Martinsville Speedway"],
+        "note": "A quarter mile of mayhem. Martinsville is small, but Bowman Gray "
+                "is only half its size.",
+    },
+    "Bristol Motor Speedway": {
+        "profile": "0.533-mile concrete short track",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Dover Motor Speedway"],
+        "note": "Study Bristol as a unique track.",
+    },
+    "Charlotte Motor Speedway": {
+        "profile": "1.5-mile intermediate (D-shaped, low-moderate wear)",
+        "primary": ["Kansas Speedway", "Las Vegas Motor Speedway", "Texas Motor Speedway"],
+        "secondary": ["Homestead-Miami Speedway", "Chicagoland Speedway", "Michigan International Speedway"],
+        "note": "D-shaped oval with low to moderate wear. Emphasize other "
+                "low-to-moderate-wear 1.5-mile tracks.",
+    },
+    "Charlotte Motor Speedway Road Course": {
+        "profile": "2.28-mile road course (Roval)",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Sonoma Raceway", "Watkins Glen International",
+                      "Circuit of The Americas", "San Diego Street Course"],
+        "note": "Study Roval track history first, then overall recent road-course prowess.",
+    },
+    "Chicagoland Speedway": {
+        "profile": "1.5-mile high-tire-wear intermediate",
+        "primary": ["Homestead-Miami Speedway", "Kansas Speedway"],
+        "secondary": ["Darlington Raceway", "Las Vegas Motor Speedway",
+                      "Charlotte Motor Speedway", "Texas Motor Speedway",
+                      "Michigan International Speedway"],
+        "note": "High-tire-wear 1.5-mile track (returning 2026). Like Homestead, "
+                "the driver can be a difference-maker.",
+    },
+    "Circuit of The Americas": {
+        "profile": "3.4-mile road course",
+        "primary": ["Sonoma Raceway", "Watkins Glen International"],
+        "secondary": ["Charlotte Motor Speedway Road Course", "San Diego Street Course"],
+        "note": "Study drivers' overall road-course racing prowess.",
+    },
+    "Darlington Raceway": {
+        "profile": "1.366-mile high-wear egg-shaped oval",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Homestead-Miami Speedway", "Chicagoland Speedway", "Dover Motor Speedway"],
+        "note": "Egg-shaped, high-tire-wear skill track — study as unique.",
+    },
+    "Daytona International Speedway": {
+        "profile": "2.5-mile big superspeedway",
+        "primary": ["Talladega Superspeedway"],
+        "secondary": ["Atlanta Motor Speedway"],
+        "note": "Daytona and Talladega are the two big superspeedways but race "
+                "differently — Daytona is much narrower, Talladega much wider.",
+    },
+    "Dover Motor Speedway": {
+        "profile": "1.0-mile concrete skill intermediate",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Darlington Raceway", "Nashville Superspeedway", "Bristol Motor Speedway"],
+        "note": "Study Dover as unique. A stretch: similar to Darlington/Bristol. "
+                "Nashville is also concrete but quite different.",
+    },
+    "World Wide Technology Raceway": {
+        "profile": "1.25-mile shorter-flat track (Gateway)",
+        "primary": ["New Hampshire Motor Speedway", "Phoenix Raceway"],
+        "secondary": ["Iowa Speedway", "Richmond Raceway"],
+        "note": "A 'big' shorter-flat track (1.25 mi); the others are 1.0 mi or less.",
+    },
+    "Homestead-Miami Speedway": {
+        "profile": "1.5-mile high-tire-wear intermediate",
+        "primary": ["Darlington Raceway", "Chicagoland Speedway"],
+        "secondary": ["Charlotte Motor Speedway", "Kansas Speedway",
+                      "Texas Motor Speedway", "Las Vegas Motor Speedway"],
+        "note": "High-tire-wear 1.5-mile track — tire management separates drivers.",
+    },
+    "Indianapolis Motor Speedway": {
+        "profile": "2.5-mile big flat track",
+        "primary": ["Pocono Raceway"],
+        "secondary": ["Michigan International Speedway"],
+        "note": "Big flat rectangle — horsepower and track position are king. "
+                "Pocono is the best comp.",
+    },
+    "Iowa Speedway": {
+        "profile": "0.875-mile short track",
+        "primary": ["Richmond Raceway"],
+        "secondary": ["New Hampshire Motor Speedway", "Phoenix Raceway",
+                      "World Wide Technology Raceway"],
+        "note": "Approach as any other shorter-flat track.",
+    },
+    "Kansas Speedway": {
+        "profile": "1.5-mile intermediate",
+        "primary": ["Las Vegas Motor Speedway"],
+        "secondary": ["Michigan International Speedway", "Charlotte Motor Speedway",
+                      "Chicagoland Speedway", "Texas Motor Speedway"],
+        "note": "Las Vegas is the 'sister track'. Also a mini-Michigan, though "
+                "tire wear is much higher now.",
+    },
+    "Las Vegas Motor Speedway": {
+        "profile": "1.5-mile intermediate",
+        "primary": ["Kansas Speedway"],
+        "secondary": ["Michigan International Speedway", "Charlotte Motor Speedway",
+                      "Texas Motor Speedway"],
+        "note": "Historically lower tire wear than peers, but it's increasing.",
+    },
+    "Martinsville Speedway": {
+        "profile": "0.526-mile short track",
+        "unique": True,
+        "primary": [],
+        "secondary": ["New Hampshire Motor Speedway", "Bowman Gray Stadium",
+                      "North Wilkesboro Speedway"],
+        "note": "Largely focus on Martinsville as a unique track.",
+    },
+    "Michigan International Speedway": {
+        "profile": "2.0-mile intermediate",
+        "primary": ["Kansas Speedway"],
+        "secondary": ["Las Vegas Motor Speedway", "Charlotte Motor Speedway",
+                      "Homestead-Miami Speedway", "Texas Motor Speedway"],
+        "note": "To prep, study Kansas (a 'mini-Michigan', though tire wear is "
+                "higher there now).",
+    },
+    "Nashville Superspeedway": {
+        "profile": "1.33-mile concrete intermediate",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Dover Motor Speedway"],
+        "note": "Unique 1.33-mi concrete track — almost a mix of Dover and "
+                "high-speed 1.5-mile tracks, but really a hybrid of neither.",
+    },
+    "New Hampshire Motor Speedway": {
+        "profile": "1.058-mile shorter-flat track",
+        "primary": ["Richmond Raceway", "World Wide Technology Raceway", "Phoenix Raceway"],
+        "secondary": ["Iowa Speedway", "North Wilkesboro Speedway", "Martinsville Speedway"],
+        "note": "Study Richmond, Gateway and Phoenix.",
+    },
+    "North Wilkesboro Speedway": {
+        "profile": "0.625-mile short track (repaved 2023)",
+        "unique": True,
+        "primary": [],
+        "secondary": ["Phoenix Raceway", "Richmond Raceway",
+                      "World Wide Technology Raceway", "Martinsville Speedway"],
+        "note": "Newest surface (repaved after the 2023 All-Star Race). A points-"
+                "paying night race in 2026.",
+    },
+    "Phoenix Raceway": {
+        "profile": "1.0-mile shorter-flat track",
+        "primary": ["World Wide Technology Raceway", "New Hampshire Motor Speedway"],
+        "secondary": ["Richmond Raceway", "North Wilkesboro Speedway", "Iowa Speedway"],
+        "note": "Of the five shorter-flat tracks, most focus on Gateway and New Hampshire.",
+    },
+    "Pocono Raceway": {
+        "profile": "2.5-mile big flat triangle",
+        "primary": ["Indianapolis Motor Speedway"],
+        "secondary": ["Michigan International Speedway"],
+        "note": "Run well here and the driver tends to factor at Indy a few weeks later.",
+    },
+    "Richmond Raceway": {
+        "profile": "0.75-mile shorter-flat / short track",
+        "primary": ["New Hampshire Motor Speedway", "World Wide Technology Raceway",
+                    "Phoenix Raceway", "North Wilkesboro Speedway", "Iowa Speedway"],
+        "secondary": ["Martinsville Speedway"],
+        "note": "Tire wear is higher here than the other shorter-flat tracks.",
+    },
+    "San Diego Street Course": {
+        "profile": "3.1-mile street road course (2026 debut)",
+        "primary": ["Chicago Street Course"],
+        "secondary": ["Sonoma Raceway", "Circuit of The Americas",
+                      "Watkins Glen International", "Charlotte Motor Speedway Road Course"],
+        "note": "Temporary street course — think Chicago Street (a track not "
+                "purpose-built for racing).",
+    },
+    "Sonoma Raceway": {
+        "profile": "1.99-mile road course",
+        "primary": ["Watkins Glen International", "Circuit of The Americas"],
+        "secondary": ["Charlotte Motor Speedway Road Course", "San Diego Street Course"],
+        "note": "Very technical — don't neglect overall road-course racing prowess.",
+    },
+    "Talladega Superspeedway": {
+        "profile": "2.66-mile big superspeedway",
+        "primary": ["Daytona International Speedway"],
+        "secondary": ["Atlanta Motor Speedway"],
+        "note": "Daytona and Talladega race differently — Daytona much narrower, "
+                "Talladega much wider.",
+    },
+    "Texas Motor Speedway": {
+        "profile": "1.5-mile intermediate (high attrition)",
+        "primary": ["Charlotte Motor Speedway", "Kansas Speedway", "Las Vegas Motor Speedway"],
+        "secondary": ["Michigan International Speedway", "Chicagoland Speedway",
+                      "Homestead-Miami Speedway"],
+        "note": "Treacherous 1.5-mile track; attrition has spiked to superspeedway levels.",
+    },
+    "Watkins Glen International": {
+        "profile": "2.45-mile road course",
+        "primary": ["Circuit of The Americas", "Autódromo Hermanos Rodríguez",
+                    "Sonoma Raceway"],
+        "secondary": ["Charlotte Motor Speedway Road Course", "Chicago Street Course"],
+        "note": "Largely unique, but study overall road-course racing prowess.",
+    },
+}
+
+
+def similar_tracks_for(track_name: str) -> dict:
+    """Return the curated similar-track entry for a track, or None.
+
+    Resolves a couple of canonical-name variants the DB carries two ways
+    (Circuit of The/the Americas, Chicago Street Course/Race) so the lookup
+    doesn't miss. Track names inside the entry are already canonical DB names.
+    """
+    if not track_name:
+        return None
+    entry = SIMILAR_TRACKS.get(track_name)
+    if entry:
+        return entry
+    # Variant fallbacks
+    _variants = {
+        "Circuit of the Americas": "Circuit of The Americas",
+        "Chicago Street Race": "Chicago Street Course",
+    }
+    return SIMILAR_TRACKS.get(_variants.get(track_name, ""), None)
+
+# ----------------------------
 # CONCRETE SURFACE (second axis, overlaid on track_type)
 # ----------------------------
 # Surface is independent of track SIZE. These tracks share a concrete surface:

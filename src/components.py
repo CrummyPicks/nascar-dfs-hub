@@ -407,6 +407,124 @@ def _render_full_field_results(race_id, highlight_driver=None, key_prefix=""):
                  key=f"{key_prefix}__field_{race_id}")
 
 
+def _abbrev_track(tn):
+    """Short track label for compact display (e.g. 'Kansas Speedway' -> 'Kansas')."""
+    for suf in [" International Speedway", " Motor Speedway", " Superspeedway",
+                " Speedway", " Raceway", " International", " Stadium",
+                " Road Course", " Street Course"]:
+        if tn and tn.endswith(suf):
+            return tn[:-len(suf)]
+    return tn or "Track"
+
+
+def _similar_tier_summary(df_tier):
+    """One-line aggregate metrics for a tier of similar tracks. Returns a list
+    of (label, value_str) for a compact metric row, or None if no races."""
+    if df_tier is None or df_tier.empty:
+        return None
+    fin = pd.to_numeric(df_tier["Finish"], errors="coerce")
+    arp = pd.to_numeric(df_tier.get("Avg Run"), errors="coerce")
+    rating = pd.to_numeric(df_tier.get("Rating"), errors="coerce")
+    grank = pd.to_numeric(df_tier.get("Green Rank"), errors="coerce")
+    n = len(df_tier)
+    return [
+        ("Races", str(n)),
+        ("Avg Finish", f"{fin.mean():.1f}" if fin.notna().any() else "—"),
+        ("Avg Run Pos", f"{arp.mean():.1f}" if arp.notna().any() else "—"),
+        ("Driver Rating", f"{rating.mean():.1f}" if rating.notna().any() else "—"),
+        ("Avg Green Rank", f"{grank.mean():.1f}" if grank.notna().any() else "—"),
+        ("Top 10s", str(int((fin <= 10).sum()))),
+    ]
+
+
+def _render_similar_tracks_scope(driver_name, series_id, track_name,
+                                 show_series_col=False):
+    """Curated similar-track guide for the current track: the note/profile, a
+    Primary-tier and Secondary-tier summary, then a combined race log tagged by
+    tier. Distinct from the mechanical track_type tab — this is the hand-picked
+    'study these to prep for this track' view."""
+    from src.config import similar_tracks_for
+    from src.data import query_driver_race_log
+
+    guide = similar_tracks_for(track_name)
+    if not guide:
+        st.info("No similar-track guide for this track.")
+        return
+
+    primary = guide.get("primary", []) or []
+    secondary = guide.get("secondary", []) or []
+
+    # Header: profile + note, and (for unique tracks) a clear callout.
+    prof = guide.get("profile", "")
+    st.markdown(
+        f'<div style="color:#e2e8f0;font-size:0.9rem;font-weight:600;">{track_name}'
+        f'<span style="color:#64748b;font-weight:400;"> — {prof}</span></div>',
+        unsafe_allow_html=True)
+    if guide.get("unique"):
+        st.caption("⭐ **Study as a unique track** — no strong primary comps. "
+                   "Secondary tracks below are a stretch comparison.")
+    st.info(guide.get("note", ""))
+
+    def _render_tier(label, tracks):
+        if not tracks:
+            return None
+        log = query_driver_race_log(driver_name=driver_name, series_id=series_id,
+                                    track_names=tracks)
+        chips = ", ".join(_abbrev_track(t) for t in tracks)
+        st.markdown(f"**{label}**  \n<span style='color:#64748b;font-size:0.8rem;'>"
+                    f"{chips}</span>", unsafe_allow_html=True)
+        if not log:
+            st.caption("No races on record at these tracks for this driver.")
+            return None
+        d = pd.DataFrame(log)
+        summary = _similar_tier_summary(d)
+        if summary:
+            cols = st.columns(len(summary))
+            for col, (lbl, val) in zip(cols, summary):
+                col.metric(lbl, val)
+        d["Tier"] = label
+        return d
+
+    primary_df = _render_tier("Primary Similar Tracks", primary)
+    st.markdown("")
+    secondary_df = _render_tier("Secondary Similar Tracks", secondary)
+
+    # Combined race log across both tiers, newest first, tier-tagged.
+    parts = [p for p in [primary_df, secondary_df] if p is not None and not p.empty]
+    if not parts:
+        return
+    combined = pd.concat(parts, ignore_index=True)
+    if "Date" in combined.columns:
+        combined = combined.sort_values("Date", ascending=False)
+    st.markdown("**All similar-track races**")
+    show_cols = ["Tier", "Date", "Race", "Track", "Start", "Finish",
+                 "Laps Led", "Fast Laps", "Avg Run", "Rating", "DK Pts", "Status"]
+    if show_series_col and "Series" in combined.columns:
+        show_cols.insert(4, "Series")
+    show_cols = [c for c in show_cols if c in combined.columns]
+    disp = combined[show_cols].copy()
+    for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce").astype("Int64")
+    fmt = {}
+    if "Avg Run" in disp.columns:
+        fmt["Avg Run"] = "{:.1f}"
+    if "Rating" in disp.columns:
+        fmt["Rating"] = "{:.1f}"
+    if "DK Pts" in disp.columns:
+        fmt["DK Pts"] = "{:.2f}"
+    finish_col = "Finish" if "Finish" in disp.columns else None
+    if finish_col:
+        styled = disp.style.apply(
+            lambda col: [_rank_color(v, max_rank=40) if col.name == finish_col
+                         else "" for v in col], axis=0)
+    else:
+        styled = disp.style
+    if fmt:
+        styled = styled.format(fmt, na_rep="—")
+    st.dataframe(styled, width="stretch", hide_index=True, height=360)
+
+
 def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
                                   track_type=None, season=None, all_tracks=False,
                                   show_track_col=False, show_series_col=False,
@@ -634,6 +752,11 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     # history (which races alike regardless of size) is one click away.
     if track_name and is_concrete_track(track_name):
         specs.append(("Concrete", dict(track_type="concrete", show_track_col=True)))
+    # Curated "Similar Tracks" guide scope — the hand-picked comp tracks for
+    # this track (separate from the mechanical track_type grouping).
+    from src.config import similar_tracks_for
+    if track_name and similar_tracks_for(track_name):
+        specs.append(("Similar Tracks", dict(_similar=True, track_name=track_name)))
     specs.append((f"{season} Season", dict(season=season, show_track_col=True)))
     specs.append(("Pick a Track", dict(_picker=True)))
     specs.append(("All-Time", dict(_alltime=True, show_track_col=True)))
@@ -666,6 +789,10 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
                                              all_tracks=True, show_track_col=True,
                                              show_series_col=show_series_col,
                                              scope_tag=label)
+            elif kw.get("_similar"):
+                _render_similar_tracks_scope(driver_name, eff_series,
+                                             kw["track_name"],
+                                             show_series_col=show_series_col)
             else:
                 _render_driver_history_scope(driver_name, eff_series,
                                              show_series_col=show_series_col,
