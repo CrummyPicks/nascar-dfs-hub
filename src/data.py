@@ -1168,6 +1168,75 @@ def query_race_cautions(series_id: int, api_race_id: int, year: int,
     }
 
 
+def query_race_pit_summary(db_race_id: int) -> dict:
+    """Per-driver pit summary + likely pit penalties for one race.
+
+    Returns {
+      "rows": [ {Driver, Stops, "Avg Box (s)", "Best Box (s)", "Net Pos",
+                 "Green Stops"} ] sorted by Avg Box,
+      "likely_penalties": [ {Driver, Lap, "Box (s)", "Pos Lost", Why} ],
+    }
+    A 'likely penalty' is a GREEN-flag stop with a big position loss and/or an
+    abnormally long box time vs the field median — NASCAR doesn't publish in-race
+    penalties cleanly, so these are heuristic (labeled 'likely').
+    """
+    if not DB_PATH.exists() or db_race_id is None:
+        return {"rows": [], "likely_penalties": []}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT d.full_name, ps.lap, ps.pit_stop_duration, ps.flag_status,
+                   ps.positions_gained_lost
+            FROM pit_stops ps JOIN drivers d ON d.id = ps.driver_id
+            WHERE ps.race_id = ?
+        ''', (db_race_id,)).fetchall()
+        conn.close()
+    except Exception:
+        return {"rows": [], "likely_penalties": []}
+    if not rows:
+        return {"rows": [], "likely_penalties": []}
+
+    # Field-median green-flag box time, for the anomaly threshold.
+    green_box = [r[2] for r in rows if r[3] == 1 and r[2]]
+    med_box = None
+    if green_box:
+        gb = sorted(green_box); n = len(gb)
+        med_box = gb[n // 2] if n % 2 else (gb[n // 2 - 1] + gb[n // 2]) / 2
+
+    by_driver = {}
+    likely = []
+    for name, lap, box, flag, posch in rows:
+        d = by_driver.setdefault(name, {"Driver": name, "Stops": 0,
+                                        "_box": [], "_net": 0, "Green Stops": 0})
+        d["Stops"] += 1
+        if box:
+            d["_box"].append(box)
+        if posch is not None:
+            d["_net"] += posch
+        if flag == 1:
+            d["Green Stops"] += 1
+            # Likely penalty: green stop, lost many spots, slow box vs median.
+            if (posch is not None and posch <= -5 and box and med_box
+                    and box > med_box * 1.5):
+                likely.append({
+                    "Driver": name, "Lap": lap,
+                    "Box (s)": round(box, 1), "Pos Lost": -posch,
+                    "Why": "Slow green-flag stop + big position loss",
+                })
+
+    out_rows = []
+    for d in by_driver.values():
+        boxes = d.pop("_box")
+        net = d.pop("_net")
+        d["Avg Box (s)"] = round(sum(boxes) / len(boxes), 1) if boxes else None
+        d["Best Box (s)"] = round(min(boxes), 1) if boxes else None
+        d["Net Pos"] = net
+        out_rows.append(d)
+    out_rows.sort(key=lambda x: (x["Avg Box (s)"] is None, x["Avg Box (s)"] or 999))
+    likely.sort(key=lambda x: x["Lap"])
+    return {"rows": out_rows, "likely_penalties": likely}
+
+
 def query_race_stage_breakdown(db_race_id: int) -> dict:
     """Per-driver, per-stage race breakdown for the Race Lab tab.
 
@@ -3725,12 +3794,13 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = None) -> dict
         # backfill in refresh_data.py remains a safety net for any race this
         # misses (e.g. loop-stats not yet published at ingest time).
         try:
-            from scrapers.backfill_ratings import store_ratings_for_race
+            from scrapers.backfill_ratings import (store_ratings_for_race,
+                                                    store_pit_stops_for_race)
             n_upd, _ = store_ratings_for_race(conn, series_id, race_id, year, db_race_id)
-            if n_upd:
-                conn.commit()
+            store_pit_stops_for_race(conn, series_id, race_id, year, db_race_id)
+            conn.commit()
         except Exception:
-            pass  # never fail ingestion over ratings — backfill will catch it
+            pass  # never fail ingestion over metrics — backfill will catch it
 
         return {"drivers": driver_count, "race_name": race_name, "status": "success",
                 "error": None}

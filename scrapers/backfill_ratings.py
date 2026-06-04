@@ -414,6 +414,90 @@ def store_all_ratings(conn, only_missing=True, verbose=False):
     return (races_updated, rows_updated)
 
 
+# ── Pit stops (from live-pit-data.json) ───────────────────────────────────────
+PITDATA_URL = NASCAR_API_BASE + "/{season}/{series_id}/{api_race_id}/live-pit-data.json"
+
+
+def store_pit_stops_for_race(conn, series_id, api_race_id, season, db_race_id,
+                             name_to_dbid=None):
+    """Fetch one race's pit stops and upsert into pit_stops. Returns rows written.
+
+    live-pit-data keys driver by `driver_name` (sometimes suffixed '(P)'/'(i)'),
+    so resolve via normalized name -> drivers.id."""
+    url = PITDATA_URL.format(season=season, series_id=series_id, api_race_id=api_race_id)
+    stops = fetch_json(url)
+    if not isinstance(stops, list) or not stops:
+        return 0
+    if name_to_dbid is None:
+        name_to_dbid = {}
+        for row in conn.execute("SELECT id, full_name FROM drivers"):
+            name_to_dbid[normalize_driver_name(row[1])] = row[0]
+
+    written = 0
+    for s in stops:
+        raw_name = s.get("driver_name") or ""
+        # Strip status suffixes like " (P)" / " (i)" before matching.
+        clean = raw_name.split("(")[0].strip()
+        db_id = name_to_dbid.get(normalize_driver_name(_clean_api_name(clean)))
+        if db_id is None:
+            continue
+        lap = s.get("lap_count")
+        if lap is None:
+            continue
+        cur = conn.execute(
+            """INSERT INTO pit_stops
+                 (race_id, driver_id, lap, pit_stop_duration, total_duration,
+                  flag_status, positions_gained_lost, pit_in_rank, pit_out_rank,
+                  stop_type)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(race_id, driver_id, lap) DO UPDATE SET
+                 pit_stop_duration=excluded.pit_stop_duration,
+                 total_duration=excluded.total_duration,
+                 flag_status=excluded.flag_status,
+                 positions_gained_lost=excluded.positions_gained_lost,
+                 pit_in_rank=excluded.pit_in_rank, pit_out_rank=excluded.pit_out_rank,
+                 stop_type=excluded.stop_type""",
+            (db_race_id, db_id, lap, s.get("pit_stop_duration"),
+             s.get("total_duration"), s.get("pit_in_flag_status"),
+             s.get("positions_gained_lost"), s.get("pit_in_rank"),
+             s.get("pit_out_rank"), s.get("pit_stop_type")),
+        )
+        written += cur.rowcount
+    return written
+
+
+def store_all_pit_stops(conn, only_missing=True, verbose=False):
+    """Backfill pit_stops for every race (or only those with none). Returns
+    (races_updated, rows_written)."""
+    races = conn.execute('''
+        SELECT id, api_race_id, series_id, season, race_name
+        FROM races ORDER BY season, id
+    ''').fetchall()
+    name_to_dbid = {}
+    for row in conn.execute("SELECT id, full_name FROM drivers"):
+        name_to_dbid[normalize_driver_name(row[1])] = row[0]
+
+    races_updated = rows_written = 0
+    for race_id, api_race_id, series_id, season, race_name in races:
+        if not api_race_id:
+            continue
+        if only_missing:
+            n = conn.execute("SELECT COUNT(*) FROM pit_stops WHERE race_id = ?",
+                             (race_id,)).fetchone()[0]
+            if n > 0:
+                continue
+        w = store_pit_stops_for_race(conn, series_id, api_race_id, season, race_id,
+                                     name_to_dbid=name_to_dbid)
+        if w > 0:
+            conn.commit()
+            races_updated += 1
+            rows_written += w
+            if verbose:
+                print(f"  {season} {(race_name or '')[:45]:45} +{w} pit stops")
+        time.sleep(0.3)
+    return (races_updated, rows_written)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Backfill NASCAR Driver Rating")
     ap.add_argument("--force", action="store_true",

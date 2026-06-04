@@ -626,15 +626,17 @@ def main():
     try:
         import sqlite3 as _sql
         from src.config import DB_PATH as _DBP
-        from scrapers.backfill_ratings import store_all_ratings
+        from scrapers.backfill_ratings import store_all_ratings, store_all_pit_stops
         _rconn = _sql.connect(str(_DBP))
         try:
             r_races, r_rows = store_all_ratings(_rconn, only_missing=True)
             print(f"  Backfilled {r_rows} ratings across {r_races} races")
+            p_races, p_rows = store_all_pit_stops(_rconn, only_missing=True)
+            print(f"  Backfilled {p_rows} pit stops across {p_races} races")
         finally:
             _rconn.close()
     except Exception as e:
-        print(f"  Rating backfill skipped: {e}")
+        print(f"  Rating/pit backfill skipped: {e}")
 
     print("\nDone! Start the app with: streamlit run nascar_dfs_app.py\n")
 

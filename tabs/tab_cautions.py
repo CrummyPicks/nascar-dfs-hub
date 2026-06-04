@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from src.components import section_header
-from src.data import query_race_cautions
+from src.data import query_race_cautions, query_race_pit_summary
 
 
 def _get_year(race):
@@ -50,8 +50,12 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     penalties = data.get("prerace_penalties", [])
     summ = data.get("summary", {})
 
-    if not cautions and not penalties:
-        st.info("No caution or penalty data available for this race yet.")
+    pit = query_race_pit_summary(db_id) if db_id else {"rows": [], "likely_penalties": []}
+    pit_rows = pit.get("rows", [])
+    likely_pen = pit.get("likely_penalties", [])
+
+    if not cautions and not penalties and not pit_rows:
+        st.info("No caution, penalty or pit data available for this race yet.")
         return
 
     # Summary strip
@@ -62,23 +66,31 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     cols[3].metric("Pre-Race Penalties", len(penalties))
     st.divider()
 
-    # ── Penalties ──
+    # ── Penalties (pre-race confirmed + derived likely pit penalties) ──
     st.markdown("**Penalties**")
-    if penalties:
-        prows = []
-        for p in penalties:
-            prows.append({
-                "When": "Pre-race",
-                "Drivers": ", ".join(p["Drivers"]),
-                "Cars": p["Cars"],
-                "Reason": p["Reason"],
-            })
+    prows = []
+    for p in penalties:
+        prows.append({
+            "When": "Pre-race",
+            "Driver": ", ".join(p["Drivers"]),
+            "Reason": p["Reason"],
+            "Confidence": "Confirmed",
+        })
+    for lp in likely_pen:
+        prows.append({
+            "When": f"Lap {lp['Lap']}",
+            "Driver": lp["Driver"],
+            "Reason": f"{lp['Why']} ({lp['Box (s)']}s box, lost {lp['Pos Lost']})",
+            "Confidence": "Likely (derived)",
+        })
+    if prows:
         st.dataframe(pd.DataFrame(prows), width="stretch", hide_index=True)
     else:
-        st.caption("No pre-race penalties reported for this race.")
-    st.caption("In-race pit penalties aren't published in a clean NASCAR field; "
-               "once pit data is wired in, likely pit-road penalties will appear "
-               "here (flagged as derived).")
+        st.caption("No pre-race penalties reported, and no pit anomalies detected.")
+    st.caption("Pre-race penalties are parsed from official race comments "
+               "(confirmed). NASCAR doesn't publish in-race penalties in a clean "
+               "field, so 'Likely' rows are derived from pit anomalies "
+               "(slow green-flag stop + big position loss).")
     st.divider()
 
     # ── Caution timeline ──
@@ -115,3 +127,27 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         ic_df = pd.DataFrame([{"Driver": n, "Cautions Involved": k} for n, k in ic if k >= 1])
         st.dataframe(ic_df, width="stretch", hide_index=True,
                      height=min(300, 60 + len(ic_df) * 36))
+
+    # ── Pit Road ──
+    if pit_rows:
+        st.divider()
+        st.markdown("**Pit Road** — crew execution (sorted by avg box time)")
+        st.caption("Avg/Best Box = stationary stop time (the crew's speed). "
+                   "Net Pos = total positions gained (＋) / lost (−) across all "
+                   "stops. Green Stops = stops taken under green.")
+        pdf = pd.DataFrame(pit_rows)[
+            ["Driver", "Stops", "Avg Box (s)", "Best Box (s)", "Net Pos", "Green Stops"]]
+
+        def _net_color(col):
+            if col.name != "Net Pos":
+                return ["" for _ in col]
+            return ["color:#22c55e;font-weight:600" if (pd.notna(v) and v > 0)
+                    else "color:#ef4444;font-weight:600" if (pd.notna(v) and v < 0)
+                    else "color:#94a3b8" for v in col]
+
+        styled_p = pdf.style.apply(_net_color, axis=0).format(
+            {"Avg Box (s)": "{:.1f}", "Best Box (s)": "{:.1f}",
+             "Stops": "{:.0f}", "Net Pos": "{:+.0f}", "Green Stops": "{:.0f}"},
+            na_rep="—")
+        st.dataframe(styled_p, width="stretch", hide_index=True,
+                     height=min(620, 60 + len(pdf) * 35))

@@ -144,6 +144,25 @@ def create_database():
     );
     CREATE INDEX IF NOT EXISTS idx_stage_race ON stage_results(race_id);
 
+    -- ── PIT STOPS (per stop, from live-pit-data.json) ────────────
+    -- Pit-road execution is largely a TEAM/crew attribute (distinct from driver
+    -- pace). Powers the Cautions/Pit display + a reworked team signal.
+    CREATE TABLE IF NOT EXISTS pit_stops (
+        id              INTEGER PRIMARY KEY,
+        race_id         INTEGER NOT NULL REFERENCES races(id),
+        driver_id       INTEGER NOT NULL REFERENCES drivers(id),
+        lap             INTEGER,
+        pit_stop_duration REAL,   -- stationary box time (s) — the crew's stop
+        total_duration  REAL,     -- pit-in to pit-out (s), incl. travel
+        flag_status     INTEGER,  -- 1=green, 2+=caution when the stop occurred
+        positions_gained_lost INTEGER,  -- pit_out_rank - pit_in_rank (+ gained)
+        pit_in_rank     INTEGER,
+        pit_out_rank    INTEGER,
+        stop_type       TEXT,     -- FOUR_WHEEL_CHANGE, TWO_WHEEL_CHANGE, etc.
+        UNIQUE(race_id, driver_id, lap)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pit_race ON pit_stops(race_id);
+
     -- ── DFS POINTS ──────────────────────────────────────────────
     CREATE TABLE IF NOT EXISTS dfs_points (
         id          INTEGER PRIMARY KEY,
