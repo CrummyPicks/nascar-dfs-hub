@@ -1170,6 +1170,117 @@ def query_race_cautions(series_id: int, api_race_id: int, year: int,
     }
 
 
+def query_race_run_pace(series_id: int, api_race_id: int, year: int,
+                        db_race_id: int = None) -> dict:
+    """Per-driver long-run and restart pace for one race, from lap-times.
+
+    Long run  = avg green-flag lap TIME over green runs of >= 10 consecutive
+                laps, excluding pit laps (a lap > 1.15x the driver's green
+                median). Sustained tire/pace ability.
+    Restart   = avg green-flag lap TIME over the first 5 green laps after each
+                restart (the lap a green flag begins a run), excluding pit laps.
+                Short-run / restart prowess.
+
+    Returns {"rows": [ {Driver, "Long Run (s)", "Long Run Rank", "Restart (s)",
+             "Restart Rank", "LR Laps", "Restart Laps"} ]} sorted by Long Run.
+    Lower time = faster. Ranks are 1 = fastest in the field. Empty if no data.
+    """
+    lap_data = fetch_lap_times(series_id, api_race_id, year)
+    if not isinstance(lap_data, dict) or "laps" not in lap_data:
+        return {"rows": []}
+    change = {f["LapsCompleted"]: f["FlagState"]
+              for f in (lap_data.get("flags") or [])
+              if "LapsCompleted" in f and "FlagState" in f}
+    car2drv = _car_to_driver_map(db_race_id) if db_race_id else {}
+
+    def _median(vals):
+        if not vals:
+            return None
+        v = sorted(vals); n = len(v)
+        return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+    rows = []
+    for blk in lap_data["laps"]:
+        name = blk.get("FullName")
+        if not name:
+            continue
+        # Build per-lap (lap_no, time, flagstate).
+        seq = []
+        cur = 0
+        for lp in blk.get("Laps", []):
+            ln = lp.get("Lap")
+            if ln in change:
+                cur = change[ln]
+            lt = lp.get("LapTime")
+            if not ln or not lt:
+                continue
+            try:
+                lt = float(lt)
+            except (TypeError, ValueError):
+                continue
+            seq.append((ln, lt, cur))
+        if not seq:
+            continue
+        green = [t for _, t, c in seq if c == 1]
+        gmed = _median(green)
+        if gmed is None:
+            continue
+        pit_cut = gmed * 1.15  # laps slower than this are pit laps
+
+        # Identify green RUNS (consecutive green laps), and restart laps (the
+        # first lap of each green run that follows a caution).
+        long_run_times = []
+        restart_times = []
+        run = []          # current run of (lap, time) green laps
+        prev_state = None
+        run_is_restart = False
+        restart_collected = 0
+
+        def _flush_run():
+            nonlocal long_run_times
+            clean = [t for _, t in run if t <= pit_cut]
+            if len(clean) >= 10:
+                long_run_times.extend(clean)
+
+        for ln, t, c in seq:
+            if c == 1:
+                if prev_state != 1:
+                    # A new green run begins — this is a restart lap.
+                    _flush_run()
+                    run = []
+                    run_is_restart = (prev_state is not None)  # not the very first lap
+                    restart_collected = 0
+                run.append((ln, t))
+                # Restart pace: first 5 green laps of a post-caution run.
+                if run_is_restart and restart_collected < 5 and t <= pit_cut:
+                    restart_times.append(t)
+                    restart_collected += 1
+            prev_state = c
+        _flush_run()
+
+        lr = _median(long_run_times) if long_run_times else None
+        rs = (sum(restart_times) / len(restart_times)) if restart_times else None
+        rows.append({
+            "Driver": name,
+            "Long Run (s)": round(lr, 3) if lr is not None else None,
+            "Restart (s)": round(rs, 3) if rs is not None else None,
+            "LR Laps": len(long_run_times),
+            "Restart Laps": len(restart_times),
+        })
+
+    # Assign field ranks (1 = fastest = lowest time).
+    def _rank(rows_, key, rank_key):
+        valid = [r for r in rows_ if r[key] is not None]
+        for i, r in enumerate(sorted(valid, key=lambda x: x[key]), 1):
+            r[rank_key] = i
+        for r in rows_:
+            r.setdefault(rank_key, None)
+    _rank(rows, "Long Run (s)", "Long Run Rank")
+    _rank(rows, "Restart (s)", "Restart Rank")
+    rows.sort(key=lambda x: (x["Long Run (s)"] is None, x["Long Run (s)"] or 9e9))
+    return {"rows": rows}
+
+
 def query_race_pit_summary(db_race_id: int) -> dict:
     """Per-driver pit summary + likely pit penalties for one race.
 

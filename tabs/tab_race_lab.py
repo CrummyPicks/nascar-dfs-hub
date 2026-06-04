@@ -10,7 +10,7 @@ import streamlit as st
 
 from src.components import section_header
 from src.data import (query_race_stage_breakdown, query_race_field_results,
-                      fetch_lap_times)
+                      fetch_lap_times, query_race_run_pace)
 from src.charts import race_speed_chart
 from src.utils import safe_fillna, format_display_df
 
@@ -71,13 +71,16 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     )
 
     view = st.radio("View",
-                    ["Per-Stage Breakdown", "Green Speed Summary", "Speed Over Time"],
+                    ["Per-Stage Breakdown", "Green Speed Summary",
+                     "Long Run & Restart", "Speed Over Time"],
                     horizontal=True, label_visibility="collapsed", key="racelab_view")
 
     if view == "Per-Stage Breakdown":
         _render_stage_table(rows, stages)
     elif view == "Green Speed Summary":
         _render_green_summary(rows, stages)
+    elif view == "Long Run & Restart":
+        _render_run_pace(race, series_id, selected_year)
     else:
         _render_speed_over_time(race, series_id, selected_year, rows)
 
@@ -170,6 +173,54 @@ def _render_green_summary(rows, stages):
                "see whether a driver got faster or faded as the race went on.")
 
 
+def _render_run_pace(race, series_id, selected_year):
+    """Long-run (sustained green pace) + restart pace, per driver, ranked."""
+    api_id = race.get("race_id")
+    yr = (race.get("race_date", "") or "")[:4]
+    try:
+        yr = int(yr)
+    except (TypeError, ValueError):
+        yr = selected_year
+
+    with st.spinner("Computing long-run & restart pace..."):
+        data = query_race_run_pace(series_id, api_id, yr,
+                                   _resolve_db_id(api_id, series_id))
+    rows = data.get("rows", [])
+    if not rows:
+        st.info("Lap-by-lap data isn't available for this race, so long-run / "
+                "restart pace can't be computed.")
+        return
+
+    st.caption(
+        "**Long Run** = median green-flag lap time over runs of 10+ consecutive "
+        "green laps (sustained pace / tire management). **Restart** = avg of the "
+        "first 5 green laps after each restart (short-run speed). Pit laps "
+        "excluded. Rank 1 = fastest in the field; lower time = faster."
+    )
+
+    df = pd.DataFrame(rows)
+    cols = ["Driver", "Long Run (s)", "Long Run Rank", "LR Laps",
+            "Restart (s)", "Restart Rank", "Restart Laps"]
+    cols = [c for c in cols if c in df.columns]
+    disp = df[cols].copy()
+
+    def _rank_heat(col):
+        if not col.name.endswith("Rank"):
+            return ["" for _ in col]
+        return [_heat_low_good(v) for v in col]
+
+    fmt = {}
+    for c in disp.columns:
+        if c.endswith("(s)"):
+            fmt[c] = "{:.2f}"
+        elif c != "Driver":
+            fmt[c] = "{:.0f}"
+    styled = disp.style.apply(_rank_heat, axis=0).format(fmt, na_rep="—")
+    st.dataframe(styled, width="stretch", hide_index=True, height=620)
+    st.caption("Tip: a driver who's strong on Long Run but weak on Restart "
+               "(or vice-versa) is a setup/strategy read for DFS.")
+
+
 def _render_speed_over_time(race, series_id, selected_year, rows):
     """Driver-selectable overlay of lap speed across the race (from lap-times)."""
     api_id = race.get("race_id")
@@ -190,25 +241,37 @@ def _render_speed_over_time(race, series_id, selected_year, rows):
     top5 = [r["Driver"] for r in rows[:5] if r.get("Driver") in all_drivers]
     default = top5 or all_drivers[:5]
 
-    c1, c2 = st.columns([3, 1])
+    c1, c2, c3 = st.columns([3, 1, 1])
     with c1:
         picks = st.multiselect("Drivers to overlay", all_drivers, default=default,
                                key="racelab_speed_drivers")
     with c2:
-        green_only = st.toggle("Green-flag laps only", value=False,
+        metric_label = st.radio("Metric", ["Lap Time", "Speed"], horizontal=True,
+                                key="racelab_speed_metric")
+    with c3:
+        green_only = st.toggle("Green-flag laps only", value=True,
                                key="racelab_speed_greenonly",
-                               help="Drop caution laps so only racing pace shows.")
+                               help="Drop caution AND green-flag pit laps so only "
+                                    "clean racing pace shows.")
     if not picks:
         st.info("Select at least one driver.")
         return
 
-    fig = race_speed_chart(lap_data, selected_drivers=picks, green_only=green_only)
+    metric = "speed" if metric_label == "Speed" else "time"
+    fig = race_speed_chart(lap_data, selected_drivers=picks,
+                           green_only=green_only, metric=metric)
     if fig is None:
-        st.info("No lap-speed data to plot for the selected drivers.")
+        st.info("No lap data to plot for the selected drivers.")
         return
     st.plotly_chart(fig, width="stretch")
-    st.caption("Each line is a driver's lap speed (mph). Shaded bands are caution "
-               "periods. Toggle 'green-flag laps only' to compare pure racing pace.")
+    _unit = "lap time (s, faster = higher — axis inverted)" if metric == "time" else "lap speed (mph)"
+    if green_only:
+        st.caption(f"Each line is a driver's {_unit}. Caution laps and green-flag "
+                   "pit laps are removed, so this is clean racing pace.")
+    else:
+        st.caption(f"Each line is a driver's {_unit}. Shaded bands are caution "
+                   "periods; the deep dips are pit stops. Toggle 'green-flag laps "
+                   "only' for clean racing pace.")
 
 
 def _render_field_fallback(db_id):

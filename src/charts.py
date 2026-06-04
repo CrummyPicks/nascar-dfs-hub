@@ -685,57 +685,87 @@ def season_trend_line(series_id: int = 1, season: int = None,
 
 
 def race_speed_chart(lap_data: dict, selected_drivers: list = None,
-                     height: int = 520, green_only: bool = False) -> go.Figure:
-    """Overlay each selected driver's lap SPEED across the race, with caution
-    periods shaded so you can read pace runs vs. yellow-flag laps.
+                     height: int = 520, green_only: bool = False,
+                     metric: str = "time") -> go.Figure:
+    """Overlay each selected driver's lap TIME (default) or SPEED across the race.
 
     Args:
         lap_data: raw lap-times.json dict ("laps" + "flags").
         selected_drivers: driver full names to plot (None/empty = none).
-        green_only: if True, drop caution laps (FlagState != 1) from each line.
+        green_only: if True, drop caution laps AND green-flag PIT laps so only
+            clean racing pace remains. A pit lap is a green lap far slower than
+            the driver's own green-lap median (they stopped on that lap).
+        metric: "time" -> lap time (s, lower=faster) or "speed" -> mph.
     """
     if not lap_data or "laps" not in lap_data or not selected_drivers:
         return None
+    use_time = metric != "speed"
+    field = "LapTime" if use_time else "LapSpeed"
 
-    # Lap -> FlagState (carry change-points forward) for caution shading.
     change = {f["LapsCompleted"]: f["FlagState"]
               for f in (lap_data.get("flags") or [])
               if "LapsCompleted" in f and "FlagState" in f}
+
     fig = go.Figure()
     plotted = False
     for d in lap_data["laps"]:
         driver = d.get("FullName", d.get("NickName", "Unknown"))
         if driver not in selected_drivers:
             continue
-        xs, ys = [], []
+        # First pass: collect (lap, value, flagstate).
+        seq = []
         cur = 0
         for lap in d.get("Laps", []):
             ln = lap.get("Lap", 0)
             if ln in change:
                 cur = change[ln]
-            spd = lap.get("LapSpeed")
-            if not ln or not spd:
+            val = lap.get(field)
+            if not ln or not val:
                 continue
             try:
-                spd = float(spd)
+                val = float(val)
             except (TypeError, ValueError):
                 continue
-            if green_only and cur != 1:
-                continue
-            xs.append(ln)
-            ys.append(spd)
-        if not xs:
+            seq.append((ln, val, cur))
+        if not seq:
+            continue
+        # Pit-lap filter for green-only: drop green laps that are clearly a pit
+        # lap (slower-than-median pace). For TIME, pit laps are LARGER; for
+        # SPEED, smaller. Use the driver's green-lap median as the reference.
+        if green_only:
+            greens = [v for _, v, c in seq if c == 1]
+            ref = None
+            if greens:
+                gs = sorted(greens); n = len(gs)
+                ref = gs[n // 2] if n % 2 else (gs[n // 2 - 1] + gs[n // 2]) / 2
+            kept = []
+            for ln, v, c in seq:
+                if c != 1:
+                    continue  # caution lap
+                if ref is not None:
+                    if use_time and v > ref * 1.15:
+                        continue  # slow green lap = pit stop
+                    if (not use_time) and v < ref * 0.85:
+                        continue
+                kept.append((ln, v))
+            seq = kept
+        else:
+            seq = [(ln, v) for ln, v, c in seq]
+        if not seq:
             continue
         plotted = True
+        xs = [s[0] for s in seq]
+        ys = [s[1] for s in seq]
+        unit = "s" if use_time else "mph"
         fig.add_trace(go.Scatter(
             x=xs, y=ys, mode="lines", name=_last_name(driver),
-            hovertemplate=f"{driver}<br>Lap %{{x}}: %{{y:.1f}} mph<extra></extra>",
+            hovertemplate=f"{driver}<br>Lap %{{x}}: %{{y:.2f}} {unit}<extra></extra>",
             connectgaps=True,
         ))
     if not plotted:
         return None
 
-    # Shade caution segments (FlagState 2) as vertical bands.
+    # Shade caution segments (only meaningful when not green-only).
     if not green_only and change:
         pts = sorted(change.items())
         for i, (lap, state) in enumerate(pts):
@@ -744,13 +774,19 @@ def race_speed_chart(lap_data: dict, selected_drivers: list = None,
                 fig.add_vrect(x0=lap, x1=end, fillcolor="#fbbf24",
                               opacity=0.10, line_width=0, layer="below")
 
+    suffix = " (green-flag racing laps only)" if green_only else ""
     fig.update_layout(
         **DARK_LAYOUT, height=height,
-        title="Lap Speed Over the Race" + (" (green-flag laps only)" if green_only else ""),
-        xaxis_title="Lap Number", yaxis_title="Lap Speed (mph)",
+        title=("Lap Time" if use_time else "Lap Speed") + " Over the Race" + suffix,
+        xaxis_title="Lap Number",
+        yaxis_title="Lap Time (s)" if use_time else "Lap Speed (mph)",
         legend=dict(orientation="h", yanchor="top", y=-0.12, font=dict(size=10)),
         hovermode="x unified",
     )
+    # For lap TIME, lower is faster — invert the y-axis so "up = faster" reads
+    # intuitively like the speed chart.
+    if use_time:
+        fig.update_yaxes(autorange="reversed")
     return apply_dark_theme(fig)
 
 
