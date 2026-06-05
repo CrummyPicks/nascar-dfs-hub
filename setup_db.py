@@ -144,6 +144,25 @@ def create_database():
     );
     CREATE INDEX IF NOT EXISTS idx_stage_race ON stage_results(race_id);
 
+    -- ── RUN PACE (per driver per race, from lap-times.json) ──────
+    -- Long-run and restart pace, pre-computed once per race so the Race Lab
+    -- aggregate views (this-track / track-type across many races) are cheap DB
+    -- queries instead of dozens of live lap-times API calls. Seconds are kept
+    -- for single-track/single-race views; ranks are what aggregate across tracks.
+    CREATE TABLE IF NOT EXISTS run_pace (
+        id              INTEGER PRIMARY KEY,
+        race_id         INTEGER NOT NULL REFERENCES races(id),
+        driver_id       INTEGER NOT NULL REFERENCES drivers(id),
+        long_run_s      REAL,     -- median green lap time over 10+ green-lap runs
+        long_run_laps   INTEGER,  -- # clean long-run laps that fed the median
+        long_run_rank   INTEGER,  -- 1=fastest long-run pace in the field
+        restart_s       REAL,     -- avg of first 5 green laps after each restart
+        restart_laps    INTEGER,  -- # restart laps that fed the average
+        restart_rank    INTEGER,  -- 1=fastest restart pace in the field
+        UNIQUE(race_id, driver_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_runpace_race ON run_pace(race_id);
+
     -- ── PIT STOPS (per stop, from live-pit-data.json) ────────────
     -- Pit-road execution is largely a TEAM/crew attribute (distinct from driver
     -- pace). Powers the Cautions/Pit display + a reworked team signal.

@@ -525,10 +525,24 @@ def _render_similar_tracks_scope(driver_name, series_id, track_name,
     st.dataframe(styled, width="stretch", hide_index=True, height=360)
 
 
+def _rank_in_set(name, ranking, key, lower_is_better):
+    """Position (1-based) of `name` among `ranking` (a {driver: {metric: val}}
+    dict) on `key`, plus the count of ranked drivers. None when the driver has no
+    value for that metric. Direction: lower_is_better=True ranks small values 1st
+    (e.g. green-speed rank, closing pos); False ranks large values 1st (e.g.
+    quality passes, top-15 %)."""
+    vals = [(d, m.get(key)) for d, m in ranking.items() if m.get(key) is not None]
+    if name not in dict(vals):
+        return None
+    vals.sort(key=lambda x: x[1], reverse=not lower_is_better)
+    order = [d for d, _ in vals]
+    return order.index(name) + 1, len(order)
+
+
 def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
                                   track_type=None, season=None, all_tracks=False,
                                   show_track_col=False, show_series_col=False,
-                                  scope_tag=""):
+                                  scope_tag="", field_drivers=None):
     """Render one scope's worth of a driver's history: summary metrics + the
     per-race table with the finish-position heatmap. Used by each tab of the
     driver-history dialog."""
@@ -585,21 +599,48 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     }
     if any(s.notna().any() for s in _craft.values()):
         with st.expander("Race Craft — green-flag pace & passing", expanded=False):
+            # Build a comparison set so each metric can show the driver's rank
+            # within it, e.g. "6.0 (3)". Field-first (the drivers in the race),
+            # else all drivers with data in this scope.
+            from src.data import query_scope_craft_averages
+            _scope_kw = dict(track_name=track_name, track_type=track_type,
+                             season=season, all_tracks=all_tracks)
+            ranking, field_based = {}, False
+            try:
+                if field_drivers:
+                    ranking = query_scope_craft_averages(
+                        series_id, drivers=field_drivers, **_scope_kw)
+                    field_based = driver_name in ranking and len(ranking) >= 2
+                if not field_based:
+                    ranking = query_scope_craft_averages(series_id, **_scope_kw)
+            except Exception:
+                ranking = {}
+            _scope_word = "the race field" if field_based else "all drivers at this scope"
             st.caption(
                 "Green Speed Rank: avg finishing rank of green-flag lap speed "
                 "(1 = fastest car). Quality Passes: avg passes of top-15 cars per "
                 "race. Closing Pos: avg running position over the final laps. "
-                "Top 15 Laps %: share of laps run inside the top 15."
+                "Top 15 Laps %: share of laps run inside the top 15. "
+                f"**(N)** = this driver's rank among {_scope_word}."
             )
+
+            def _fmt(value_str, key, lower_is_better):
+                r = _rank_in_set(driver_name, ranking, key, lower_is_better)
+                return f"{value_str} ({r[0]})" if r else value_str
+
             cc = st.columns(4)
             gsr = _craft["Green Speed Rank"].mean()
             qp = _craft["Quality Passes"].mean()
             cpos = _craft["Closing Pos"].mean()
             t15 = _craft["Top 15 Laps %"].mean()
-            cc[0].metric("Green Speed Rank", f"{gsr:.1f}" if pd.notna(gsr) else "—")
-            cc[1].metric("Quality Passes/Race", f"{qp:.0f}" if pd.notna(qp) else "—")
-            cc[2].metric("Closing Pos", f"{cpos:.1f}" if pd.notna(cpos) else "—")
-            cc[3].metric("Top 15 Laps %", f"{t15:.0f}%" if pd.notna(t15) else "—")
+            cc[0].metric("Green Speed Rank",
+                         _fmt(f"{gsr:.1f}", "green_rank", True) if pd.notna(gsr) else "—")
+            cc[1].metric("Quality Passes/Race",
+                         _fmt(f"{qp:.0f}", "quality_passes", False) if pd.notna(qp) else "—")
+            cc[2].metric("Closing Pos",
+                         _fmt(f"{cpos:.1f}", "closing_pos", True) if pd.notna(cpos) else "—")
+            cc[3].metric("Top 15 Laps %",
+                         _fmt(f"{t15:.0f}%", "top15_pct", False) if pd.notna(t15) else "—")
     st.markdown("")
 
     # Per-race table. Show the Track column for any multi-track view, and the
@@ -689,7 +730,8 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
 def render_driver_history_dialog(driver_name: str, series_id: int,
                                   track_name: str = None,
                                   track_type: str = None,
-                                  season: int = None):
+                                  season: int = None,
+                                  field_drivers: list = None):
     """Modal dialog: a driver's race history with TABS for different scopes.
 
     The caller passes whatever scope it knows (the current track, a track type,
@@ -782,13 +824,13 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
                 if pick:
                     _render_driver_history_scope(driver_name, eff_series, track_name=pick,
                                                  show_series_col=show_series_col,
-                                                 scope_tag=label)
+                                                 scope_tag=label, field_drivers=field_drivers)
             elif kw.get("_alltime"):
                 # All races (min_season floor inside the query)
                 _render_driver_history_scope(driver_name, eff_series,
                                              all_tracks=True, show_track_col=True,
                                              show_series_col=show_series_col,
-                                             scope_tag=label)
+                                             scope_tag=label, field_drivers=field_drivers)
             elif kw.get("_similar"):
                 _render_similar_tracks_scope(driver_name, eff_series,
                                              kw["track_name"],
@@ -796,7 +838,8 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
             else:
                 _render_driver_history_scope(driver_name, eff_series,
                                              show_series_col=show_series_col,
-                                             scope_tag=label, **kw)
+                                             scope_tag=label, field_drivers=field_drivers,
+                                             **kw)
 
 
 def interactive_drill_down_dataframe(df, *, key, series_id,
@@ -882,12 +925,21 @@ def interactive_drill_down_dataframe(df, *, key, series_id,
                     # newly-clicked table win and silently skips the rest;
                     # their selection state is already recorded above so they
                     # won't re-fire next run.
+                    # The full set of drivers in THIS table is the "race field"
+                    # the popup ranks the clicked driver against (field-first).
+                    try:
+                        field_drivers = [str(x) for x in
+                                         underlying_df[resolved_driver_col].dropna().tolist()
+                                         if str(x).strip()]
+                    except Exception:
+                        field_drivers = None
                     render_driver_history_dialog(
                         driver_name=str(driver),
                         series_id=series_id,
                         track_name=track_name,
                         track_type=track_type,
                         season=season,
+                        field_drivers=field_drivers,
                     )
 
     return event

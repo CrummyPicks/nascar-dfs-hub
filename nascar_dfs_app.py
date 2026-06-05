@@ -973,6 +973,8 @@ with tab_racelab:
     trl.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
+        track_name=track_name, track_type=track_type,
+        selected_race=selected_race,
     )
 
 with tab_cautions:

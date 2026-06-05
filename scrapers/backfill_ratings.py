@@ -414,6 +414,85 @@ def store_all_ratings(conn, only_missing=True, verbose=False):
     return (races_updated, rows_updated)
 
 
+# ── Run pace (long-run + restart, from lap-times.json) ────────────────────────
+def store_run_pace_for_race(conn, series_id, api_race_id, season, db_race_id,
+                            name_to_dbid=None):
+    """Fetch one race's lap-times, compute long-run + restart pace, and upsert
+    into run_pace. INSERT/UPDATE-only on run_pace. Returns rows written.
+
+    Uses the SAME computation the single-race Race Lab view uses
+    (src.data.compute_run_pace_rows), so stored ranks/seconds match exactly."""
+    from src.data import compute_run_pace_rows
+    url = f"{NASCAR_API_BASE}/{season}/{series_id}/{api_race_id}/lap-times.json"
+    lap_data = fetch_json(url)
+    rows = compute_run_pace_rows(lap_data) if lap_data else []
+    if not rows:
+        return 0
+    if name_to_dbid is None:
+        name_to_dbid = {}
+        for row in conn.execute("SELECT id, full_name FROM drivers"):
+            name_to_dbid[normalize_driver_name(row[1])] = row[0]
+    written = 0
+    for r in rows:
+        db_id = name_to_dbid.get(normalize_driver_name(_clean_api_name(r["Driver"])))
+        if db_id is None:
+            continue
+        conn.execute(
+            """INSERT INTO run_pace
+                 (race_id, driver_id, long_run_s, long_run_laps, long_run_rank,
+                  restart_s, restart_laps, restart_rank)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(race_id, driver_id) DO UPDATE SET
+                 long_run_s=excluded.long_run_s,
+                 long_run_laps=excluded.long_run_laps,
+                 long_run_rank=excluded.long_run_rank,
+                 restart_s=excluded.restart_s,
+                 restart_laps=excluded.restart_laps,
+                 restart_rank=excluded.restart_rank""",
+            (db_race_id, db_id, r.get("Long Run (s)"), r.get("LR Laps"),
+             r.get("Long Run Rank"), r.get("Restart (s)"), r.get("Restart Laps"),
+             r.get("Restart Rank")),
+        )
+        written += 1
+    return written
+
+
+def store_all_run_pace(conn, only_missing=True, verbose=False):
+    """Backfill run_pace for every race (or only those with no run_pace rows yet).
+    Commits per race. Returns (races_updated, rows_updated)."""
+    races = conn.execute('''
+        SELECT id, api_race_id, series_id, season, race_name
+        FROM races ORDER BY season, id
+    ''').fetchall()
+    name_to_dbid = {}
+    for row in conn.execute("SELECT id, full_name FROM drivers"):
+        name_to_dbid[normalize_driver_name(row[1])] = row[0]
+    races_updated = 0
+    rows_updated = 0
+    for race_id, api_race_id, series_id, season, race_name in races:
+        if not api_race_id:
+            continue
+        if only_missing:
+            have = conn.execute(
+                "SELECT COUNT(*) FROM run_pace WHERE race_id = ?", (race_id,)
+            ).fetchone()[0]
+            if have > 0:
+                continue
+        try:
+            w = store_run_pace_for_race(conn, series_id, api_race_id, season,
+                                        race_id, name_to_dbid=name_to_dbid)
+        except Exception:
+            w = 0
+        if w > 0:
+            conn.commit()
+            races_updated += 1
+            rows_updated += w
+            if verbose:
+                print(f"  {season} {(race_name or '')[:45]:45} +{w} run-pace")
+        time.sleep(0.3)  # be polite to the feed
+    return (races_updated, rows_updated)
+
+
 # ── Pit stops (from live-pit-data.json) ───────────────────────────────────────
 PITDATA_URL = NASCAR_API_BASE + "/{season}/{series_id}/{api_race_id}/live-pit-data.json"
 

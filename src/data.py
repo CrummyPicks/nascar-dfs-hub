@@ -1071,6 +1071,232 @@ def query_driver_race_log(
     return out
 
 
+def _scope_track_names(track_type: str) -> list:
+    """Track names belonging to a track_type group, using the SAME family-folding
+    rules as query_driver_race_log (concrete surface group; parent folding;
+    short_concrete also pulls in short). Shared by the aggregate queries."""
+    from src.config import (TRACK_TYPE_MAP, TRACK_TYPE_PARENT,
+                            CONCRETE_TRACKS, CONCRETE_GROUP_LABEL)
+    if track_type in (CONCRETE_GROUP_LABEL, "concrete"):
+        return sorted(CONCRETE_TRACKS)
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    include = {track_type}
+    for tt, p in TRACK_TYPE_PARENT.items():
+        if tt == track_type or p == parent:
+            include.add(tt)
+    if track_type == "short_concrete":
+        include.add("short")
+    return [t for t, tt in TRACK_TYPE_MAP.items() if tt in include]
+
+
+def query_scope_craft_averages(series_id, *, track_name=None, track_type=None,
+                               season=None, all_tracks=False, track_names=None,
+                               min_season=2022, drivers=None) -> dict:
+    """Per-driver averages of the Race Craft metrics over a scope — used to rank
+    a driver against the field (or against everyone with data) in the popup.
+
+    Mirrors query_driver_race_log's scope filters. Returns
+        {driver_full_name: {"green_rank","quality_passes","closing_pos",
+                            "top15_pct","races"}}.
+    When `drivers` is given, restricts to that roster (the race field)."""
+    if not DB_PATH.exists():
+        return {}
+    where, params = [], []
+    if series_id is not None:
+        where.append("r.series_id = ?"); params.append(series_id)
+    if season is not None:
+        where.append("r.season = ?"); params.append(season)
+    else:
+        where.append("r.season >= ?"); params.append(min_season)
+    if track_names:
+        tl = [t for t in track_names if t]
+        if not tl:
+            return {}
+        where.append(f"t.name IN ({','.join('?' for _ in tl)})"); params.extend(tl)
+    elif track_name:
+        where.append("t.name = ?"); params.append(track_name)
+    elif track_type:
+        mt = _scope_track_names(track_type)
+        if not mt:
+            return {}
+        where.append(f"t.name IN ({','.join('?' for _ in mt)})"); params.extend(mt)
+    elif not all_tracks:
+        return {}
+    if drivers:
+        dl = [d for d in drivers if d]
+        if not dl:
+            return {}
+        where.append(f"d.full_name IN ({','.join('?' for _ in dl)})"); params.extend(dl)
+    wc = " AND ".join(where) if where else "1=1"
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(f'''
+            SELECT d.full_name,
+                   AVG(rr.green_speed_rank),
+                   AVG(rr.quality_passes),
+                   AVG(rr.closing_pos),
+                   AVG(CASE WHEN rr.laps_completed > 0
+                            THEN rr.top15_laps * 100.0 / rr.laps_completed END),
+                   COUNT(*)
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r   ON r.id = rr.race_id
+            JOIN tracks t  ON t.id = r.track_id
+            WHERE {wc} AND rr.finish_pos IS NOT NULL
+            GROUP BY d.full_name
+        ''', params).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    return {name: {"green_rank": gr, "quality_passes": qp, "closing_pos": cp,
+                   "top15_pct": t15, "races": n}
+            for name, gr, qp, cp, t15, n in rows}
+
+
+def query_track_run_pace_aggregate(series_id, *, track_name=None, track_type=None,
+                                   years=None, min_season=2022) -> dict:
+    """Per-driver long-run / restart pace AVERAGED across all races at a track or
+    track-type (from the stored run_pace table). Ranks aggregate across tracks;
+    raw seconds are only comparable within a single track.
+
+    Returns {"rows":[{Driver,"Long Run Rank","Restart Rank","Long Run (s)",
+            "Restart (s)",Races}], "n_races":int, "years":[..]}."""
+    empty = {"rows": [], "n_races": 0, "years": []}
+    if not DB_PATH.exists():
+        return empty
+    where = ["r.series_id = ?", "r.season >= ?"]
+    params = [series_id, min_season]
+    if years:
+        yl = [int(y) for y in years]
+        where.append(f"r.season IN ({','.join('?' for _ in yl)})"); params.extend(yl)
+    if track_name:
+        where.append("t.name = ?"); params.append(track_name)
+    elif track_type:
+        mt = _scope_track_names(track_type)
+        if not mt:
+            return empty
+        where.append(f"t.name IN ({','.join('?' for _ in mt)})"); params.extend(mt)
+    else:
+        return empty
+    wc = " AND ".join(where)
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(f'''
+            SELECT d.full_name,
+                   AVG(rp.long_run_rank), AVG(rp.restart_rank),
+                   AVG(rp.long_run_s), AVG(rp.restart_s), COUNT(*)
+            FROM run_pace rp
+            JOIN drivers d ON d.id = rp.driver_id
+            JOIN races r   ON r.id = rp.race_id
+            JOIN tracks t  ON t.id = r.track_id
+            WHERE {wc}
+            GROUP BY d.full_name
+        ''', params).fetchall()
+        meta = conn.execute(f'''
+            SELECT COUNT(DISTINCT r.id), GROUP_CONCAT(DISTINCT r.season)
+            FROM run_pace rp
+            JOIN races r ON r.id = rp.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE {wc}
+        ''', params).fetchone()
+        conn.close()
+    except Exception:
+        return empty
+    out = []
+    for name, lrr, rsr, lrs, rss, n in rows:
+        out.append({
+            "Driver": name,
+            "Long Run Rank": round(lrr, 1) if lrr is not None else None,
+            "Restart Rank": round(rsr, 1) if rsr is not None else None,
+            "Long Run (s)": round(lrs, 3) if lrs is not None else None,
+            "Restart (s)": round(rss, 3) if rss is not None else None,
+            "Races": n,
+        })
+    out.sort(key=lambda x: (x["Long Run Rank"] is None, x["Long Run Rank"] or 9e9))
+    yrs = sorted({int(y) for y in (meta[1] or "").split(",") if y}) if meta else []
+    return {"rows": out, "n_races": (meta[0] if meta else 0), "years": yrs}
+
+
+def query_track_stage_aggregate(series_id, *, track_name=None, track_type=None,
+                                years=None, min_season=2022) -> dict:
+    """Per-driver, per-stage green-speed RANK + avg running pos + avg pos change,
+    AVERAGED across all races at a track / track-type, plus overall avg finish
+    and race count. Powers the Race Lab aggregate stage views.
+
+    Returns {"stages":[..], "rows":[{Driver, Finish, Races, S{n} Rank,
+            S{n} AvgPos, S{n} Chg}], "n_races":int, "years":[..]}."""
+    empty = {"stages": [], "rows": [], "n_races": 0, "years": []}
+    if not DB_PATH.exists():
+        return empty
+    where = ["r.series_id = ?", "r.season >= ?"]
+    params = [series_id, min_season]
+    if years:
+        yl = [int(y) for y in years]
+        where.append(f"r.season IN ({','.join('?' for _ in yl)})"); params.extend(yl)
+    if track_name:
+        where.append("t.name = ?"); params.append(track_name)
+    elif track_type:
+        mt = _scope_track_names(track_type)
+        if not mt:
+            return empty
+        where.append(f"t.name IN ({','.join('?' for _ in mt)})"); params.extend(mt)
+    else:
+        return empty
+    wc = " AND ".join(where)
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        srows = conn.execute(f'''
+            SELECT d.full_name, sr.stage_number,
+                   AVG(sr.green_speed_rank), AVG(sr.avg_running_pos),
+                   AVG(sr.pos_change)
+            FROM stage_results sr
+            JOIN drivers d ON d.id = sr.driver_id
+            JOIN races r   ON r.id = sr.race_id
+            JOIN tracks t  ON t.id = r.track_id
+            WHERE {wc}
+            GROUP BY d.full_name, sr.stage_number
+        ''', params).fetchall()
+        frows = conn.execute(f'''
+            SELECT d.full_name, AVG(rr.finish_pos), COUNT(DISTINCT r.id)
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r   ON r.id = rr.race_id
+            JOIN tracks t  ON t.id = r.track_id
+            WHERE {wc} AND rr.finish_pos IS NOT NULL
+              AND rr.race_id IN (SELECT race_id FROM stage_results)
+            GROUP BY d.full_name
+        ''', params).fetchall()
+        meta = conn.execute(f'''
+            SELECT COUNT(DISTINCT r.id), GROUP_CONCAT(DISTINCT r.season)
+            FROM stage_results sr
+            JOIN races r ON r.id = sr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE {wc}
+        ''', params).fetchone()
+        conn.close()
+    except Exception:
+        return empty
+    if not srows:
+        return empty
+    fin_map = {name: (fin, n) for name, fin, n in frows}
+    stages = sorted({r[1] for r in srows})
+    by_driver = {}
+    for name, snum, grank, apos, chg in srows:
+        d = by_driver.setdefault(name, {"Driver": name})
+        d[f"S{snum} Rank"] = round(grank, 1) if grank is not None else None
+        d[f"S{snum} AvgPos"] = round(apos, 1) if apos is not None else None
+        d[f"S{snum} Chg"] = round(chg, 1) if chg is not None else None
+    for name, d in by_driver.items():
+        fin, n = fin_map.get(name, (None, None))
+        d["Finish"] = round(fin, 1) if fin is not None else None
+        d["Races"] = n
+    rows = sorted(by_driver.values(),
+                  key=lambda x: (x.get("Finish") is None, x.get("Finish") or 999))
+    yrs = sorted({int(y) for y in (meta[1] or "").split(",") if y}) if meta else []
+    return {"stages": stages, "rows": rows,
+            "n_races": (meta[0] if meta else 0), "years": yrs}
+
+
 def _car_to_driver_map(db_race_id: int) -> dict:
     """car_number (str) -> driver full name for a stored race."""
     if not DB_PATH.exists() or db_race_id is None:
@@ -1170,28 +1396,16 @@ def query_race_cautions(series_id: int, api_race_id: int, year: int,
     }
 
 
-def query_race_run_pace(series_id: int, api_race_id: int, year: int,
-                        db_race_id: int = None) -> dict:
-    """Per-driver long-run and restart pace for one race, from lap-times.
-
-    Long run  = avg green-flag lap TIME over green runs of >= 10 consecutive
-                laps, excluding pit laps (a lap > 1.15x the driver's green
-                median). Sustained tire/pace ability.
-    Restart   = avg green-flag lap TIME over the first 5 green laps after each
-                restart (the lap a green flag begins a run), excluding pit laps.
-                Short-run / restart prowess.
-
-    Returns {"rows": [ {Driver, "Long Run (s)", "Long Run Rank", "Restart (s)",
-             "Restart Rank", "LR Laps", "Restart Laps"} ]} sorted by Long Run.
-    Lower time = faster. Ranks are 1 = fastest in the field. Empty if no data.
-    """
-    lap_data = fetch_lap_times(series_id, api_race_id, year)
+def compute_run_pace_rows(lap_data: dict) -> list:
+    """Pure computation of per-driver long-run + restart pace from a lap-times
+    dict (no DB / API). Returns the list of row dicts described in
+    query_race_run_pace. Shared by the live query and the DB backfill so the
+    stored numbers exactly match what the single-race view computes."""
     if not isinstance(lap_data, dict) or "laps" not in lap_data:
-        return {"rows": []}
+        return []
     change = {f["LapsCompleted"]: f["FlagState"]
               for f in (lap_data.get("flags") or [])
               if "LapsCompleted" in f and "FlagState" in f}
-    car2drv = _car_to_driver_map(db_race_id) if db_race_id else {}
 
     def _median(vals):
         if not vals:
@@ -1278,7 +1492,25 @@ def query_race_run_pace(series_id: int, api_race_id: int, year: int,
     _rank(rows, "Long Run (s)", "Long Run Rank")
     _rank(rows, "Restart (s)", "Restart Rank")
     rows.sort(key=lambda x: (x["Long Run (s)"] is None, x["Long Run (s)"] or 9e9))
-    return {"rows": rows}
+    return rows
+
+
+def query_race_run_pace(series_id: int, api_race_id: int, year: int,
+                        db_race_id: int = None) -> dict:
+    """Per-driver long-run and restart pace for one race, from lap-times.
+
+    Long run  = median green-flag lap TIME over green runs of >= 10 consecutive
+                laps, excluding pit laps (a lap > 1.15x the driver's green
+                median). Sustained tire/pace ability.
+    Restart   = avg green-flag lap TIME over the first 5 green laps after each
+                restart (the lap a green flag begins a run), excluding pit laps.
+                Short-run / restart prowess.
+
+    Returns {"rows": [ {Driver, "Long Run (s)", "Long Run Rank", "Restart (s)",
+             "Restart Rank", "LR Laps", "Restart Laps"} ]} sorted by Long Run.
+    Lower time = faster. Ranks are 1 = fastest in the field. Empty if no data.
+    """
+    return {"rows": compute_run_pace_rows(fetch_lap_times(series_id, api_race_id, year))}
 
 
 def query_race_pit_summary(db_race_id: int) -> dict:

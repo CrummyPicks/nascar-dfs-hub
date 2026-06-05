@@ -1,17 +1,22 @@
-"""Tab: Race Lab — deep per-race breakdown (green-flag pace + per-stage arc).
+"""Tab: Race Lab — green-flag pace & per-stage breakdown, single race OR
+aggregated across every race at a track / track-type.
 
-Surfaces the data that was previously buried in the driver popup: for any
-completed race, the full field with green-flag speed and a stage-by-stage
-breakdown (speed, avg running position, positions gained/lost, stage points) —
-so you can see how the race developed and who was fast vs. who hung on.
+Scope toggle:
+  • This Track       — averages across all stored races at the selected track
+  • This Track Type  — averages across all races of that track-type group
+  • Single Race      — one race's full detail (the original view)
+
+Aggregate views use RANKS (comparable across tracks); single-track / single-race
+views also show actual lap seconds. The lap-by-lap "Speed Over Time" overlay now
+lives in the Data tab's Charts section.
 """
 import pandas as pd
 import streamlit as st
 
 from src.components import section_header
 from src.data import (query_race_stage_breakdown, query_race_field_results,
-                      fetch_lap_times, query_race_run_pace)
-from src.charts import race_speed_chart
+                      query_race_run_pace, query_track_stage_aggregate,
+                      query_track_run_pace_aggregate)
 from src.utils import safe_fillna, format_display_df
 
 
@@ -23,10 +28,86 @@ def _resolve_db_id(api_race_id, series_id):
         return None
 
 
-def render(*, completed_races, series_id, selected_year, series_name="Cup"):
+def render(*, completed_races, series_id, selected_year, series_name="Cup",
+           track_name=None, track_type=None, selected_race=None):
     """Render the Race Lab tab."""
     section_header("Race Lab", "Green-flag pace & per-stage breakdown")
 
+    # Scope: default to the selected/upcoming track so the tab opens on something
+    # immediately useful (all results at this track), with a track-type and a
+    # single-race option.
+    scope = st.radio("Scope", ["This Track", "This Track Type", "Single Race"],
+                     horizontal=True, key="racelab_scope")
+
+    if scope == "Single Race":
+        _render_single_race(completed_races, series_id, selected_year)
+    else:
+        _render_aggregate(scope, track_name, track_type, series_id)
+
+
+# ───────────────────────── aggregate (multi-race) ─────────────────────────────
+def _render_aggregate(scope, track_name, track_type, series_id):
+    is_track = (scope == "This Track")
+    if is_track and not track_name:
+        st.info("No track is selected for the current race.")
+        return
+    if (not is_track) and not track_type:
+        st.info("No track type is available for the current race.")
+        return
+
+    tkw = dict(track_name=track_name) if is_track else dict(track_type=track_type)
+    scope_label = track_name if is_track else track_type.replace("_", " ").title()
+
+    # First pass (all years) to discover the available seasons + base data.
+    stage_all = query_track_stage_aggregate(series_id, **tkw)
+    run_all = query_track_run_pace_aggregate(series_id, **tkw)
+    years_avail = sorted(set(stage_all.get("years", []) + run_all.get("years", [])),
+                         reverse=True)
+    if not years_avail:
+        st.info(f"No stage / run-pace data stored for **{scope_label}** yet. "
+                "Run `python refresh_data.py` to populate it.")
+        return
+
+    sel_years = st.multiselect("Seasons", years_avail, default=years_avail,
+                               key="racelab_agg_years")
+    if not sel_years:
+        st.info("Select at least one season.")
+        return
+    if set(sel_years) != set(years_avail):
+        stage_agg = query_track_stage_aggregate(series_id, years=sel_years, **tkw)
+        run_agg = query_track_run_pace_aggregate(series_id, years=sel_years, **tkw)
+    else:
+        stage_agg, run_agg = stage_all, run_all
+
+    n = max(stage_agg.get("n_races", 0), run_agg.get("n_races", 0))
+    note = ("Raw lap seconds shown (single track)." if is_track else
+            "Ranks only — lap seconds aren't comparable across different tracks.")
+    st.caption(
+        f"**{scope_label}** — averaged across **{n} race(s)** "
+        f"({', '.join(str(y) for y in sorted(sel_years))}). Values are per-driver "
+        f"averages; ranks are 1 = best in field. {note}")
+
+    view = st.radio("View", ["Per-Stage Breakdown", "Green Speed Summary",
+                             "Long Run & Restart"],
+                    horizontal=True, label_visibility="collapsed",
+                    key="racelab_agg_view")
+
+    if view == "Per-Stage Breakdown":
+        if stage_agg["rows"]:
+            _render_stage_table(stage_agg["rows"], stage_agg["stages"], agg=True)
+        else:
+            st.info("No per-stage data stored for this scope.")
+    elif view == "Green Speed Summary":
+        if stage_agg["rows"]:
+            _render_green_summary(stage_agg["rows"], stage_agg["stages"], agg=True)
+        else:
+            st.info("No per-stage data stored for this scope.")
+    else:
+        _render_run_pace_agg(run_agg, single_track=is_track)
+
+
+# ───────────────────────── single race (full detail) ─────────────────────────
+def _render_single_race(completed_races, series_id, selected_year):
     if not completed_races:
         st.info("No completed races available for this series/year.")
         return
@@ -59,7 +140,6 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
             "the lap-times feed and backfilled — run `python refresh_data.py` to "
             "populate recent races."
         )
-        # Still show the full-field results + season-long green rank as a fallback.
         _render_field_fallback(db_id)
         return
 
@@ -72,19 +152,19 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
 
     view = st.radio("View",
                     ["Per-Stage Breakdown", "Green Speed Summary",
-                     "Long Run & Restart", "Speed Over Time"],
-                    horizontal=True, label_visibility="collapsed", key="racelab_view")
+                     "Long Run & Restart"],
+                    horizontal=True, label_visibility="collapsed",
+                    key="racelab_view")
 
     if view == "Per-Stage Breakdown":
         _render_stage_table(rows, stages)
     elif view == "Green Speed Summary":
         _render_green_summary(rows, stages)
-    elif view == "Long Run & Restart":
-        _render_run_pace(race, series_id, selected_year)
     else:
-        _render_speed_over_time(race, series_id, selected_year, rows)
+        _render_run_pace(race, series_id, selected_year)
 
 
+# ───────────────────────────── shared helpers ────────────────────────────────
 def _heat_low_good(v, lo=1.0, hi=36.0):
     """Background color for a 'lower is better' value (green=good, red=bad),
     scaled between lo (best) and hi (worst). Returns a CSS string or ''."""
@@ -95,35 +175,36 @@ def _heat_low_good(v, lo=1.0, hi=36.0):
     return f"background-color: rgba({rr},{gg},68,0.22)"
 
 
-def _render_stage_table(rows, stages):
-    """Wide table: one row per driver, grouped columns per stage."""
+def _render_stage_table(rows, stages, agg=False):
+    """Wide table: one row per driver, grouped columns per stage. `agg` switches
+    to averaged columns (no Speed/Pts/Car; a Races count; 1-decimal numbers)."""
     df = pd.DataFrame(rows)
-    # Column order: identity, then each stage's block. Drop any all-empty
-    # column so e.g. "S3 Pts" (no stage points in a final stage) disappears
-    # instead of showing a column of dashes.
-    cols = ["Finish", "Driver", "Car"]
+    id_cols = ["Finish", "Driver", "Races"] if agg else ["Finish", "Driver", "Car"]
+    cols = list(id_cols)
     for s in stages:
-        for c in [f"S{s} Speed", f"S{s} Rank", f"S{s} AvgPos", f"S{s} Chg", f"S{s} Pts"]:
+        block = ([f"S{s} Rank", f"S{s} AvgPos", f"S{s} Chg"] if agg
+                 else [f"S{s} Speed", f"S{s} Rank", f"S{s} AvgPos", f"S{s} Chg", f"S{s} Pts"])
+        for c in block:
             if c in df.columns and df[c].notna().any():
                 cols.append(c)
     cols = [c for c in cols if c in df.columns]
     disp = df[cols].copy()
 
-    # Per-column number formats: speeds/avg-pos 1-decimal; everything else that's
-    # integer-valued (Finish, Rank, Chg, Pts) gets {:.0f} so it renders clean
-    # ("7" not "7.000000" — those cols are float64 only because NaN forces it).
     fmt = {}
     for c in disp.columns:
         if c in ("Driver", "Car"):
             continue
-        if c.endswith("Speed") or c.endswith("AvgPos"):
-            fmt[c] = "{:.1f}"   # genuinely decimal
+        if c == "Races":
+            fmt[c] = "{:.0f}"
+        elif agg:
+            fmt[c] = "{:.1f}"   # every aggregate numeric is an average
+        elif c.endswith("Speed") or c.endswith("AvgPos"):
+            fmt[c] = "{:.1f}"
         else:
             fmt[c] = "{:.0f}"   # integer-valued (Finish, Rank, Chg, Pts)
 
     def _cell_style(col):
         name = col.name
-        # Position change: green text for gained, red for lost.
         if name.endswith("Chg"):
             out = []
             for v in col:
@@ -136,10 +217,8 @@ def _render_stage_table(rows, stages):
                 else:
                     out.append("color:#94a3b8")
             return out
-        # Finish + per-stage Rank + AvgPos are all "lower is better" → heatmap.
         if name == "Finish" or name.endswith("Rank") or name.endswith("AvgPos"):
             return [_heat_low_good(v) for v in col]
-        # Stage points: higher is better → light green when present.
         if name.endswith("Pts"):
             return ["background-color: rgba(34,197,94,0.18)" if pd.notna(v) and v > 0
                     else "" for v in col]
@@ -149,32 +228,36 @@ def _render_stage_table(rows, stages):
     st.dataframe(styled, width="stretch", hide_index=True, height=620)
 
 
-def _render_green_summary(rows, stages):
+def _render_green_summary(rows, stages, agg=False):
     """Compact table: each driver's overall + per-stage green-speed RANK, to see
-    pace trajectory across the race at a glance (lower = faster)."""
+    pace trajectory across the race(s) at a glance (lower = faster)."""
     df = pd.DataFrame(rows)
-    cols = ["Finish", "Driver", "Car"] + [f"S{s} Rank" for s in stages if f"S{s} Rank" in df.columns]
+    id_cols = ["Finish", "Driver", "Races"] if agg else ["Finish", "Driver", "Car"]
+    cols = id_cols + [f"S{s} Rank" for s in stages if f"S{s} Rank" in df.columns]
+    cols = [c for c in cols if c in df.columns]
     disp = df[cols].copy()
     disp = disp.rename(columns={f"S{s} Rank": f"Stage {s}" for s in stages})
 
     rank_cols = [f"Stage {s}" for s in stages if f"Stage {s}" in disp.columns]
 
     def _rank_heat(col):
-        # Rank + Finish are "lower is better" → shared heatmap helper.
         if col.name not in rank_cols and col.name != "Finish":
             return ["" for _ in col]
         return [_heat_low_good(v) for v in col]
 
-    # Integer-format the rank + Finish columns (float64 only because of NaN).
-    int_fmt = {c: "{:.0f}" for c in disp.columns if c not in ("Driver", "Car")}
-    styled = disp.style.apply(_rank_heat, axis=0).format(int_fmt, na_rep="—")
+    num_fmt = {}
+    for c in disp.columns:
+        if c in ("Driver", "Car"):
+            continue
+        num_fmt[c] = "{:.0f}" if (c == "Races" or not agg) else "{:.1f}"
+    styled = disp.style.apply(_rank_heat, axis=0).format(num_fmt, na_rep="—")
     st.dataframe(styled, width="stretch", hide_index=True, height=620)
     st.caption("Per-stage green-flag speed RANK (1 = fastest). Read left→right to "
-               "see whether a driver got faster or faded as the race went on.")
+               "see whether a driver got faster or faded as the race(s) went on.")
 
 
 def _render_run_pace(race, series_id, selected_year):
-    """Long-run (sustained green pace) + restart pace, per driver, ranked."""
+    """Single-race long-run (sustained green pace) + restart pace, per driver."""
     api_id = race.get("race_id")
     yr = (race.get("race_date", "") or "")[:4]
     try:
@@ -221,57 +304,45 @@ def _render_run_pace(race, series_id, selected_year):
                "(or vice-versa) is a setup/strategy read for DFS.")
 
 
-def _render_speed_over_time(race, series_id, selected_year, rows):
-    """Driver-selectable overlay of lap speed across the race (from lap-times)."""
-    api_id = race.get("race_id")
-    yr = (race.get("race_date", "") or "")[:4]
-    try:
-        yr = int(yr)
-    except (TypeError, ValueError):
-        yr = selected_year
-
-    with st.spinner("Loading lap-by-lap data..."):
-        lap_data = fetch_lap_times(series_id, api_id, yr)
-    if not lap_data or "laps" not in lap_data:
-        st.info("Lap-by-lap data isn't available for this race.")
+def _render_run_pace_agg(run_agg, single_track):
+    """Aggregated long-run + restart pace across many races. Ranks are the
+    average field rank; seconds shown only for a single track (comparable)."""
+    rows = run_agg.get("rows", [])
+    if not rows:
+        st.info("No long-run / restart data stored for this scope yet. "
+                "Run `python refresh_data.py` to populate it.")
         return
-
-    all_drivers = sorted(d.get("FullName") for d in lap_data["laps"] if d.get("FullName"))
-    # Default to the top 5 finishers (from the stage breakdown, already finish-sorted).
-    top5 = [r["Driver"] for r in rows[:5] if r.get("Driver") in all_drivers]
-    default = top5 or all_drivers[:5]
-
-    c1, c2, c3 = st.columns([3, 1, 1])
-    with c1:
-        picks = st.multiselect("Drivers to overlay", all_drivers, default=default,
-                               key="racelab_speed_drivers")
-    with c2:
-        metric_label = st.radio("Metric", ["Lap Time", "Speed"], horizontal=True,
-                                key="racelab_speed_metric")
-    with c3:
-        green_only = st.toggle("Green-flag laps only", value=True,
-                               key="racelab_speed_greenonly",
-                               help="Drop caution AND green-flag pit laps so only "
-                                    "clean racing pace shows.")
-    if not picks:
-        st.info("Select at least one driver.")
-        return
-
-    metric = "speed" if metric_label == "Speed" else "time"
-    fig = race_speed_chart(lap_data, selected_drivers=picks,
-                           green_only=green_only, metric=metric)
-    if fig is None:
-        st.info("No lap data to plot for the selected drivers.")
-        return
-    st.plotly_chart(fig, width="stretch")
-    _unit = "lap time (s, faster = higher — axis inverted)" if metric == "time" else "lap speed (mph)"
-    if green_only:
-        st.caption(f"Each line is a driver's {_unit}. Caution laps and green-flag "
-                   "pit laps are removed, so this is clean racing pace.")
+    df = pd.DataFrame(rows)
+    if single_track:
+        cols = ["Driver", "Long Run Rank", "Long Run (s)",
+                "Restart Rank", "Restart (s)", "Races"]
     else:
-        st.caption(f"Each line is a driver's {_unit}. Shaded bands are caution "
-                   "periods; the deep dips are pit stops. Toggle 'green-flag laps "
-                   "only' for clean racing pace.")
+        cols = ["Driver", "Long Run Rank", "Restart Rank", "Races"]
+    cols = [c for c in cols if c in df.columns]
+    disp = df[cols].copy()
+
+    def _rank_heat(col):
+        if not col.name.endswith("Rank"):
+            return ["" for _ in col]
+        return [_heat_low_good(v) for v in col]
+
+    fmt = {}
+    for c in disp.columns:
+        if c.endswith("(s)"):
+            fmt[c] = "{:.2f}"
+        elif c == "Races":
+            fmt[c] = "{:.0f}"
+        elif c.endswith("Rank"):
+            fmt[c] = "{:.1f}"
+    styled = disp.style.apply(_rank_heat, axis=0).format(fmt, na_rep="—")
+    st.dataframe(styled, width="stretch", hide_index=True, height=620)
+    cap = ("Avg field rank across the selected races (1 = fastest). Seconds are "
+           "the average of each race's median long-run / restart lap time."
+           if single_track else
+           "Avg field rank across the selected races (1 = fastest). A driver "
+           "strong on Long Run but weak on Restart (or vice-versa) is a "
+           "setup/strategy read for DFS.")
+    st.caption(cap)
 
 
 def _render_field_fallback(db_id):

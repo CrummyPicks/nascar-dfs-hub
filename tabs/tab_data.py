@@ -8,7 +8,7 @@ from src.components import section_header, interactive_drill_down_dataframe
 from src.data import (
     scrape_track_history, query_db_track_history, query_driver_dk_points_at_track,
     compute_fastest_laps, compute_avg_running_position, load_arp_from_db,
-    query_driver_finishes_by_track_type,
+    query_driver_finishes_by_track_type, fetch_lap_times,
 )
 from src.utils import (
     calc_dk_points, calc_fd_points, safe_fillna, format_display_df,
@@ -17,7 +17,7 @@ from src.utils import (
 from src.charts import (
     dfs_histogram, start_vs_finish_scatter, race_scatter, race_lap_chart,
     season_trend_line, arp_vs_finish_scatter,
-    finish_distribution_box, fantasy_vs_arp_scatter,
+    finish_distribution_box, fantasy_vs_arp_scatter, race_speed_chart,
 )
 
 
@@ -500,43 +500,10 @@ def _render_charts_view(completed_races, series_id, selected_year,
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_finish_dist")
 
-    # Race lap-by-lap chart (from race lap-times data)
-    if not is_prerace and lap_data:
-        import numpy as np
-        st.divider()
-        st.caption("Race lap-by-lap times")
-
-        # Build driver list from lap data
-        all_drivers = sorted([d.get("FullName", d.get("NickName", "")) for d in lap_data.get("laps", [])])
-        default_top = all_drivers[:10] if len(all_drivers) > 10 else all_drivers
-
-        ctrl1, ctrl2 = st.columns([3, 1])
-        with ctrl1:
-            sel_drivers = st.multiselect("Select drivers", all_drivers, default=default_top, key="race_lap_drivers")
-        with ctrl2:
-            outlier_pct = st.slider("Outlier filter (x median)", 1.05, 1.40, 1.15, 0.05, key="race_lap_outlier",
-                                    help="Hide laps slower than this multiple of driver's median (pit stops, cautions)")
-
-        if sel_drivers:
-            # Filter outliers from lap data before charting
-            filtered_data = {"laps": []}
-            for d in lap_data.get("laps", []):
-                driver = d.get("FullName", d.get("NickName", ""))
-                if driver not in sel_drivers:
-                    continue
-                laps = d.get("Laps", [])
-                times = [l["LapTime"] for l in laps if l.get("LapTime") and l["LapTime"] > 0]
-                if not times:
-                    continue
-                median_t = np.median(times)
-                cutoff = median_t * outlier_pct
-                clean_laps = [l for l in laps if l.get("LapTime") and 0 < l["LapTime"] <= cutoff]
-                if clean_laps:
-                    filtered_data["laps"].append({**d, "Laps": clean_laps})
-
-            fig = race_lap_chart(filtered_data, sel_drivers)
-            if fig:
-                st.plotly_chart(fig, width="stretch")
+    # ── Speed Over Time — driver-selectable lap time / speed overlay ──────────
+    st.divider()
+    _render_speed_over_time(completed_races, series_id, selected_year,
+                            lap_data, results_df, is_prerace)
 
     # Single race scatter — Avg Running Pos vs DK Points for THIS race
     if not is_prerace and not results_df.empty and lap_data:
@@ -555,3 +522,92 @@ def _render_charts_view(completed_races, series_id, selected_year,
         fig = race_scatter(race_res)
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_race_scatter")
+
+
+def _render_speed_over_time(completed_races, series_id, selected_year, lap_data,
+                            results_df, is_prerace):
+    """Driver-selectable overlay of lap TIME (default) or speed across a race.
+
+    Defaults to the currently-selected race (its lap data is already loaded) but
+    lets you pick any completed race. Moved here from Race Lab."""
+    st.markdown("**Speed Over Time** — lap-by-lap overlay")
+
+    race_labels, label_to_race = [], {}
+    for _, race in (completed_races or []):
+        track = race.get("track_name", "")
+        name = race.get("race_name", "")
+        date = (race.get("race_date", "") or "")[:10]
+        lbl = f"{date} — {track}: {name}"
+        race_labels.append(lbl); label_to_race[lbl] = race
+    race_labels = list(reversed(race_labels))
+
+    CURRENT = "Current race (selected above)"
+    has_current = bool(lap_data and not is_prerace and lap_data.get("laps"))
+    options = ([CURRENT] + race_labels) if has_current else race_labels
+    if not options:
+        st.caption("No race lap-by-lap data available for this series/year.")
+        return
+
+    pick = st.selectbox("Race", options, index=0, key="data_speed_race")
+    if pick == CURRENT:
+        ld = lap_data
+    else:
+        race = label_to_race[pick]
+        yr = (race.get("race_date", "") or "")[:4]
+        try:
+            yr = int(yr)
+        except (TypeError, ValueError):
+            yr = selected_year
+        with st.spinner("Loading lap-by-lap data..."):
+            ld = fetch_lap_times(series_id, race.get("race_id"), yr)
+    if not ld or "laps" not in ld:
+        st.info("Lap-by-lap data isn't available for this race.")
+        return
+
+    all_drivers = sorted(d.get("FullName") for d in ld["laps"] if d.get("FullName"))
+    if not all_drivers:
+        st.info("No lap data to plot for this race.")
+        return
+
+    # Default to the top-5 finishers when we have results for the current race,
+    # else the first five drivers.
+    default = all_drivers[:5]
+    if pick == CURRENT and not results_df.empty and "Finish Position" in results_df.columns:
+        try:
+            top = results_df.sort_values("Finish Position")["Driver"].tolist()
+            default = [d for d in top if d in all_drivers][:5] or all_drivers[:5]
+        except Exception:
+            pass
+
+    c1, c2, c3 = st.columns([3, 1, 1])
+    with c1:
+        picks = st.multiselect("Drivers to overlay", all_drivers, default=default,
+                               key="data_speed_drivers")
+    with c2:
+        metric_label = st.radio("Metric", ["Lap Time", "Speed"], horizontal=True,
+                                key="data_speed_metric")
+    with c3:
+        green_only = st.toggle("Green-flag laps only", value=True,
+                               key="data_speed_greenonly",
+                               help="Drop caution AND green-flag pit laps so only "
+                                    "clean racing pace shows.")
+    if not picks:
+        st.info("Select at least one driver.")
+        return
+
+    metric = "speed" if metric_label == "Speed" else "time"
+    fig = race_speed_chart(ld, selected_drivers=picks, green_only=green_only,
+                           metric=metric)
+    if fig is None:
+        st.info("No lap data to plot for the selected drivers.")
+        return
+    st.plotly_chart(fig, width="stretch")
+    _unit = ("lap time (s, faster = higher — axis inverted)" if metric == "time"
+             else "lap speed (mph)")
+    if green_only:
+        st.caption(f"Each line is a driver's {_unit}. Caution laps and green-flag "
+                   "pit laps are removed, so this is clean racing pace.")
+    else:
+        st.caption(f"Each line is a driver's {_unit}. Shaded bands are caution "
+                   "periods; the deep dips are pit stops. Toggle 'green-flag laps "
+                   "only' for clean racing pace.")
