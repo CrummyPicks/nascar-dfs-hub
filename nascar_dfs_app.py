@@ -27,6 +27,14 @@ except ImportError as e:
     import streamlit as st
     st.error(f"Import failed: {e}")
     st.stop()
+except KeyError as e:
+    # Transient during a Streamlit Cloud redeploy: the file watcher can rerun the
+    # script mid-`git pull`, interrupting an in-progress import so CPython raises
+    # KeyError(<module>) from importlib. It self-heals on the next clean rerun —
+    # show a friendly "updating" message instead of a scary traceback.
+    import streamlit as st
+    st.info("🔄 App is updating — refreshing in a moment…")
+    st.stop()
 
 
 # ============================================================

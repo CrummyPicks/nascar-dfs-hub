@@ -109,6 +109,57 @@ def _expected_finish_pts(pos):
     return DK_FINISH_POINTS.get(max(1, min(40, int(pos))), 0)
 
 
+# ── Expected-finish DISTRIBUTION (replaces the strict integer running order) ───
+# Each driver's continuous expected finish (raw_finish) is spread over a Gaussian
+# of finishing positions, then the field's position-probability matrix is
+# Sinkhorn-normalized so it stays coherent: every driver's row sums to 1 (they
+# finish somewhere) AND every position's column sums to 1 (exactly one car per
+# position in expectation — so wins / top finishes are conserved and nobody's
+# ceiling vanishes). Projected finish POINTS and place differential then use the
+# EXPECTED value over that distribution instead of one forced integer. This
+# removes the front-over / back-under bias the strict order created (validated in
+# diag_finish_distribution.py: σ≈10 flattens per-tier bias from +16/−13 to
+# ~+1.6/−2.0 and cuts MAE 19.4→17.1). Laps-led / fast-laps scoring is untouched.
+_FINISH_SIGMA = 10.0  # spread in finishing positions (diagnostic-tuned)
+
+
+def _finish_dist_expectations(raw_scores, drivers, field_size, sigma=_FINISH_SIGMA):
+    """Return {driver: (expected_finish, expected_finish_points)} from each
+    driver's continuous raw_finish, via a Sinkhorn-normalized Gaussian finish
+    distribution over positions 1..field_size."""
+    order = list(drivers)
+    n = max(1, int(field_size))
+    if n == 1 or not order:
+        return {d: (1.0, _expected_finish_pts(1)) for d in order}
+    # Row = driver, col = finishing position (1..n); start from a Gaussian
+    # centered on the driver's clipped expected finish.
+    mat = []
+    for d in order:
+        c = max(1.0, min(float(n), raw_scores.get(d, n * 0.75)))
+        row = [math.exp(-0.5 * ((k - c) / sigma) ** 2) for k in range(1, n + 1)]
+        s = sum(row) or 1.0
+        mat.append([x / s for x in row])
+    # Sinkhorn: alternately normalize rows → 1 and columns → 1.
+    R = len(mat)
+    for _ in range(20):
+        for i in range(R):
+            s = sum(mat[i]) or 1.0
+            mat[i] = [x / s for x in mat[i]]
+        for j in range(n):
+            cs = sum(mat[i][j] for i in range(R)) or 1.0
+            for i in range(R):
+                mat[i][j] /= cs
+    pos_pts = [_expected_finish_pts(k) for k in range(1, n + 1)]
+    out = {}
+    for i, d in enumerate(order):
+        s = sum(mat[i]) or 1.0
+        w = [x / s for x in mat[i]]          # final row-normalize → proper pmf
+        e_finish = sum((k + 1) * w[k] for k in range(n))
+        e_pts = sum(pos_pts[k] * w[k] for k in range(n))
+        out[d] = (e_finish, e_pts)
+    return out
+
+
 def compute_projections(
     drivers, field_size, wn,
     th_data, tt_data, qual_pos, practice_data,
@@ -694,21 +745,14 @@ def compute_projections(
         dom_raw_scores[d] = dom_score
         fl_raw_scores[d] = fl_score
 
-    # ── Finish position assignment ──
-    # Every driver gets a UNIQUE integer position 1..field_size, assigned by
-    # ranking drivers on their raw_finish score (lowest = P1). Real races
-    # have unique finishing positions, so projections should too — this
-    # makes DK finish-point allocation exact (only one driver gets P1's 44
-    # points, one gets P2's 40, etc.).
-    #
-    # The low-info penalty still has its intended effect because it's
-    # already been applied to raw_finish BEFORE ranking. A driver with the
-    # penalty pushed to raw=33 will rank behind a driver with raw=25, so
-    # they naturally fall to the back of the field after rank assignment.
-    sorted_drivers = sorted(driver_raw_scores.items(), key=lambda x: x[1])
-    driver_proj_finish = {}
-    for rank_idx, (d, _) in enumerate(sorted_drivers):
-        driver_proj_finish[d] = rank_idx + 1
+    # ── Finish position: EXPECTED value over a distribution ──
+    # (Previously every driver was forced to a UNIQUE integer 1..field_size by
+    # raw_finish rank, then points were read off that single position. That
+    # manufactured spread for clustered drivers and biased the front tier up /
+    # back tier down — see _finish_dist_expectations.) The expectations are
+    # computed AFTER the allocators below, just before DK assembly. The low-info
+    # penalty is already baked into driver_raw_scores, so it still pulls thin
+    # drivers toward the back via their distribution center.
 
     # ── Resolve each driver's projected START for the laps-led start gate ──
     # Same fallback chain used below for the displayed start (qual → track-history
@@ -742,11 +786,15 @@ def compute_projections(
         odds_display=odds_display,
     ) if race_laps > 0 else {}
 
+    # Expected finish + expected finish-points per driver (distribution-based).
+    finish_exp = _finish_dist_expectations(driver_raw_scores, drivers, field_size)
+
     # ── Compute DK points ──
     proj_rows = []
     proj_detail = {}
     for d in drivers:
-        proj_finish = driver_proj_finish[d]
+        e_finish, e_pts = finish_exp[d]
+        proj_finish = round(e_finish, 1)        # fractional expected finish
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
@@ -754,8 +802,10 @@ def compute_projections(
         # gate so the displayed start matches the start that gated the laps.
         start_pos = start_for_alloc[d]
 
-        finish_pts = _expected_finish_pts(proj_finish)
-        diff_pts = start_pos - proj_finish
+        # Finish points + place differential are the EXPECTED value over the
+        # finish distribution (not read off one forced integer position).
+        finish_pts = round(e_pts, 2)
+        diff_pts = round(start_pos - e_finish, 2)
         led_pts = round(proj_laps_led) * 0.25
         fl_pts = round(proj_fastest) * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)

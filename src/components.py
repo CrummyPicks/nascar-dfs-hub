@@ -32,7 +32,9 @@ def build_projection_column_config(df, max_proj_dk=None):
     if "Value" in df.columns:
         config["Value"] = st.column_config.NumberColumn("Value", format="%.2f")
     if "Proj Finish" in df.columns:
-        config["Proj Finish"] = st.column_config.NumberColumn("Proj Finish", format="%.0f")
+        # Fractional: it's the EXPECTED finish over a distribution, so clustered
+        # drivers visibly bunch (10.3 / 10.4 / 10.5) instead of a forced 9/10/11.
+        config["Proj Finish"] = st.column_config.NumberColumn("Proj Finish", format="%.1f")
     for col in ["Win Odds", "Est. Odds"]:
         if col in df.columns:
             config[col] = st.column_config.NumberColumn(col, format="%+d")

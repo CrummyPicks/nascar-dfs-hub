@@ -1,107 +1,107 @@
 {
   "A Elite1": {
-    "diff_pts": 1,
+    "diff_pts": -4.7,
     "fast_laps": 100,
     "laps_led": 179,
-    "proj_dk": 135.8,
-    "proj_finish": 1
+    "proj_dk": 122.4,
+    "proj_finish": 6.7
   },
   "A Elite2": {
-    "diff_pts": 2,
+    "diff_pts": -3.0,
     "fast_laps": 100,
     "laps_led": 118,
-    "proj_dk": 118.5,
-    "proj_finish": 2
+    "proj_dk": 108.5,
+    "proj_finish": 7.0
   },
   "A Elite3": {
-    "diff_pts": 5,
+    "diff_pts": 0.6,
     "fast_laps": 100,
     "laps_led": 58,
-    "proj_dk": 105.5,
-    "proj_finish": 3
+    "proj_dk": 96.5,
+    "proj_finish": 7.4
   },
   "B Mid1": {
-    "diff_pts": 2,
+    "diff_pts": -1.9,
     "fast_laps": 74,
     "laps_led": 29,
-    "proj_dk": 82.6,
-    "proj_finish": 4
+    "proj_dk": 74.7,
+    "proj_finish": 7.9
   },
   "B Mid2": {
-    "diff_pts": 3,
+    "diff_pts": 1.8,
     "fast_laps": 14,
     "laps_led": 8,
-    "proj_dk": 48.3,
-    "proj_finish": 7
+    "proj_dk": 45.7,
+    "proj_finish": 8.2
   },
   "B Mid3": {
-    "diff_pts": 4,
+    "diff_pts": 5.7,
     "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 38.5,
-    "proj_finish": 10
+    "proj_dk": 41.7,
+    "proj_finish": 8.3
   },
   "B Mid4": {
-    "diff_pts": 5,
+    "diff_pts": 7.7,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 37.0,
-    "proj_finish": 11
+    "proj_dk": 43.2,
+    "proj_finish": 8.3
   },
   "B Mid5": {
-    "diff_pts": 6,
+    "diff_pts": 9.7,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 37.0,
-    "proj_finish": 12
+    "proj_dk": 45.1,
+    "proj_finish": 8.3
   },
   "C Value1": {
-    "diff_pts": 12,
+    "diff_pts": 16.5,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 42.0,
-    "proj_finish": 13
+    "proj_dk": 51.8,
+    "proj_finish": 8.5
   },
   "C Value2": {
-    "diff_pts": 4,
+    "diff_pts": 3.8,
     "fast_laps": 2,
     "laps_led": 2,
-    "proj_dk": 41.4,
-    "proj_finish": 8
+    "proj_dk": 40.8,
+    "proj_finish": 8.2
   },
   "D Back1": {
-    "diff_pts": 14,
+    "diff_pts": 19.5,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 43.0,
-    "proj_finish": 14
+    "proj_dk": 54.6,
+    "proj_finish": 8.5
   },
   "D Back2": {
-    "diff_pts": 15,
+    "diff_pts": 21.4,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 43.0,
-    "proj_finish": 15
+    "proj_dk": 56.6,
+    "proj_finish": 8.6
   },
   "E Rookie1": {
-    "diff_pts": 8,
+    "diff_pts": 5.0,
     "fast_laps": 7,
     "laps_led": 3,
-    "proj_dk": 50.9,
-    "proj_finish": 5
+    "proj_dk": 44.7,
+    "proj_finish": 8.0
   },
   "E Rookie2": {
-    "diff_pts": 16,
+    "diff_pts": 14.0,
     "fast_laps": 2,
     "laps_led": 2,
-    "proj_dk": 55.4,
-    "proj_finish": 6
+    "proj_dk": 51.1,
+    "proj_finish": 8.0
   },
   "F LongShot": {
-    "diff_pts": 15,
+    "diff_pts": 15.8,
     "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 50.5,
-    "proj_finish": 9
+    "proj_dk": 51.7,
+    "proj_finish": 8.3
   }
 }
