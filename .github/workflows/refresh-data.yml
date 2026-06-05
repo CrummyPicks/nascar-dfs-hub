@@ -1,0 +1,60 @@
+name: Refresh NASCAR data
+
+# Keeps the committed nascar.db current automatically. Streamlit Cloud serves the
+# DB that's committed to the repo, and its runtime filesystem is ephemeral — so
+# the app's in-session backfill never persists. This job refreshes results
+# (+ ratings / pit / run-pace) for the current season across all three series and
+# commits nascar.db when it changes, which redeploys the app with fresh data.
+
+on:
+  schedule:
+    - cron: "0 9 * * *"      # daily at 09:00 UTC (~04:00-05:00 ET) — after race weekends
+  workflow_dispatch: {}        # allow manual runs from the Actions tab
+
+permissions:
+  contents: write              # needed to commit nascar.db back to the repo
+
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false    # never interrupt a run mid-write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure schema is current
+        run: python setup_db.py
+
+      - name: Refresh current season (all series)
+        # --year omitted on purpose: refresh_data computes CURRENT_SEASON itself.
+        # The ratings/pit/run-pace backfills at the end of each run are
+        # only_missing, so the 2nd/3rd invocations are fast. Odds failures are
+        # already non-fatal inside refresh_data.
+        run: |
+          python refresh_data.py --series cup
+          python refresh_data.py --series xfinity
+          python refresh_data.py --series truck
+
+      - name: Commit updated database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nascar.db
+          if git diff --staged --quiet; then
+            echo "No database changes — nothing to commit."
+          else
+            git commit -m "Auto-refresh nascar.db ($(date -u +%Y-%m-%d))"
+            git push
+          fi

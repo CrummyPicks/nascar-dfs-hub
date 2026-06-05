@@ -615,10 +615,15 @@ def main():
     else:
         print("  No duplicate drivers found — all names are canonical.")
 
-    # Fetch odds if requested or during normal refresh
+    # Fetch odds if requested or during normal refresh. Best-effort: an odds
+    # source that's flaky/blocked (common from CI IPs) must NOT abort the run —
+    # the results + ratings/pit/run-pace backfills below are the priority.
     if args.odds or not args.race:
         series_id = SERIES_MAP.get(args.series.lower(), 1)
-        fetch_and_save_odds(series_id, args.year)
+        try:
+            fetch_and_save_odds(series_id, args.year)
+        except Exception as e:
+            print(f"  Odds fetch skipped (non-fatal): {e}")
 
     # Backfill NASCAR Driver Rating for any races missing it (newly-fetched
     # races + historical gaps). Update-only and idempotent.

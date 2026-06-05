@@ -764,6 +764,7 @@ def compute_projections(
             "driver": d,
             "proj_dk": proj_dk,
             "proj_finish": proj_finish,
+            "raw_finish": round(driver_raw_scores[d], 2),
             "start": start_pos,
             "finish_pts": finish_pts,
             "diff_pts": diff_pts,
@@ -774,6 +775,7 @@ def compute_projections(
         })
         proj_detail[d] = {
             "proj_finish": proj_finish,
+            "raw_finish": round(driver_raw_scores[d], 2),
             "start": start_pos,
             "laps_led": round(proj_laps_led),
             "fast_laps": round(proj_fastest),

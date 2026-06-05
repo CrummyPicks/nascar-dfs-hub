@@ -13,7 +13,7 @@ lives in the Data tab's Charts section.
 import pandas as pd
 import streamlit as st
 
-from src.components import section_header
+from src.components import section_header, interactive_drill_down_dataframe
 from src.data import (query_race_stage_breakdown, query_race_field_results,
                       query_race_run_pace, query_track_stage_aggregate,
                       query_track_run_pace_aggregate)
@@ -26,6 +26,17 @@ def _resolve_db_id(api_race_id, series_id):
         return _resolve_db_race_id(api_race_id, series_id)
     except Exception:
         return None
+
+
+def _df_with_drill(styled, *, key, series_id, track_name=None, track_type=None,
+                   height=620):
+    """Render a styled table with click-a-row → driver-history popup. The popup
+    opens in the table's scope (this track, or this track-type) and ranks the
+    clicked driver against the other drivers shown in the table."""
+    interactive_drill_down_dataframe(
+        styled, key=key, series_id=series_id,
+        track_name=track_name, track_type=track_type,
+        width="stretch", hide_index=True, height=height)
 
 
 def render(*, completed_races, series_id, selected_year, series_name="Cup",
@@ -92,18 +103,25 @@ def _render_aggregate(scope, track_name, track_type, series_id):
                     horizontal=True, label_visibility="collapsed",
                     key="racelab_agg_view")
 
+    pop_track = track_name if is_track else None
+    pop_ttype = None if is_track else track_type
     if view == "Per-Stage Breakdown":
         if stage_agg["rows"]:
-            _render_stage_table(stage_agg["rows"], stage_agg["stages"], agg=True)
+            _render_stage_table(stage_agg["rows"], stage_agg["stages"], agg=True,
+                                series_id=series_id, track_name=pop_track,
+                                track_type=pop_ttype, key="rl_stage_agg")
         else:
             st.info("No per-stage data stored for this scope.")
     elif view == "Green Speed Summary":
         if stage_agg["rows"]:
-            _render_green_summary(stage_agg["rows"], stage_agg["stages"], agg=True)
+            _render_green_summary(stage_agg["rows"], stage_agg["stages"], agg=True,
+                                  series_id=series_id, track_name=pop_track,
+                                  track_type=pop_ttype, key="rl_green_agg")
         else:
             st.info("No per-stage data stored for this scope.")
     else:
-        _render_run_pace_agg(run_agg, single_track=is_track)
+        _render_run_pace_agg(run_agg, single_track=is_track, series_id=series_id,
+                             track_name=pop_track, track_type=pop_ttype)
 
 
 # ───────────────────────── single race (full detail) ─────────────────────────
@@ -134,13 +152,14 @@ def _render_single_race(completed_races, series_id, selected_year):
     stages = breakdown.get("stages", [])
     rows = breakdown.get("rows", [])
 
+    _track = race.get("track_name")
     if not rows:
         st.warning(
             "No per-stage data for this race yet. Stage metrics are computed from "
             "the lap-times feed and backfilled — run `python refresh_data.py` to "
             "populate recent races."
         )
-        _render_field_fallback(db_id)
+        _render_field_fallback(db_id, series_id=series_id, track_name=_track)
         return
 
     st.caption(
@@ -157,9 +176,11 @@ def _render_single_race(completed_races, series_id, selected_year):
                     key="racelab_view")
 
     if view == "Per-Stage Breakdown":
-        _render_stage_table(rows, stages)
+        _render_stage_table(rows, stages, series_id=series_id, track_name=_track,
+                            key="rl_stage_single")
     elif view == "Green Speed Summary":
-        _render_green_summary(rows, stages)
+        _render_green_summary(rows, stages, series_id=series_id, track_name=_track,
+                              key="rl_green_single")
     else:
         _render_run_pace(race, series_id, selected_year)
 
@@ -175,7 +196,8 @@ def _heat_low_good(v, lo=1.0, hi=36.0):
     return f"background-color: rgba({rr},{gg},68,0.22)"
 
 
-def _render_stage_table(rows, stages, agg=False):
+def _render_stage_table(rows, stages, agg=False, *, series_id=None,
+                        track_name=None, track_type=None, key="rl_stage"):
     """Wide table: one row per driver, grouped columns per stage. `agg` switches
     to averaged columns (no Speed/Pts/Car; a Races count; 1-decimal numbers)."""
     df = pd.DataFrame(rows)
@@ -225,10 +247,12 @@ def _render_stage_table(rows, stages, agg=False):
         return ["" for _ in col]
 
     styled = disp.style.apply(_cell_style, axis=0).format(fmt, na_rep="—")
-    st.dataframe(styled, width="stretch", hide_index=True, height=620)
+    _df_with_drill(styled, key=key, series_id=series_id,
+                   track_name=track_name, track_type=track_type)
 
 
-def _render_green_summary(rows, stages, agg=False):
+def _render_green_summary(rows, stages, agg=False, *, series_id=None,
+                          track_name=None, track_type=None, key="rl_green"):
     """Compact table: each driver's overall + per-stage green-speed RANK, to see
     pace trajectory across the race(s) at a glance (lower = faster)."""
     df = pd.DataFrame(rows)
@@ -251,9 +275,11 @@ def _render_green_summary(rows, stages, agg=False):
             continue
         num_fmt[c] = "{:.0f}" if (c == "Races" or not agg) else "{:.1f}"
     styled = disp.style.apply(_rank_heat, axis=0).format(num_fmt, na_rep="—")
-    st.dataframe(styled, width="stretch", hide_index=True, height=620)
+    _df_with_drill(styled, key=key, series_id=series_id,
+                   track_name=track_name, track_type=track_type)
     st.caption("Per-stage green-flag speed RANK (1 = fastest). Read left→right to "
-               "see whether a driver got faster or faded as the race(s) went on.")
+               "see whether a driver got faster or faded as the race(s) went on. "
+               "Click a row for that driver's history.")
 
 
 def _render_run_pace(race, series_id, selected_year):
@@ -299,12 +325,15 @@ def _render_run_pace(race, series_id, selected_year):
         elif c != "Driver":
             fmt[c] = "{:.0f}"
     styled = disp.style.apply(_rank_heat, axis=0).format(fmt, na_rep="—")
-    st.dataframe(styled, width="stretch", hide_index=True, height=620)
+    _df_with_drill(styled, key="rl_runpace_single", series_id=series_id,
+                   track_name=race.get("track_name"))
     st.caption("Tip: a driver who's strong on Long Run but weak on Restart "
-               "(or vice-versa) is a setup/strategy read for DFS.")
+               "(or vice-versa) is a setup/strategy read for DFS. Click a row for "
+               "that driver's history.")
 
 
-def _render_run_pace_agg(run_agg, single_track):
+def _render_run_pace_agg(run_agg, single_track, *, series_id=None,
+                         track_name=None, track_type=None):
     """Aggregated long-run + restart pace across many races. Ranks are the
     average field rank; seconds shown only for a single track (comparable)."""
     rows = run_agg.get("rows", [])
@@ -335,17 +364,18 @@ def _render_run_pace_agg(run_agg, single_track):
         elif c.endswith("Rank"):
             fmt[c] = "{:.1f}"
     styled = disp.style.apply(_rank_heat, axis=0).format(fmt, na_rep="—")
-    st.dataframe(styled, width="stretch", hide_index=True, height=620)
+    _df_with_drill(styled, key="rl_runpace_agg", series_id=series_id,
+                   track_name=track_name, track_type=track_type)
     cap = ("Avg field rank across the selected races (1 = fastest). Seconds are "
            "the average of each race's median long-run / restart lap time."
            if single_track else
            "Avg field rank across the selected races (1 = fastest). A driver "
            "strong on Long Run but weak on Restart (or vice-versa) is a "
            "setup/strategy read for DFS.")
-    st.caption(cap)
+    st.caption(cap + " Click a row for that driver's history.")
 
 
-def _render_field_fallback(db_id):
+def _render_field_fallback(db_id, *, series_id=None, track_name=None):
     """When stage data is missing, at least show the full-field results."""
     data = query_race_field_results(db_id)
     rows = data.get("rows") if isinstance(data, dict) else None
@@ -355,5 +385,6 @@ def _render_field_fallback(db_id):
     show = [c for c in ["Finish", "Driver", "Car", "Team", "Start",
                         "Laps Led", "Fast Laps", "Avg Run", "Rating", "DK Pts"]
             if c in df.columns]
-    st.dataframe(safe_fillna(format_display_df(df[show])),
-                 width="stretch", hide_index=True, height=560)
+    _df_with_drill(safe_fillna(format_display_df(df[show])),
+                   key="rl_field_fallback", series_id=series_id,
+                   track_name=track_name, height=560)
