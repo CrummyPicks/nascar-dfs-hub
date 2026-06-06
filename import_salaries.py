@@ -455,14 +455,57 @@ def import_salary(recent_files):
         return None
 
 
+def _sync_db_with_origin():
+    """Pull origin's latest nascar.db BEFORE importing, so the salary/odds rows
+    you add layer on top of the daily auto-refresh Action instead of racing it.
+
+    nascar.db is a single binary blob, so git can't merge two versions — last
+    push wins. Importing into a STALE local DB and pushing would clobber the
+    Action's fresh results. Fetching + resetting to origin first guarantees the
+    import lands on the newest data and the push fast-forwards cleanly. Safe:
+    only resets when the working tree is clean (never discards uncommitted work)."""
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _git(*a):
+        return subprocess.run(["git", *a], capture_output=True, text=True,
+                              cwd=project_dir)
+
+    print("\n  Syncing local database with GitHub (so your import lands on the "
+          "latest data)...")
+    if _git("fetch", "origin").returncode != 0:
+        print("  ! Could not reach GitHub — continuing with the local database.")
+        return
+    behind = _git("rev-list", "--count", "HEAD..origin/main").stdout.strip() or "0"
+    ahead = _git("rev-list", "--count", "origin/main..HEAD").stdout.strip() or "0"
+    if behind == "0" and ahead == "0":
+        print("  Already up to date.")
+        return
+    if _git("status", "--porcelain").stdout.strip():
+        print("  ! You have uncommitted changes — skipping auto-sync so nothing "
+              "is lost. Commit/stash them (or run `git pull`) and retry.")
+        return
+    # Any local-ahead commits here are superseded auto-generated DB blobs; origin's
+    # daily refresh is the authoritative superset, so reset to it.
+    if _git("reset", "--hard", "origin/main").returncode == 0:
+        print(f"  OK — local DB synced with GitHub (was behind {behind}, ahead {ahead}).")
+    else:
+        print("  ! Sync failed — continuing with the local database.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Import DK/FD salaries and sportsbook odds")
     parser.add_argument("--no-push", action="store_true", help="Skip git commit + push")
+    parser.add_argument("--no-sync", action="store_true",
+                        help="Skip the pre-import git sync with origin")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
     print(f"  NASCAR DFS — Data Import")
     print(f"{'='*60}")
+
+    # Sync with origin FIRST so imports layer on the latest auto-refreshed DB.
+    if not (args.no_push or args.no_sync):
+        _sync_db_with_origin()
 
     recent_files = find_csv_files()
     imported = []
@@ -609,9 +652,14 @@ def main():
             print(f"  ERROR: git push failed (code {r3.returncode})")
             print(f"  stdout: {r3.stdout.strip()}")
             print(f"  stderr: {r3.stderr.strip()}")
-            print(f"\n  Try manually:")
-            print(f'    cd "{project_dir}"')
-            print(f'    git add nascar.db && git commit -m "Add data" && git push')
+            if "fetch first" in (r3.stderr or "") or "rejected" in (r3.stderr or ""):
+                print(f"\n  GitHub moved ahead (the daily auto-refresh pushed while "
+                      f"you were importing). Just re-run this importer — it syncs "
+                      f"first, so re-import the same race and it'll push cleanly.")
+            else:
+                print(f"\n  Try manually:")
+                print(f'    cd "{project_dir}"')
+                print(f'    git add nascar.db && git commit -m "Add data" && git push')
     else:
         print(f"\n  Saved to local DB. To deploy:")
         print(f'    git add nascar.db && git commit -m "Add data" && git push')
