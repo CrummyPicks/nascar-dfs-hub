@@ -80,7 +80,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         prows.append({
             "When": f"Lap {lp['Lap']}",
             "Driver": lp["Driver"],
-            "Reason": f"{lp['Why']} ({lp['Box (s)']}s box, lost {lp['Pos Lost']})",
+            "Reason": lp["Why"],
             "Confidence": "Likely (derived)",
         })
     if prows:
@@ -90,7 +90,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     st.caption("Pre-race penalties are parsed from official race comments "
                "(confirmed). NASCAR doesn't publish in-race penalties in a clean "
                "field, so 'Likely' rows are derived from pit anomalies "
-               "(slow green-flag stop + big position loss).")
+               "(an abnormally slow 4-tire stop vs the field median).")
     st.divider()
 
     # ── Caution timeline ──
@@ -136,22 +136,16 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                    "publish pit timing for every event — most common for some "
                    "Truck/Xfinity races).")
     if pit_rows:
-        st.caption("Avg/Best Box = stationary stop time (the crew's speed). "
-                   "Net Pos = total positions gained (＋) / lost (−) across all "
-                   "stops. Green Stops = stops taken under green.")
-        pdf = pd.DataFrame(pit_rows)[
-            ["Driver", "Stops", "Avg Box (s)", "Best Box (s)", "Net Pos", "Green Stops"]]
-
-        def _net_color(col):
-            if col.name != "Net Pos":
-                return ["" for _ in col]
-            return ["color:#22c55e;font-weight:600" if (pd.notna(v) and v > 0)
-                    else "color:#ef4444;font-weight:600" if (pd.notna(v) and v < 0)
-                    else "color:#94a3b8" for v in col]
-
-        styled_p = pdf.style.apply(_net_color, axis=0).format(
+        st.caption("Avg/Best Box = stationary time on 4-tire stops only (the "
+                   "crew's speed) — 2-tire, fuel-only and unmeasured stops are "
+                   "excluded so the comparison is apples-to-apples. Green Stops = "
+                   "stops taken under green.")
+        cols = [c for c in ["Driver", "Stops", "4-Tire Stops", "Avg Box (s)",
+                            "Best Box (s)", "Green Stops"] if c in pit_rows[0]]
+        pdf = pd.DataFrame(pit_rows)[cols]
+        styled_p = pdf.style.format(
             {"Avg Box (s)": "{:.1f}", "Best Box (s)": "{:.1f}",
-             "Stops": "{:.0f}", "Net Pos": "{:+.0f}", "Green Stops": "{:.0f}"},
+             "Stops": "{:.0f}", "4-Tire Stops": "{:.0f}", "Green Stops": "{:.0f}"},
             na_rep="—")
         st.dataframe(styled_p, width="stretch", hide_index=True,
                      height=min(620, 60 + len(pdf) * 35))

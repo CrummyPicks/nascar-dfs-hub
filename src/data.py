@@ -1517,13 +1517,19 @@ def query_race_pit_summary(db_race_id: int) -> dict:
     """Per-driver pit summary + likely pit penalties for one race.
 
     Returns {
-      "rows": [ {Driver, Stops, "Avg Box (s)", "Best Box (s)", "Net Pos",
+      "rows": [ {Driver, Stops, "4-Tire Stops", "Avg Box (s)", "Best Box (s)",
                  "Green Stops"} ] sorted by Avg Box,
-      "likely_penalties": [ {Driver, Lap, "Box (s)", "Pos Lost", Why} ],
+      "likely_penalties": [ {Driver, Lap, "Box (s)", Why} ],
     }
-    A 'likely penalty' is a GREEN-flag stop with a big position loss and/or an
-    abnormally long box time vs the field median — NASCAR doesn't publish in-race
-    penalties cleanly, so these are heuristic (labeled 'likely').
+    Box-time metrics use ONLY four-tire stops with a measured stationary time:
+    NASCAR's feed mixes 4-tire (~9-10s), 2-tire (~4s), fuel-only, and a -1
+    sentinel for unmeasured stops, so blending them (or counting -1) corrupts the
+    average and makes 'best' = -1. Four-tire-only is the comparable crew-speed
+    signal. A 'likely penalty' is an abnormally SLOW four-tire stop vs the field
+    median (suggests a problem / served penalty) — NASCAR doesn't publish in-race
+    penalties cleanly, so it's heuristic. (Position change around a stop is NOT
+    used: under green you cycle behind cars who haven't pitted yet, then cycle
+    back, so per-stop position deltas are transient, not crew performance.)
     """
     if not DB_PATH.exists() or db_race_id is None:
         return {"rows": [], "likely_penalties": []}
@@ -1531,7 +1537,7 @@ def query_race_pit_summary(db_race_id: int) -> dict:
         conn = sqlite3.connect(str(DB_PATH))
         rows = conn.execute('''
             SELECT d.full_name, ps.lap, ps.pit_stop_duration, ps.flag_status,
-                   ps.positions_gained_lost
+                   ps.stop_type
             FROM pit_stops ps JOIN drivers d ON d.id = ps.driver_id
             WHERE ps.race_id = ?
         ''', (db_race_id,)).fetchall()
@@ -1541,41 +1547,39 @@ def query_race_pit_summary(db_race_id: int) -> dict:
     if not rows:
         return {"rows": [], "likely_penalties": []}
 
-    # Field-median green-flag box time, for the anomaly threshold.
-    green_box = [r[2] for r in rows if r[3] == 1 and r[2]]
+    def _is_four(stype):
+        return (stype or "").upper().startswith("FOUR")
+
+    # Field-median four-tire box time, for the slow-stop anomaly threshold.
+    four_box = [r[2] for r in rows if _is_four(r[4]) and r[2] and r[2] > 0]
     med_box = None
-    if green_box:
-        gb = sorted(green_box); n = len(gb)
+    if four_box:
+        gb = sorted(four_box); n = len(gb)
         med_box = gb[n // 2] if n % 2 else (gb[n // 2 - 1] + gb[n // 2]) / 2
 
     by_driver = {}
     likely = []
-    for name, lap, box, flag, posch in rows:
+    for name, lap, box, flag, stype in rows:
         d = by_driver.setdefault(name, {"Driver": name, "Stops": 0,
-                                        "_box": [], "_net": 0, "Green Stops": 0})
+                                        "_box": [], "Green Stops": 0})
         d["Stops"] += 1
-        if box:
-            d["_box"].append(box)
-        if posch is not None:
-            d["_net"] += posch
         if flag == 1:
             d["Green Stops"] += 1
-            # Likely penalty: green stop, lost many spots, slow box vs median.
-            if (posch is not None and posch <= -5 and box and med_box
-                    and box > med_box * 1.5):
+        # Only comparable, measured four-tire stops feed the crew-speed metric.
+        if _is_four(stype) and box and box > 0:
+            d["_box"].append(box)
+            if med_box and box > med_box * 1.5:
                 likely.append({
-                    "Driver": name, "Lap": lap,
-                    "Box (s)": round(box, 1), "Pos Lost": -posch,
-                    "Why": "Slow green-flag stop + big position loss",
+                    "Driver": name, "Lap": lap, "Box (s)": round(box, 1),
+                    "Why": f"Slow 4-tire stop ({box:.1f}s vs {med_box:.1f}s field median)",
                 })
 
     out_rows = []
     for d in by_driver.values():
         boxes = d.pop("_box")
-        net = d.pop("_net")
+        d["4-Tire Stops"] = len(boxes)
         d["Avg Box (s)"] = round(sum(boxes) / len(boxes), 1) if boxes else None
         d["Best Box (s)"] = round(min(boxes), 1) if boxes else None
-        d["Net Pos"] = net
         out_rows.append(d)
     out_rows.sort(key=lambda x: (x["Avg Box (s)"] is None, x["Avg Box (s)"] or 999))
     likely.sort(key=lambda x: x["Lap"])
