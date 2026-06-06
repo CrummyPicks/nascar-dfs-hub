@@ -7,60 +7,60 @@
     "proj_finish": 6.7
   },
   "A Elite2": {
-    "diff_pts": -3.0,
+    "diff_pts": -3.1,
     "fast_laps": 100,
     "laps_led": 118,
-    "proj_dk": 108.5,
-    "proj_finish": 7.0
+    "proj_dk": 108.1,
+    "proj_finish": 7.1
   },
   "A Elite3": {
-    "diff_pts": 0.6,
+    "diff_pts": 0.5,
     "fast_laps": 100,
     "laps_led": 58,
-    "proj_dk": 96.5,
-    "proj_finish": 7.4
+    "proj_dk": 96.3,
+    "proj_finish": 7.6
   },
   "B Mid1": {
     "diff_pts": -1.9,
     "fast_laps": 74,
     "laps_led": 29,
-    "proj_dk": 74.7,
+    "proj_dk": 74.6,
     "proj_finish": 7.9
   },
   "B Mid2": {
     "diff_pts": 1.8,
     "fast_laps": 14,
     "laps_led": 8,
-    "proj_dk": 45.7,
+    "proj_dk": 45.8,
     "proj_finish": 8.2
   },
   "B Mid3": {
-    "diff_pts": 5.7,
+    "diff_pts": 5.8,
     "fast_laps": 1,
     "laps_led": 0,
     "proj_dk": 41.7,
-    "proj_finish": 8.3
+    "proj_finish": 8.2
   },
   "B Mid4": {
-    "diff_pts": 7.7,
+    "diff_pts": 7.8,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 43.2,
-    "proj_finish": 8.3
+    "proj_dk": 43.3,
+    "proj_finish": 8.2
   },
   "B Mid5": {
     "diff_pts": 9.7,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 45.1,
+    "proj_dk": 45.2,
     "proj_finish": 8.3
   },
   "C Value1": {
-    "diff_pts": 16.5,
+    "diff_pts": 16.6,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 51.8,
-    "proj_finish": 8.5
+    "proj_dk": 51.9,
+    "proj_finish": 8.4
   },
   "C Value2": {
     "diff_pts": 3.8,
@@ -73,15 +73,15 @@
     "diff_pts": 19.5,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 54.6,
+    "proj_dk": 54.8,
     "proj_finish": 8.5
   },
   "D Back2": {
-    "diff_pts": 21.4,
+    "diff_pts": 21.5,
     "fast_laps": 0,
     "laps_led": 0,
-    "proj_dk": 56.6,
-    "proj_finish": 8.6
+    "proj_dk": 56.8,
+    "proj_finish": 8.5
   },
   "E Rookie1": {
     "diff_pts": 5.0,
@@ -91,7 +91,7 @@
     "proj_finish": 8.0
   },
   "E Rookie2": {
-    "diff_pts": 14.0,
+    "diff_pts": 13.9,
     "fast_laps": 2,
     "laps_led": 2,
     "proj_dk": 51.1,
@@ -101,7 +101,7 @@
     "diff_pts": 15.8,
     "fast_laps": 1,
     "laps_led": 0,
-    "proj_dk": 51.7,
-    "proj_finish": 8.3
+    "proj_dk": 51.8,
+    "proj_finish": 8.2
   }
 }

@@ -117,25 +117,47 @@ def _expected_finish_pts(pos):
 # position in expectation — so wins / top finishes are conserved and nobody's
 # ceiling vanishes). Projected finish POINTS and place differential then use the
 # EXPECTED value over that distribution instead of one forced integer. This
-# removes the front-over / back-under bias the strict order created (validated in
-# diag_finish_distribution.py: σ≈10 flattens per-tier bias from +16/−13 to
-# ~+1.6/−2.0 and cuts MAE 19.4→17.1). Laps-led / fast-laps scoring is untouched.
-_FINISH_SIGMA = 10.0  # spread in finishing positions (diagnostic-tuned)
+# removes the front-over / back-under bias the strict order created.
+#
+# The spread is ASYMMETRIC ("ramp"), keyed to how strong the driver projects:
+# tight at the FRONT (an elite car reliably converts, so its outcomes cluster →
+# it projects up front with a small, realistic place differential), widening to
+# full width by ~the top third and STAYING wide through the back (slow cars
+# genuinely get vaulted up by attrition/cautions, so they keep that upside).
+# Tightening the back too (a symmetric tent) measurably re-broke back calibration
+# (bias −2.1 → −4.0), so only the front is tightened. Validated in
+# experiment_hetero_sigma.py: favorite 10.0 → ~7.4, its PD −5.9 → −3.3, per-tier
+# bias −0.1/+0.6/−2.1 (≈ flat-σ calibration), MAE +0.25. Laps-led / fast-laps
+# scoring is untouched.
+_FINISH_SIGMA_FRONT = 4.0    # spread for the projected race winner (tight)
+_FINISH_SIGMA_WIDE  = 11.0   # full spread, reached by the front third onward
+_FINISH_RAMP_KNEE   = 0.4    # fraction of the field by which σ reaches full width
 
 
-def _finish_dist_expectations(raw_scores, drivers, field_size, sigma=_FINISH_SIGMA):
+def _ramp_sigma(center, n):
+    """Per-driver finishing-position spread: narrow at the front, ramping to full
+    width by the front ~40% of the field and flat (wide) thereafter."""
+    if n <= 1:
+        return _FINISH_SIGMA_WIDE
+    frac = (min(max(center, 1.0), float(n)) - 1.0) / (n - 1)   # 0=front .. 1=back
+    t = min(1.0, frac / _FINISH_RAMP_KNEE)
+    return _FINISH_SIGMA_FRONT + (_FINISH_SIGMA_WIDE - _FINISH_SIGMA_FRONT) * t
+
+
+def _finish_dist_expectations(raw_scores, drivers, field_size):
     """Return {driver: (expected_finish, expected_finish_points)} from each
     driver's continuous raw_finish, via a Sinkhorn-normalized Gaussian finish
-    distribution over positions 1..field_size."""
+    distribution over positions 1..field_size with a front-tight 'ramp' spread."""
     order = list(drivers)
     n = max(1, int(field_size))
     if n == 1 or not order:
         return {d: (1.0, _expected_finish_pts(1)) for d in order}
     # Row = driver, col = finishing position (1..n); start from a Gaussian
-    # centered on the driver's clipped expected finish.
+    # centered on the driver's clipped expected finish, with a per-driver spread.
     mat = []
     for d in order:
         c = max(1.0, min(float(n), raw_scores.get(d, n * 0.75)))
+        sigma = _ramp_sigma(c, n)
         row = [math.exp(-0.5 * ((k - c) / sigma) ** 2) for k in range(1, n + 1)]
         s = sum(row) or 1.0
         mat.append([x / s for x in row])
