@@ -55,6 +55,25 @@ def build_projection_column_config(df, max_proj_dk=None):
                  "Sig Team", "Net Sig", "Team Adj", "Mfr Adj"]:
         if col in df.columns:
             config[col] = st.column_config.NumberColumn(col, format="%.1f")
+    if "Proj Own %" in df.columns:
+        config["Proj Own %"] = st.column_config.NumberColumn("Proj Own %", format="%.1f%%")
+    if "Leverage" in df.columns:
+        config["Leverage"] = st.column_config.NumberColumn("Leverage", format="%.2f")
+    if "Proj Qual Pos" in df.columns:
+        config["Proj Qual Pos"] = st.column_config.NumberColumn("Proj Qual Pos", format="%.0f")
+    if "Similar Races" in df.columns:
+        config["Similar Races"] = st.column_config.NumberColumn("Similar Races", format="%d")
+    # Generic fallback: any remaining numeric float column gets clean 1-decimal
+    # formatting, so a pandas Styler (used to colour rear-start names) can't
+    # expose raw 6-decimal floats on an unconfigured column.
+    for col in df.columns:
+        if col in config or col == "Driver":
+            continue
+        try:
+            if pd.api.types.is_float_dtype(df[col]):
+                config[col] = st.column_config.NumberColumn(col, format="%.1f")
+        except Exception:
+            pass
     return config
 
 

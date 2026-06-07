@@ -67,56 +67,35 @@ def _pd_multiplier(delta: float, salary_pctile: float, track_type: str | None) -
     """
     # Track sensitivity — how much PD drives ownership narrative
     if track_type in ("short", "short_concrete"):
-        pd_sens = 0.5  # dampened; dominators dominate attention
+        pd_sens = 0.6  # dampened; dominators dominate attention
     elif track_type == "intermediate_worn":
-        pd_sens = 0.8
+        pd_sens = 0.85
     else:  # intermediate, superspeedway, road, unknown
         pd_sens = 1.0
 
-    is_cheap = salary_pctile <= 0.5
-    is_mid   = 0.5 < salary_pctile <= 0.75
-    is_top   = salary_pctile > 0.75
+    # How strongly cheapness amplifies the PD narrative. A cheap driver starting
+    # deep with projected gains is THE chalk magnet in NASCAR DFS — every content
+    # source flags him — so he gets the full boost. Pricier names get muted.
+    if salary_pctile <= 0.5:
+        cheap_factor = 1.0
+    elif salary_pctile <= 0.75:
+        cheap_factor = 0.55
+    else:
+        cheap_factor = 0.30
 
-    # Big PD upside (delta >= 10 positions)
-    if delta >= 10:
-        if is_cheap:
-            # Classic value chalk narrative — casuals pile on
-            return 1.0 + 0.15 * pd_sens
-        if is_mid:
-            # Known mid-price driver starting deep — still attractive narrative
-            return 1.0 + 0.08 * pd_sens
-        # Top tier with PD upside — depends on track
-        if track_type in ("short", "short_concrete"):
-            # Genuinely under-owned leverage (casuals focused on obvious doms)
-            return 0.92
-        # At intermediate/speedway, casuals notice top names with PD stories
-        return 1.0 + 0.04 * pd_sens
+    if delta >= 0:
+        # Position-gain upside. A cheap car projected +20 (e.g. starts 32nd,
+        # projects ~12th) is heavy value chalk — this is the signal that should
+        # push a play toward 40%+. boost caps at 2.5 (delta 25+).
+        boost = min(delta, 25) / 10.0
+        return 1.0 + 0.22 * boost * cheap_factor * pd_sens
 
-    # Moderate PD upside (delta 5-9)
-    if delta >= 5:
-        if is_cheap:
-            return 1.0 + 0.06 * pd_sens
-        if is_mid:
-            return 1.0 + 0.03 * pd_sens
-        return 1.0  # expensive + modest PD gain = no narrative pull
-
-    # Big fade risk (delta <= -10 — starts front, projects deep)
-    if delta <= -10:
-        if is_top:
-            # Casuals still roster front-row names even if we project a fade
-            return 1.05
-        if is_cheap:
-            # Cheap + starting up front + projected fade = casuals skip entirely
-            return 0.90
-        return 0.98
-
-    # Mild fade (-5 to -9)
-    if delta <= -5:
-        if is_top:
-            return 1.02
-        return 0.98
-
-    return 1.0
+    # Fade risk (starts up front, projects to drop back).
+    fade = min(-delta, 20) / 10.0
+    if salary_pctile > 0.75:
+        # Casuals still roster expensive front-row names despite a projected fade.
+        return max(0.95, 1.0 - 0.03 * fade)
+    return max(0.78, 1.0 - 0.10 * fade * pd_sens)
 
 
 def project_ownership(
@@ -255,6 +234,12 @@ def project_ownership(
             pct = sal_pctile.get(salary[d], 0.5)
             pd_multiplier[d] = _pd_multiplier(delta, pct, track_type)
 
+    # Concentration: a flat weighted-sum normalized across ~37 drivers compresses
+    # the chalk (top capped ~25%). Real NASCAR ownership is right-skewed — the top
+    # value play hits 40-55%, with a long thin tail. Raising scores to a power
+    # before normalizing reproduces that spread; gpp_dispersion still tunes it
+    # (>1 chalkier, <1 flatter) on top of the base concentration.
+    CONCENTRATION = 2.0
     raw = {}
     for d in drivers:
         score = (
@@ -264,7 +249,7 @@ def project_ownership(
             + qual_score.get(d, 0) * W_QUAL
         )
         score *= pd_multiplier.get(d, 1.0)
-        raw[d] = score ** gpp_dispersion
+        raw[d] = max(score, 0.0) ** (CONCENTRATION * gpp_dispersion)
 
     # ── Normalize to sum to roster_size * 100 ──
     total_raw = sum(raw.values())
