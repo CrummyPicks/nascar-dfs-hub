@@ -1117,6 +1117,100 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
 
 # ── Accuracy Dashboard ───────────────────────────────────────────────────────
 
+def _render_season_trend(metrics_df, season_rank_corr, season_mae):
+    """Chronological trend of per-race accuracy so the user can see whether the
+    model is improving, holding, or sliding as the season progresses.
+
+    Two full-width charts (per the user's no-side-by-side preference): a Rank
+    Correlation trend (bars colored by Elite/Good/Needs-Work, with a 3-race
+    rolling line and the season-average reference) and a per-race DK MAE bar
+    chart with its own season-average line."""
+    import plotly.graph_objects as go
+    from src.charts import DARK_LAYOUT, apply_dark_theme
+
+    if metrics_df is None or len(metrics_df) < 2:
+        return  # a trend needs at least two races
+
+    df = metrics_df.copy()
+    # Chronological order (fall back to existing order if dates are missing)
+    if "Date" in df.columns and df["Date"].astype(str).str.len().gt(0).any():
+        df = df.sort_values("Date", kind="stable")
+    df = df.reset_index(drop=True)
+
+    labels = [f"{t}" for t in df["Track"].tolist()]
+    x = list(range(len(df)))
+
+    st.markdown("**Season Accuracy Trend**")
+
+    # ── Rank-correlation trend ──
+    rc = pd.to_numeric(df["Rank Corr"], errors="coerce")
+    bar_colors = [_metric_color(v, 0.70, 0.45, False) for v in rc]
+    roll = rc.rolling(3, min_periods=1).mean()
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=x, y=rc, marker_color=bar_colors, name="Rank Corr",
+        customdata=list(zip(labels, df.get("Date", [""] * len(df)))),
+        hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>"
+                      "Rank Corr: %{y:.3f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=roll, mode="lines+markers", name="3-race rolling",
+        line=dict(color="#e2e8f0", width=2),
+        marker=dict(size=5, color="#e2e8f0"),
+        hovertemplate="3-race avg: %{y:.3f}<extra></extra>",
+    ))
+    if season_rank_corr is not None and season_rank_corr == season_rank_corr:
+        fig.add_hline(y=season_rank_corr, line_dash="dash", line_color="#64748b",
+                      annotation_text=f"Season avg {season_rank_corr:.3f}",
+                      annotation_position="top left",
+                      annotation_font_color="#94a3b8")
+    fig.update_layout(**DARK_LAYOUT, height=360,
+                      title="Finish-Rank Correlation by Race (chronological)",
+                      yaxis_title="Rank Corr (higher = better)",
+                      xaxis=dict(tickmode="array", tickvals=x, ticktext=labels,
+                                 tickangle=-40))
+    apply_dark_theme(fig)
+    st.plotly_chart(fig, width="stretch", key="acc_trend_rankcorr")
+
+    # ── DK MAE trend ──
+    mae = pd.to_numeric(df["DK MAE"], errors="coerce")
+    mae_colors = [_metric_color(v, 15, 25, True) for v in mae]
+    figm = go.Figure()
+    figm.add_trace(go.Bar(
+        x=x, y=mae, marker_color=mae_colors, name="DK MAE",
+        customdata=list(zip(labels, df.get("Date", [""] * len(df)))),
+        hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>"
+                      "DK MAE: %{y:.1f}<extra></extra>",
+    ))
+    if season_mae is not None and season_mae == season_mae:
+        figm.add_hline(y=season_mae, line_dash="dash", line_color="#64748b",
+                       annotation_text=f"Season avg {season_mae:.1f}",
+                       annotation_position="top left",
+                       annotation_font_color="#94a3b8")
+    figm.update_layout(**DARK_LAYOUT, height=320,
+                       title="DK Points MAE by Race (chronological)",
+                       yaxis_title="DK MAE (lower = better)",
+                       xaxis=dict(tickmode="array", tickvals=x, ticktext=labels,
+                                  tickangle=-40))
+    apply_dark_theme(figm)
+    st.plotly_chart(figm, width="stretch", key="acc_trend_mae")
+
+    # Plain-language read on the trend (first half vs second half of the season).
+    if len(rc) >= 4:
+        half = len(rc) // 2
+        early, late = rc.iloc[:half].mean(), rc.iloc[half:].mean()
+        if early == early and late == late:
+            delta = late - early
+            if abs(delta) < 0.03:
+                msg = "holding steady"
+            elif delta > 0:
+                msg = f"improving (+{delta:.3f} rank-corr 2nd half vs 1st)"
+            else:
+                msg = f"sliding ({delta:.3f} rank-corr 2nd half vs 1st)"
+            st.caption(f"Trend: the model is **{msg}** across the season.")
+
+
 def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dnf=True):
     """Cross-race accuracy metrics — auto-generates projections for all completed races."""
     st.markdown("**Accuracy Dashboard**")
@@ -1203,6 +1297,7 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dn
         race_metrics.append({
             "Race": race.get("race_name", ""),
             "Track": track_name,
+            "Date": (race.get("race_date", "") or "")[:10],
             "Season": selected_year,
             "Track Type": TRACK_TYPE_MAP.get(track_name, "intermediate"),
             "Drivers": len(proj_list),
@@ -1268,6 +1363,9 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dn
         Bias=("Error", "mean"),
     ).round(2).sort_values("MAE")
     st.dataframe(type_agg, width="stretch")
+
+    # ── Season trend: is the model improving or sliding as the year goes on? ──
+    _render_season_trend(metrics_df, overall_rank_corr, overall_mae)
 
     st.caption(
         "Track your projection accuracy over time. Lower MAE and higher correlation = better model. "
