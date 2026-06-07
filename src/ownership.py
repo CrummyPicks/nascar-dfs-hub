@@ -109,8 +109,14 @@ def project_ownership(
     field_size: int = 37,
     roster_size: int = 6,
     gpp_dispersion: float = 1.0,
+    contest_type: str = "gpp",
 ) -> dict:
     """Return projected ownership % per driver.
+
+    contest_type: "cash" or "gpp". Cash ownership is MORE concentrated — players
+    converge on the safe chalk, so the top plays hit higher % (real data: a top
+    play ~60-70% cash) — while GPP players chase leverage and spread out, so the
+    top is lower with a longer tail (~40-55%). Same drivers, different shape.
 
     Args:
         drivers: list of driver names in the pool
@@ -235,11 +241,14 @@ def project_ownership(
             pd_multiplier[d] = _pd_multiplier(delta, pct, track_type)
 
     # Concentration: a flat weighted-sum normalized across ~37 drivers compresses
-    # the chalk (top capped ~25%). Real NASCAR ownership is right-skewed — the top
-    # value play hits 40-55%, with a long thin tail. Raising scores to a power
-    # before normalizing reproduces that spread; gpp_dispersion still tunes it
-    # (>1 chalkier, <1 flatter) on top of the base concentration.
-    CONCENTRATION = 2.0
+    # the chalk. Real NASCAR ownership is right-skewed — raising scores to a power
+    # before normalizing reproduces that spread. Cash concentrates harder than GPP
+    # (calibrated toward observed chalk: ~60-70% top cash, ~40-55% top GPP).
+    # gpp_dispersion still tunes it (>1 chalkier, <1 flatter) on top.
+    if (contest_type or "gpp").lower() == "cash":
+        CONCENTRATION, CAP = 3.0, 80.0
+    else:
+        CONCENTRATION, CAP = 2.3, 62.0
     raw = {}
     for d in drivers:
         score = (
@@ -259,9 +268,8 @@ def project_ownership(
     target_sum = roster_size * 100.0
     own = {d: (raw[d] / total_raw) * target_sum for d in drivers}
 
-    # Cap max ownership at 70% (realistic ceiling — no one is 100% owned).
-    # Iterate cap/redistribute until stable.
-    CAP = 70.0
+    # Cap max ownership at the contest-type ceiling (set above) and redistribute
+    # the overflow. No one is 100% owned; cash tops higher than GPP.
     for _ in range(10):
         capped = {d: own[d] for d in drivers if own[d] > CAP}
         if not capped:

@@ -1883,7 +1883,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         _sal_dict = dict(zip(proj["Driver"], proj["DK Salary"])) if "DK Salary" in proj.columns else {}
         _proj_finish_dict = dict(zip(proj["Driver"], proj["Proj Finish"])) if "Proj Finish" in proj.columns else {}
         # win_odds: odds_data is keyed by driver display name already
-        _own_map = project_ownership(
+        _own_kwargs = dict(
             drivers=proj["Driver"].tolist(),
             proj_dk=_proj_dk_dict,
             salary=_sal_dict,
@@ -1894,9 +1894,15 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             field_size=field_size,
             roster_size=6,  # DK NASCAR contests are 6-driver across all series
         )
-        proj["Proj Own %"] = proj["Driver"].map(_own_map).round(1)
-        # Leverage = points per ownership point (higher = better GPP play)
-        _lev_map = compute_leverage(_proj_dk_dict, _own_map)
+        # Cash ownership runs hotter on chalk than GPP (cash converges on the
+        # safe plays; GPP spreads for leverage). Project both.
+        _own_gpp = project_ownership(contest_type="gpp", **_own_kwargs)
+        _own_cash = project_ownership(contest_type="cash", **_own_kwargs)
+        proj["GPP Own%"] = proj["Driver"].map(_own_gpp).round(1)
+        proj["Cash Own%"] = proj["Driver"].map(_own_cash).round(1)
+        # Leverage = points per ownership point (a GPP concept — use GPP ownership)
+        _own_map = _own_gpp
+        _lev_map = compute_leverage(_proj_dk_dict, _own_gpp)
         proj["Leverage"] = proj["Driver"].map(_lev_map).round(2)
     except Exception as _ow_err:
         # Non-fatal — ownership is additive info only
@@ -1912,8 +1918,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     st.session_state["proj_ceiling_map"] = {d: v.get("proj_ceiling")
                                             for d, v in _proj_detail.items()}
     # Share ownership + leverage for optimizer leverage scoring
-    if "Proj Own %" in proj.columns:
-        st.session_state["proj_own_map"] = dict(zip(proj["Driver"], proj["Proj Own %"]))
+    if "GPP Own%" in proj.columns:
+        # Optimizer leverage uses GPP ownership (leverage is a GPP concept).
+        st.session_state["proj_own_map"] = dict(zip(proj["Driver"], proj["GPP Own%"]))
     if "Leverage" in proj.columns:
         st.session_state["proj_leverage_map"] = dict(zip(proj["Driver"], proj["Leverage"]))
 
@@ -1941,8 +1948,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     display_cols.append("Proj DK")
     if "Value" in proj.columns:
         display_cols.append("Value")
-    if "Proj Own %" in proj.columns:
-        display_cols.append("Proj Own %")
+    if "GPP Own%" in proj.columns:
+        display_cols.append("GPP Own%")
+    if "Cash Own%" in proj.columns:
+        display_cols.append("Cash Own%")
     if "Leverage" in proj.columns:
         display_cols.append("Leverage")
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"

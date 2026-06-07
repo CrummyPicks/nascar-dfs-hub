@@ -55,8 +55,9 @@ def build_projection_column_config(df, max_proj_dk=None):
                  "Sig Team", "Net Sig", "Team Adj", "Mfr Adj"]:
         if col in df.columns:
             config[col] = st.column_config.NumberColumn(col, format="%.1f")
-    if "Proj Own %" in df.columns:
-        config["Proj Own %"] = st.column_config.NumberColumn("Proj Own %", format="%.1f%%")
+    for _own_col in ["Proj Own %", "GPP Own%", "Cash Own%"]:
+        if _own_col in df.columns:
+            config[_own_col] = st.column_config.NumberColumn(_own_col, format="%.1f%%")
     if "Leverage" in df.columns:
         config["Leverage"] = st.column_config.NumberColumn("Leverage", format="%.2f")
     if "Proj Qual Pos" in df.columns:
