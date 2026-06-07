@@ -314,15 +314,18 @@ def _solve_optimal(drivers, salary_cap, roster_size, timeout_ms=3000,
 def _add_opt_score(df, mode):
     """Add an 'Opt Score' column = the mode-specific optimization objective, so
     the single optimal lineup and the multi-lineup generator rank by the SAME
-    thing (multi-lineup #1 == the optimal shown). Cash weights floor; GPP weights
-    ceiling and downweights high ownership (leverage)."""
+    thing (multi-lineup #1 == the optimal shown).
+      Projection: pure median (the straight best-projected lineups).
+      Cash:       weight FLOOR (steady, consistent).
+      GPP:        weight CEILING and downweight high ownership (leverage)."""
     df = df.copy()
     proj = df["Proj Score"].fillna(0)
     floor = (df["Floor"] if "Floor" in df.columns else proj).fillna(proj)
     ceil = (df["Ceiling"] if "Ceiling" in df.columns else proj).fillna(proj)
-    if (mode or "gpp").lower() == "cash":
+    m = (mode or "projection").lower()
+    if m == "cash":
         df["Opt Score"] = 0.60 * floor + 0.40 * proj
-    else:
+    elif m == "gpp":
         base = 0.60 * ceil + 0.40 * proj
         if "Proj Own %" in df.columns:
             own = df["Proj Own %"].fillna(0).clip(0, 100)
@@ -331,6 +334,8 @@ def _add_opt_score(df, mode):
             df["Opt Score"] = base * lev
         else:
             df["Opt Score"] = base
+    else:  # projection — the general best, pure median points
+        df["Opt Score"] = proj
     return df
 
 
@@ -560,13 +565,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     with s2:
         roster_size = st.number_input("Roster Size", 4, 8, ROSTER_SIZE, key="opt_roster")
     with s3:
-        mode = st.selectbox("Mode", ["GPP", "Cash"], key="opt_mode",
-                            help="Cash optimizes for FLOOR (steady, consistent "
-                                 "scorers — chalkier, lower variance). GPP "
-                                 "optimizes for CEILING + leverage (upside "
+        mode = st.selectbox("Mode", ["Projection", "Cash", "GPP"], key="opt_mode",
+                            help="Projection: the straight best-projected lineups "
+                                 "(highest median points). Cash: optimize for FLOOR "
+                                 "(steady, consistent — chalkier, lower variance). "
+                                 "GPP: optimize for CEILING + leverage (upside "
                                  "dominators / deep-PD plays, weighted toward "
-                                 "lower-owned drivers). Needs the Projections tab "
-                                 "to have run (for floor/ceiling/ownership).")
+                                 "lower-owned drivers). Cash/GPP need the Projections "
+                                 "tab to have run (for floor/ceiling/ownership).")
     with s4:
         max_exposure = st.slider("Max Exposure %", 10, 100,
                                  60 if mode == "GPP" else 100, 5, key="opt_exposure",
