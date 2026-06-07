@@ -213,6 +213,28 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         pool["Leverage"] = pool["Driver"].map(
             lambda d: fuzzy_get(d, lev_map, lev_norm) or 0).round(2)
 
+    # Floor / ceiling DK for cash vs GPP optimization (fall back to median when
+    # the projection engine hasn't populated them, e.g. the composite fallback).
+    floor_map = st.session_state.get("proj_floor_map", {})
+    ceil_map = st.session_state.get("proj_ceiling_map", {})
+    if floor_map:
+        fnorm = build_norm_lookup(floor_map)
+        pool["Floor"] = pool["Driver"].map(
+            lambda d: fuzzy_get(d, floor_map, fnorm)).round(1)
+    if ceil_map:
+        cnorm = build_norm_lookup(ceil_map)
+        pool["Ceiling"] = pool["Driver"].map(
+            lambda d: fuzzy_get(d, ceil_map, cnorm)).round(1)
+    # Default missing floor/ceiling to the median so the optimizer always works.
+    if "Floor" not in pool.columns:
+        pool["Floor"] = pool["Proj Score"]
+    else:
+        pool["Floor"] = pool["Floor"].fillna(pool["Proj Score"])
+    if "Ceiling" not in pool.columns:
+        pool["Ceiling"] = pool["Proj Score"]
+    else:
+        pool["Ceiling"] = pool["Ceiling"].fillna(pool["Proj Score"])
+
     # Projections come from the projection engine (shared with the Projections
     # tab). In the rare case that engine didn't populate session state (e.g.
     # empty entry list), fall through silently to a simplified composite —
@@ -225,18 +247,23 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
 # ── Lineup Generation ───────────────────────────────────────────────────────
 
-def _solve_optimal(drivers, salary_cap, roster_size, timeout_ms=3000):
+def _solve_optimal(drivers, salary_cap, roster_size, timeout_ms=3000,
+                   objective_col="Proj Score"):
     """Find the mathematically optimal lineup using branch-and-bound.
 
-    Maximizes total Proj Score subject to salary cap and roster size.
-    drivers: list of dicts with Driver, DK Salary, Proj Score.
+    Maximizes total `objective_col` subject to salary cap and roster size
+    (Proj Score by default; the cash/GPP optimizer passes an "Opt Score" that
+    weights floor or ceiling+leverage). drivers: list of dicts with Driver,
+    DK Salary, and the objective column.
     timeout_ms: max milliseconds before returning best solution found so far.
     Returns list of driver dicts for the best lineup.
     """
-    # Sort by projection descending for better pruning
-    drivers = sorted(drivers, key=lambda d: d["Proj Score"], reverse=True)
+    def _obj(d):
+        return d.get(objective_col, d.get("Proj Score", 0)) or 0
+    # Sort by objective descending for better pruning
+    drivers = sorted(drivers, key=_obj, reverse=True)
     n = len(drivers)
-    projs = [d["Proj Score"] for d in drivers]
+    projs = [_obj(d) for d in drivers]
     sals = [d["DK Salary"] for d in drivers]
 
     best_score = [0.0]
@@ -347,6 +374,31 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
     if available.empty or len(available) < roster_size:
         return []
 
+    # ── Mode-specific objective ──────────────────────────────────────────────
+    # Cash optimizes for FLOOR (consistent scorers) — you just need to beat ~half
+    # the field, so steady high-floor drivers win. GPP optimizes for CEILING and
+    # LEVERAGE — you need a top-1% score, so upside (dominators, deep-PD upside)
+    # plus low ownership wins. Both keep a median anchor so a high-variance dart
+    # with no real projection doesn't sneak in. Display still shows median Proj DK.
+    mode = (mode or "gpp").lower()
+    floor = available["Floor"] if "Floor" in available.columns else available["Proj Score"]
+    ceil = available["Ceiling"] if "Ceiling" in available.columns else available["Proj Score"]
+    floor = floor.fillna(available["Proj Score"])
+    ceil = ceil.fillna(available["Proj Score"])
+    if mode == "cash":
+        available["Opt Score"] = 0.60 * floor + 0.40 * available["Proj Score"]
+    else:  # gpp
+        base = 0.60 * ceil + 0.40 * available["Proj Score"]
+        if "Proj Own %" in available.columns:
+            own = available["Proj Own %"].fillna(0).clip(0, 100)
+            # Leverage factor: 50%-owned -> x0.83, 5%-owned -> x0.98. Pulls GPP
+            # lineups toward lower-owned upside without ignoring projection.
+            lev = (1.0 - 0.0035 * own).clip(0.55, 1.0)
+            available["Opt Score"] = base * lev
+        else:
+            available["Opt Score"] = base
+    OBJ = "Opt Score"
+
     # Separate locked and variable pools
     locked_data = []
     lock_salary = 0
@@ -380,14 +432,17 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
                 if exposure_count.get(d["Driver"], 0) >= max_exp:
                     return False
         seen_keys.add(key)
-        total_pts = sum(d["Proj Score"] for d in lineup)
+        # Rank lineups by the mode objective (floor for cash, ceiling+leverage
+        # for GPP); the displayed lineup total still uses median Proj DK.
+        total_pts = sum(d.get(OBJ, d.get("Proj Score", 0)) for d in lineup)
         all_lineups.append((total_pts, lineup))
         for d in lineup:
             exposure_count[d["Driver"]] = exposure_count.get(d["Driver"], 0) + 1
         return True
 
     # Lineup 1: true optimal via branch-and-bound (generous timeout)
-    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots, timeout_ms=5000)
+    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots,
+                             timeout_ms=5000, objective_col=OBJ)
     if optimal:
         _add_lineup(locked_data + optimal)
 
@@ -422,7 +477,8 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
         if len(reduced) < remaining_slots:
             continue
 
-        alt = _solve_optimal(reduced, remaining_cap, remaining_slots, timeout_ms=1500)
+        alt = _solve_optimal(reduced, remaining_cap, remaining_slots,
+                             timeout_ms=1500, objective_col=OBJ)
         if alt:
             _add_lineup(locked_data + alt)
 
@@ -495,7 +551,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         roster_size = st.number_input("Roster Size", 4, 8, ROSTER_SIZE, key="opt_roster")
     with s3:
         mode = st.selectbox("Mode", ["GPP", "Cash"], key="opt_mode",
-                            help="GPP: diverse lineups. Cash: high-floor consistency.")
+                            help="Cash optimizes for FLOOR (steady, consistent "
+                                 "scorers — chalkier, lower variance). GPP "
+                                 "optimizes for CEILING + leverage (upside "
+                                 "dominators / deep-PD plays, weighted toward "
+                                 "lower-owned drivers). Needs the Projections tab "
+                                 "to have run (for floor/ceiling/ownership).")
     with s4:
         max_exposure = st.slider("Max Exposure %", 10, 100,
                                  60 if mode == "GPP" else 100, 5, key="opt_exposure",
@@ -861,9 +922,13 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             # whether the Projections tab has run.
             own_lookup = pool.set_index("Driver")["Proj Own %"].to_dict() if "Proj Own %" in pool.columns else {}
             lev_lookup = pool.set_index("Driver")["Leverage"].to_dict() if "Leverage" in pool.columns else {}
+            floor_lookup = pool.set_index("Driver")["Floor"].to_dict() if "Floor" in pool.columns else {}
+            ceil_lookup = pool.set_index("Driver")["Ceiling"].to_dict() if "Ceiling" in pool.columns else {}
             total_own = sum(own_lookup.get(d["Driver"], 0) or 0 for d in lineup)
             avg_lev = (sum(lev_lookup.get(d["Driver"], 0) or 0 for d in lineup)
                        / max(len(lineup), 1)) if lev_lookup else 0
+            total_floor = sum(floor_lookup.get(d["Driver"], 0) or 0 for d in lineup)
+            total_ceil = sum(ceil_lookup.get(d["Driver"], 0) or 0 for d in lineup)
 
             # Ownership-level interpretation for GPP vs Cash
             if total_own > 0:
@@ -885,7 +950,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             else:
                 own_display = '<span style="color:#94a3b8">— (run Projections tab)</span>'
 
-            q_cols = st.columns(4)
+            q_cols = st.columns(5)
             q_cols[0].markdown(
                 f'<div style="padding:4px;font-size:0.85rem;">'
                 f'<span style="color:#94a3b8">Doms:</span> '
@@ -900,7 +965,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 f'<span style="color:#94a3b8">Avg Leverage:</span> '
                 f'<span style="font-weight:600">{avg_lev:.2f}</span>'
                 f'</div>', unsafe_allow_html=True)
+            _fc = (f'{total_floor:.0f} / {total_ceil:.0f}'
+                   if (total_floor or total_ceil) else '— (run Projections)')
             q_cols[3].markdown(
+                f'<div style="padding:4px;font-size:0.85rem;">'
+                f'<span style="color:#94a3b8">Floor / Ceil:</span> '
+                f'<span style="font-weight:600">{_fc}</span>'
+                f'</div>', unsafe_allow_html=True)
+            q_cols[4].markdown(
                 f'<div style="padding:4px;font-size:0.85rem;">'
                 f'<span style="color:#94a3b8">Avg Proj:</span> '
                 f'<span style="font-weight:600">{total_pts / max(len(lineup),1):.1f}</span>'

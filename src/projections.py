@@ -847,9 +847,29 @@ def compute_projections(
         fl_pts = round(proj_fastest) * 0.45
         proj_dk = round(finish_pts + diff_pts + led_pts + fl_pts, 1)
 
+        # ── Floor / ceiling DK (for cash vs GPP optimization) ──
+        # Spread the finish ~1 sigma each way (same ramp spread the median uses):
+        #   floor = a bad-but-running race — worse finish, barely leads.
+        #   ceiling = a strong race — better finish + dominator upside realized.
+        # Steady mid-pack finishers get a HIGH floor (cash); drivers who can lead
+        # laps / win get a high ceiling (GPP). DNF risk isn't modeled here.
+        _c = max(1.0, min(float(field_size), driver_raw_scores[d]))
+        _sig = _ramp_sigma(_c, field_size)
+        _floor_fin = min(float(field_size), _c + _sig)
+        _ceil_fin = max(1.0, _c - _sig)
+        proj_floor = round(max(0.0,
+            _expected_finish_pts(_floor_fin) + (start_pos - _floor_fin)
+            + led_pts * 0.10 + fl_pts * 0.20), 1)
+        _ceil_led = min(race_laps * 0.25, led_pts * 2.0) if race_laps > 0 else 0.0
+        proj_ceiling = round(
+            _expected_finish_pts(_ceil_fin) + (start_pos - _ceil_fin)
+            + _ceil_led + fl_pts * 1.8, 1)
+
         proj_rows.append({
             "driver": d,
             "proj_dk": proj_dk,
+            "proj_floor": proj_floor,
+            "proj_ceiling": proj_ceiling,
             "proj_finish": proj_finish,
             "raw_finish": round(driver_raw_scores[d], 2),
             "start": start_pos,
@@ -862,6 +882,8 @@ def compute_projections(
         })
         proj_detail[d] = {
             "proj_finish": proj_finish,
+            "proj_floor": proj_floor,
+            "proj_ceiling": proj_ceiling,
             "raw_finish": round(driver_raw_scores[d], 2),
             "start": start_pos,
             "laps_led": round(proj_laps_led),

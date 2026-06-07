@@ -1906,6 +1906,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
     # Share per-driver detail so optimizer can identify projected dominators
     st.session_state["proj_detail_map"] = _proj_detail
+    # Floor / ceiling DK for cash vs GPP optimization
+    st.session_state["proj_floor_map"] = {d: v.get("proj_floor")
+                                          for d, v in _proj_detail.items()}
+    st.session_state["proj_ceiling_map"] = {d: v.get("proj_ceiling")
+                                            for d, v in _proj_detail.items()}
     # Share ownership + leverage for optimizer leverage scoring
     if "Proj Own %" in proj.columns:
         st.session_state["proj_own_map"] = dict(zip(proj["Driver"], proj["Proj Own %"]))
