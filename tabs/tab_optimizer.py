@@ -66,6 +66,18 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     field_size = len(pool)
     drivers = pool["Driver"].tolist()
 
+    # Carry team + manufacturer (for GPP stacking) from the entry list, matched
+    # on normalized names. Fall back to DB team for any driver the entry list
+    # missed. These feed the lineup correlation bonus, not the projection.
+    for col in ("Team", "Manufacturer"):
+        pool[col] = None
+        if entry_list_df is not None and not entry_list_df.empty and col in entry_list_df.columns:
+            _m = {r["Driver"]: r[col] for _, r in entry_list_df.iterrows()
+                  if r.get("Driver") and r.get(col)}
+            if _m:
+                _mn = build_norm_lookup(_m)
+                pool[col] = pool["Driver"].map(lambda d: fuzzy_get(d, _m, _mn))
+
     # ── 1. Track History Score ──────────────────────────────────────────────
     from src.data import scrape_track_history
     th_df = scrape_track_history(track_name, series_id)
@@ -339,12 +351,100 @@ def _add_opt_score(df, mode):
     return df
 
 
+# ── GPP correlation / stacking ────────────────────────────────────────────────
+# Same-manufacturer and same-team drivers' finishes move together (shared
+# aero/engine package, drafting help), so stacking them raises a lineup's CEILING
+# — the GPP goal. Reward manufacturer concentration (3+) and teammate pairs (2+).
+# Cash/Projection ignore this (stacking hurts the floor / doesn't help median).
+# The bonus is a FRACTION of the lineup's objective (comparable to the opt-score
+# gaps between candidate lineups), scaled by a user "stack bias" so the player
+# decides how much projection to trade for correlation. Stacking sacrifices some
+# raw projection, so this is a deliberate lever, not a forced behavior.
+_MFR_STACK_FRAC = 0.05    # per same-manufacturer car beyond 2 (× bias)
+_TEAM_STACK_FRAC = 0.07   # per teammate beyond 1 (× bias)
+_STACK_FRAC_CAP = 0.30    # pre-bias cap
+
+
+def _stack_counts(lineup):
+    from collections import Counter
+    mfrs = Counter((d.get("Manufacturer") or "").strip() for d in lineup
+                   if (d.get("Manufacturer") or "").strip())
+    teams = Counter((d.get("Team") or "").strip() for d in lineup
+                    if (d.get("Team") or "").strip())
+    return mfrs, teams
+
+
+def _stack_bonus(lineup, bias=0.4):
+    if bias <= 0:
+        return 0.0
+    mfrs, teams = _stack_counts(lineup)
+    frac = 0.0
+    for cnt in mfrs.values():
+        if cnt >= 3:
+            frac += (cnt - 2) * _MFR_STACK_FRAC
+    for cnt in teams.values():
+        if cnt >= 2:
+            frac += (cnt - 1) * _TEAM_STACK_FRAC
+    frac = min(frac, _STACK_FRAC_CAP) * bias
+    total = sum(d.get("Opt Score", d.get("Proj Score", 0)) or 0 for d in lineup)
+    return frac * total
+
+
+def _stack_label(lineup):
+    """Short human description of a lineup's stacks (e.g. '4 Toyota, 2 JGR')."""
+    mfrs, teams = _stack_counts(lineup)
+    parts = [f"{c} {m}" for m, c in sorted(mfrs.items(), key=lambda x: -x[1]) if c >= 3]
+    parts += [f"{c} {t}" for t, c in sorted(teams.items(), key=lambda x: -x[1]) if c >= 2]
+    return ", ".join(parts) if parts else "—"
+
+
+def _build_stack_seeds(candidates, slots, max_seeds=14):
+    """Strongest same-team pairs and same-manufacturer trios to FORCE as stack
+    seeds (a re-rank bonus alone can't create stacks the candidate pool lacks).
+    Each seed is a list of driver dicts, ranked by combined objective."""
+    from collections import defaultdict
+    by_team, by_mfr = defaultdict(list), defaultdict(list)
+    for d in candidates:
+        t = (d.get("Team") or "").strip()
+        m = (d.get("Manufacturer") or "").strip()
+        if t:
+            by_team[t].append(d)
+        if m:
+            by_mfr[m].append(d)
+
+    def _obj(d):
+        return d.get("Opt Score", d.get("Proj Score", 0)) or 0
+
+    seeds = []
+    for ds in by_team.values():           # top-2 of each team = a teammate pair
+        if len(ds) >= 2:
+            top = sorted(ds, key=_obj, reverse=True)[:2]
+            seeds.append((sum(_obj(x) for x in top), top))
+    if slots >= 3:
+        for ds in by_mfr.values():        # top-3 of each manufacturer = a mfr stack
+            if len(ds) >= 3:
+                top = sorted(ds, key=_obj, reverse=True)[:3]
+                seeds.append((sum(_obj(x) for x in top), top))
+    seeds.sort(key=lambda x: -x[0])
+    return [s for _, s in seeds[:max_seeds]]
+
+
 def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None,
-                          excluded=None, mode="gpp"):
+                          excluded=None, mode="gpp", stack_bias=0.4):
     """Build the single best lineup using branch-and-bound, on the mode objective
     (so it matches multi-lineup #1)."""
     locked = locked or []
     excluded = excluded or set()
+
+    # GPP is stack-aware (a lineup-level correlation bonus), which additive
+    # branch-and-bound can't express — so route it through the multi-lineup
+    # generator and take the top one. Guarantees single optimal == multi #1.
+    if (mode or "gpp").lower() == "gpp":
+        _lus = _generate_lineups(pool_df, salary_cap, roster_size, 1, 100,
+                                 mode="gpp", locked=locked, excluded=excluded,
+                                 stack_bias=stack_bias)
+        if _lus:
+            return _lus[0]
 
     available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
     available["Proj Score"] = available["Proj Score"].fillna(0)
@@ -389,7 +489,8 @@ def _get_swap_candidates(pool_df, current_lineup, swap_driver, salary_cap, roste
 
 
 def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
-                       max_exposure, mode="gpp", locked=None, excluded=None):
+                       max_exposure, mode="gpp", locked=None, excluded=None,
+                       stack_bias=0.4):
     """Generate multiple optimized lineups with exposure limits.
 
     Locked drivers bypass max exposure (always included).
@@ -436,6 +537,11 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
     exposure_count = {}
     # Locked drivers get unlimited exposure
     max_exp = max(1, int(num_lineups * max_exposure / 100)) if max_exposure < 100 else num_lineups
+    # GPP: generate a larger candidate pool, then re-rank with the stacking bonus
+    # so correlated lineups can rise to the top (a small bonus, so it mostly
+    # breaks ties between similar-projection lineups rather than overriding them).
+    is_gpp = (mode or "gpp").lower() == "gpp"
+    gen_target = max(num_lineups * 2, 25) if is_gpp else num_lineups
 
     def _add_lineup(lineup):
         key = tuple(sorted(d["Driver"] for d in lineup))
@@ -464,9 +570,9 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
     # Generate diverse lineups by excluding 1-2 drivers from previous lineups
     # Use shorter timeout for subsequent solves since they're generating variety
     attempts = 0
-    max_attempts = num_lineups * 8
+    max_attempts = gen_target * 8
 
-    while len(all_lineups) < num_lineups and attempts < max_attempts:
+    while len(all_lineups) < gen_target and attempts < max_attempts:
         attempts += 1
 
         if not all_lineups:
@@ -497,8 +603,28 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
         if alt:
             _add_lineup(locked_data + alt)
 
-    # Sort by total projected points
-    all_lineups.sort(key=lambda x: x[0], reverse=True)
+    # GPP stack-and-fill: force the strongest teammate pairs / manufacturer trios
+    # as seeds and fill the rest by objective, so genuinely correlated lineups
+    # exist in the pool (the re-rank below then floats them up).
+    if is_gpp and stack_bias > 0:
+        for seed in _build_stack_seeds(candidates, remaining_slots):
+            seed_names = {s["Driver"] for s in seed}
+            seed_sal = sum(s["DK Salary"] for s in seed)
+            n_fill = remaining_slots - len(seed)
+            if seed_sal > remaining_cap or n_fill < 0:
+                continue
+            rest = [d for d in candidates if d["Driver"] not in seed_names]
+            fill = _solve_optimal(rest, remaining_cap - seed_sal, n_fill,
+                                  timeout_ms=1200, objective_col=OBJ) if n_fill > 0 else []
+            if len(fill) == n_fill:
+                _add_lineup(locked_data + seed + fill)
+
+    # Rank: GPP adds the stacking bonus (correlated lineups rise); cash/projection
+    # rank purely on their objective. Keep the top num_lineups.
+    if is_gpp:
+        all_lineups.sort(key=lambda x: x[0] + _stack_bonus(x[1], stack_bias), reverse=True)
+    else:
+        all_lineups.sort(key=lambda x: x[0], reverse=True)
     return [lu for _, lu in all_lineups[:num_lineups]]
 
 
@@ -577,6 +703,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         max_exposure = st.slider("Max Exposure %", 10, 100,
                                  60 if mode == "GPP" else 100, 5, key="opt_exposure",
                                  help="Max % of lineups a non-locked driver can appear in")
+
+    # GPP-only: how hard to push team/manufacturer correlation (stacking). Stacking
+    # trades a little raw projection for upside correlation, so it's the player's call.
+    stack_bias = 0.0
+    if mode == "GPP":
+        stack_pct = st.slider(
+            "Stack bias %", 0, 100, 40, 5, key="opt_stack_bias",
+            help="How aggressively to build correlated lineups (teammates / same "
+                 "manufacturer). 0 = pure projection+leverage; higher forces "
+                 "team & manufacturer stacks (more upside, slightly lower median). "
+                 "Each lineup's Stack is shown below it.")
+        stack_bias = stack_pct / 100.0
 
     # Build projection pool (uses same weights as Projections tab)
     with st.spinner("Building projections..."):
@@ -864,7 +1002,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=_fresh_locked,
-                excluded=_fresh_excluded, mode=mode.lower())
+                excluded=_fresh_excluded, mode=mode.lower(), stack_bias=stack_bias)
             # Keep player pool open so user can continue making changes
             st.session_state.opt_pool_expanded = True
             st.rerun()
@@ -880,7 +1018,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     if not st.session_state.opt_lineup:
         st.session_state.opt_lineup = _build_optimal_lineup(
             pool, salary_cap, roster_size, locked=locked, excluded=excluded,
-            mode=mode.lower())
+            mode=mode.lower(), stack_bias=stack_bias)
 
     # Sync lineup scores with current pool (overrides may have changed)
     lineup = st.session_state.opt_lineup
@@ -911,7 +1049,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         del st.session_state[k]
                 st.session_state.opt_lineup = _build_optimal_lineup(
                     pool, salary_cap, roster_size,
-                    locked=locked, excluded=excluded, mode=mode.lower())
+                    locked=locked, excluded=excluded, mode=mode.lower(),
+                    stack_bias=stack_bias)
                 st.rerun()
 
         # ─── Lineup Quality Indicator ─────────────────────────────────
@@ -946,6 +1085,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                        / max(len(lineup), 1)) if lev_lookup else 0
             total_floor = sum(floor_lookup.get(d["Driver"], 0) or 0 for d in lineup)
             total_ceil = sum(ceil_lookup.get(d["Driver"], 0) or 0 for d in lineup)
+            # Stack composition (GPP correlation) from pool team/manufacturer.
+            team_lookup = pool.set_index("Driver")["Team"].to_dict() if "Team" in pool.columns else {}
+            mfr_lookup = pool.set_index("Driver")["Manufacturer"].to_dict() if "Manufacturer" in pool.columns else {}
+            _lu_meta = [{"Team": team_lookup.get(d["Driver"]),
+                         "Manufacturer": mfr_lookup.get(d["Driver"])} for d in lineup]
+            stack_txt = _stack_label(_lu_meta)
 
             # Ownership-level interpretation for GPP vs Cash
             if total_own > 0:
@@ -967,7 +1112,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             else:
                 own_display = '<span style="color:#94a3b8">— (run Projections tab)</span>'
 
-            q_cols = st.columns(5)
+            q_cols = st.columns(6)
             q_cols[0].markdown(
                 f'<div style="padding:4px;font-size:0.85rem;">'
                 f'<span style="color:#94a3b8">Doms:</span> '
@@ -993,6 +1138,11 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 f'<div style="padding:4px;font-size:0.85rem;">'
                 f'<span style="color:#94a3b8">Avg Proj:</span> '
                 f'<span style="font-weight:600">{total_pts / max(len(lineup),1):.1f}</span>'
+                f'</div>', unsafe_allow_html=True)
+            q_cols[5].markdown(
+                f'<div style="padding:4px;font-size:0.85rem;">'
+                f'<span style="color:#94a3b8">Stack:</span> '
+                f'<span style="font-weight:600">{stack_txt}</span>'
                 f'</div>', unsafe_allow_html=True)
         except Exception:
             # Quality indicator is informational — never block the optimizer
@@ -1091,7 +1241,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=_fresh_locked,
-                excluded=_fresh_excluded, mode=mode.lower())
+                excluded=_fresh_excluded, mode=mode.lower(), stack_bias=stack_bias)
             st.rerun()
 
     else:
@@ -1112,7 +1262,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         pool, salary_cap, roster_size, num_lineups,
                         max_exposure, mode.lower(),
                         locked=list(st.session_state.opt_locked),
-                        excluded=excluded)
+                        excluded=excluded, stack_bias=stack_bias)
                     st.session_state.opt_multi_lineups = multi
                     if not multi:
                         st.warning("No valid lineups found within salary cap.")
@@ -1165,8 +1315,11 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             total_pts = sum(d["Proj Score"] for d in lu)
             remaining = salary_cap - total_sal
 
+            _stk = _stack_label(lu)
+            _stk_txt = f" | Stack: {_stk}" if _stk != "—" else ""
             with st.expander(
-                f"Lineup {i + 1} -- {total_pts:.1f} pts | ${total_sal:,} | ${remaining:,} left",
+                f"Lineup {i + 1} -- {total_pts:.1f} pts | ${total_sal:,} | "
+                f"${remaining:,} left{_stk_txt}",
                 expanded=(i < 3)):
                 lu_df = pd.DataFrame([{
                     "Driver": d["Driver"],
