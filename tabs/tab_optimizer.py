@@ -311,14 +311,40 @@ def _solve_optimal(drivers, salary_cap, roster_size, timeout_ms=3000,
     return [drivers[i] for i in best_lineup[0]]
 
 
-def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None, excluded=None):
-    """Build the single best lineup using branch-and-bound solver."""
+def _add_opt_score(df, mode):
+    """Add an 'Opt Score' column = the mode-specific optimization objective, so
+    the single optimal lineup and the multi-lineup generator rank by the SAME
+    thing (multi-lineup #1 == the optimal shown). Cash weights floor; GPP weights
+    ceiling and downweights high ownership (leverage)."""
+    df = df.copy()
+    proj = df["Proj Score"].fillna(0)
+    floor = (df["Floor"] if "Floor" in df.columns else proj).fillna(proj)
+    ceil = (df["Ceiling"] if "Ceiling" in df.columns else proj).fillna(proj)
+    if (mode or "gpp").lower() == "cash":
+        df["Opt Score"] = 0.60 * floor + 0.40 * proj
+    else:
+        base = 0.60 * ceil + 0.40 * proj
+        if "Proj Own %" in df.columns:
+            own = df["Proj Own %"].fillna(0).clip(0, 100)
+            # 50%-owned -> x0.83, 5%-owned -> x0.98 — pulls GPP toward leverage.
+            lev = (1.0 - 0.0035 * own).clip(0.55, 1.0)
+            df["Opt Score"] = base * lev
+        else:
+            df["Opt Score"] = base
+    return df
+
+
+def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None,
+                          excluded=None, mode="gpp"):
+    """Build the single best lineup using branch-and-bound, on the mode objective
+    (so it matches multi-lineup #1)."""
     locked = locked or []
     excluded = excluded or set()
 
     available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
     available["Proj Score"] = available["Proj Score"].fillna(0)
     available["DK Salary"] = available["DK Salary"].fillna(0)
+    available = _add_opt_score(available, mode)
 
     # Handle locked drivers
     locked_data = []
@@ -337,7 +363,8 @@ def _build_optimal_lineup(pool_df, salary_cap, roster_size, locked=None, exclude
         return locked_data
 
     candidates = variable_pool.to_dict("records")
-    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots)
+    optimal = _solve_optimal(candidates, remaining_cap, remaining_slots,
+                             objective_col="Opt Score")
     return locked_data + optimal
 
 
@@ -375,28 +402,11 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
         return []
 
     # ── Mode-specific objective ──────────────────────────────────────────────
-    # Cash optimizes for FLOOR (consistent scorers) — you just need to beat ~half
-    # the field, so steady high-floor drivers win. GPP optimizes for CEILING and
-    # LEVERAGE — you need a top-1% score, so upside (dominators, deep-PD upside)
-    # plus low ownership wins. Both keep a median anchor so a high-variance dart
-    # with no real projection doesn't sneak in. Display still shows median Proj DK.
-    mode = (mode or "gpp").lower()
-    floor = available["Floor"] if "Floor" in available.columns else available["Proj Score"]
-    ceil = available["Ceiling"] if "Ceiling" in available.columns else available["Proj Score"]
-    floor = floor.fillna(available["Proj Score"])
-    ceil = ceil.fillna(available["Proj Score"])
-    if mode == "cash":
-        available["Opt Score"] = 0.60 * floor + 0.40 * available["Proj Score"]
-    else:  # gpp
-        base = 0.60 * ceil + 0.40 * available["Proj Score"]
-        if "Proj Own %" in available.columns:
-            own = available["Proj Own %"].fillna(0).clip(0, 100)
-            # Leverage factor: 50%-owned -> x0.83, 5%-owned -> x0.98. Pulls GPP
-            # lineups toward lower-owned upside without ignoring projection.
-            lev = (1.0 - 0.0035 * own).clip(0.55, 1.0)
-            available["Opt Score"] = base * lev
-        else:
-            available["Opt Score"] = base
+    # Cash optimizes for FLOOR (consistent scorers); GPP optimizes for CEILING +
+    # LEVERAGE (upside, lower-owned). Uses the SAME helper as _build_optimal_lineup
+    # so lineup #1 here equals the single optimal shown above. Display still shows
+    # median Proj DK.
+    available = _add_opt_score(available, mode)
     OBJ = "Opt Score"
 
     # Separate locked and variable pools
@@ -848,7 +858,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=_fresh_locked,
-                excluded=_fresh_excluded)
+                excluded=_fresh_excluded, mode=mode.lower())
             # Keep player pool open so user can continue making changes
             st.session_state.opt_pool_expanded = True
             st.rerun()
@@ -863,7 +873,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
 
     if not st.session_state.opt_lineup:
         st.session_state.opt_lineup = _build_optimal_lineup(
-            pool, salary_cap, roster_size, locked=locked, excluded=excluded)
+            pool, salary_cap, roster_size, locked=locked, excluded=excluded,
+            mode=mode.lower())
 
     # Sync lineup scores with current pool (overrides may have changed)
     lineup = st.session_state.opt_lineup
@@ -882,7 +893,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         remaining = salary_cap - total_sal
 
         hdr = st.columns([2, 1, 1, 1, 1])
-        hdr[0].markdown(f"**Optimal Lineup** — *{proj_source}*")
+        hdr[0].markdown(f"**Optimal Lineup ({mode})** — *{proj_source}*")
         hdr[1].metric("Projected", f"{total_pts:.1f}")
         hdr[2].metric("Salary", f"${total_sal:,}")
         hdr[3].metric("Remaining", f"${remaining:,}")
@@ -894,7 +905,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                         del st.session_state[k]
                 st.session_state.opt_lineup = _build_optimal_lineup(
                     pool, salary_cap, roster_size,
-                    locked=locked, excluded=excluded)
+                    locked=locked, excluded=excluded, mode=mode.lower())
                 st.rerun()
 
         # ─── Lineup Quality Indicator ─────────────────────────────────
@@ -1074,7 +1085,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.session_state.opt_lineup = _build_optimal_lineup(
                 pool, salary_cap, roster_size,
                 locked=_fresh_locked,
-                excluded=_fresh_excluded)
+                excluded=_fresh_excluded, mode=mode.lower())
             st.rerun()
 
     else:
