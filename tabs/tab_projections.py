@@ -1717,34 +1717,28 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         else:
             dnf_data[drv] = track_stats
 
-    # ── Rear-of-field starting penalties (pre-race) ───────────────────────────
+    # ── Rear-of-field starting penalties (manual) ─────────────────────────────
     # DK scores place differential off the QUALIFYING grid, but a driver sent to
     # the rear (unapproved adjustments / backup car / failed inspection) can't
-    # lead early laps or run up front. Pull the actual race-day grid, let the
-    # user confirm/add, and feed the rear start into dominator + fast-lap scoring
-    # (qualifying position still drives place differential, as DK scores it).
+    # lead early laps or run up front. There is NO reliable pre-race API source:
+    # the drops happen at the green flag and only appear in NASCAR's race-morning
+    # penalty report (the live-feed's starting_position field is unreliable
+    # pre-race), so flag them manually. Flagged drivers feed a rear start into
+    # dominator + fast-lap scoring; qualifying position still drives place
+    # differential and the displayed start, as DK scores it.
     grid_start, rear_drivers = {}, set()
-    if is_prerace and race_id:
-        from src.data import fetch_starting_grid
-        try:
-            _grid = fetch_starting_grid(series_id, race_id, season)
-        except Exception:
-            _grid = {}
-        _auto = sorted(d for d in drivers
-                       if _grid.get(d) and qual_pos.get(d)
-                       and _grid[d] - qual_pos[d] >= 10)
-        _lbl = "⬇ Starting at the rear (penalties)" + (f" — {len(_auto)} detected" if _auto else "")
-        with st.expander(_lbl, expanded=bool(_auto)):
-            st.caption("Drivers moved to the back lose laps-led / fast-laps upside; "
-                       "DK still scores their place differential from the qualifying "
-                       "grid. Auto-detected from the official race-day grid (empty "
-                       "until it's posted on race morning) — add or remove as needed.")
+    if is_prerace:
+        with st.expander("⬇ Starting at the rear (penalties)"):
+            st.caption("Flag drivers moved to the back (unapproved adjustments, "
+                       "backup car, failed inspection — from NASCAR's race-morning "
+                       "report). They lose laps-led / fast-laps upside; DK still "
+                       "scores their place differential from the qualifying grid.")
             picked = st.multiselect("Drivers starting at the rear", options=sorted(drivers),
-                                    default=_auto, key=f"rear_{series_id}_{race_id}",
+                                    default=[], key=f"rear_{series_id}_{race_id}",
                                     label_visibility="collapsed")
         rear_drivers = set(picked)
         for d in rear_drivers:
-            grid_start[d] = _grid.get(d) or field_size
+            grid_start[d] = field_size   # line them up at the back
 
     # ── Run shared projection engine ──────────────────────────────────────────
     # Both the Projections tab and Accuracy tab call this same function to

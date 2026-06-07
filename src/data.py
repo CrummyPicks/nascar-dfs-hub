@@ -364,13 +364,16 @@ def fetch_lap_times(series_id: int, race_id: int, year: int = None) -> Optional[
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_starting_grid(series_id: int, race_id: int, year: int = None) -> dict:
-    """Actual race-day starting grid from the LIVE timing feed.
+    """Per-car `starting_position` from the LIVE timing feed.
 
-    Unlike the weekend-feed (whose starting_position just mirrors qualifying),
-    this feed's starting_position reflects rear-of-field penalties — unapproved
-    adjustments, backup car, failed inspection. Returns {clean_driver_name:
-    starting_position}. Empty when the grid isn't posted yet (before race day)
-    or the feed is unavailable, so callers fall back to qualifying position.
+    WARNING — NOT a reliable rear-penalty source. Verified against a live race:
+    this field is inverted / garbage in the pre-race state (it put the pole
+    sitter 37th and a part-timer on the pole). Rear-of-field penalties (unapproved
+    adjustments, backup car, failed inspection) are applied AT the green flag and
+    only published cleanly in NASCAR's race-morning penalty report — they don't
+    appear usably in any pre-race feed. Kept for reference only; the Projections
+    tab flags rear starts manually instead. Returns {clean_driver_name:
+    starting_position}; empty on failure.
     """
     if not race_id:
         return {}
