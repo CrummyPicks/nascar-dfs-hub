@@ -436,6 +436,7 @@ def compute_projections(
     dom_raw_scores = {}
     fl_raw_scores = {}
     driver_signal_details = {}
+    dnf_prob_map = {}   # driver -> P(DNF this race), for the DNF-aware floor
 
     ll_ref = calibration.get("avg_top_leader", race_laps * 0.35) if calibration else race_laps * 0.35
 
@@ -592,6 +593,10 @@ def compute_projections(
             mech_rate = dnf["dnf_rate"] - crash_rate
             risk_penalty = crash_rate * penalty_weight + mech_rate * (penalty_weight * 0.3)
             raw_finish = raw_finish + risk_penalty * 10
+            # P(DNF this race) for the DNF-aware floor (capped — even wreck-prone
+            # drivers finish most weeks). Used to drag the FLOOR down so cash mode
+            # avoids blow-up risk; the median is left alone.
+            dnf_prob_map[d] = min(0.35, dnf["dnf_rate"])
 
         driver_raw_scores[d] = raw_finish
         driver_signal_details[d] = sig_detail
@@ -857,9 +862,18 @@ def compute_projections(
         _sig = _ramp_sigma(_c, field_size)
         _floor_fin = min(float(field_size), _c + _sig)
         _ceil_fin = max(1.0, _c - _sig)
-        proj_floor = round(max(0.0,
+        proj_floor = max(0.0,
             _expected_finish_pts(_floor_fin) + (start_pos - _floor_fin)
-            + led_pts * 0.10 + fl_pts * 0.20), 1)
+            + led_pts * 0.10 + fl_pts * 0.20)
+        # DNF-aware floor: blend in the chance the race ends in a DNF (~last,
+        # no laps led). Drags wreck-prone drivers' floors down so cash mode
+        # avoids them; doesn't touch the median or ceiling.
+        _pdnf = dnf_prob_map.get(d, 0.0)
+        if _pdnf > 0:
+            _dnf_score = max(0.0, _expected_finish_pts(field_size)
+                             + (start_pos - field_size))
+            proj_floor = (1.0 - _pdnf) * proj_floor + _pdnf * _dnf_score
+        proj_floor = round(proj_floor, 1)
         _ceil_led = min(race_laps * 0.25, led_pts * 2.0) if race_laps > 0 else 0.0
         proj_ceiling = round(
             _expected_finish_pts(_ceil_fin) + (start_pos - _ceil_fin)
