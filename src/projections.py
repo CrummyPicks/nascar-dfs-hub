@@ -190,6 +190,7 @@ def compute_projections(
     race_laps, track_name, track_type, series_id,
     calibration, cross_th_lookup=None,
     return_signal_details=False,
+    grid_start=None,
 ):
     """Run the full projection engine.
 
@@ -598,7 +599,12 @@ def compute_projections(
         # ── Dominator scoring ──
         th = th_data.get(d)
         tt = tt_data.get(d)
-        qp = qual_pos.get(d)
+        # Dominator / fast-lap scoring keys off the ACTUAL race-day grid: a driver
+        # sent to the rear (unapproved adjustments, backup car, failed inspection)
+        # won't lead early laps or run up front, no matter where he qualified. The
+        # qualifying position still drives the FINISH qual signal (pace proxy) and
+        # place differential below — DK scores PD off the qualified grid.
+        qp = (grid_start.get(d) if grid_start else None) or qual_pos.get(d)
         pr = practice_data.get(d) if practice_data else None
         od = odds_finish.get(d)
 
@@ -793,7 +799,15 @@ def compute_projections(
         if odds_finish.get(d):
             return round(odds_finish[d])
         return round(field_size * 0.5)
-    start_for_alloc = {d: _resolve_start(d) for d in drivers}
+    # pd_start = qualifying position (drives place differential + the displayed
+    # start — DK scores PD off the qualified grid). start_for_alloc = the ACTUAL
+    # race-day grid (rear for penalty drivers) so the laps-led gate damps a car
+    # sent to the back. They're identical for everyone NOT moved to the rear.
+    pd_start = {d: _resolve_start(d) for d in drivers}
+    start_for_alloc = {
+        d: ((grid_start.get(d) if grid_start else None) or pd_start[d])
+        for d in drivers
+    }
 
     # ── Allocate laps led and fastest laps ──
     allocated_ll = _allocate_laps_led(
@@ -820,9 +834,10 @@ def compute_projections(
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
-        # Start position — reuse the resolution computed for the laps-led start
-        # gate so the displayed start matches the start that gated the laps.
-        start_pos = start_for_alloc[d]
+        # Displayed start + place differential use the QUALIFYING position (DK
+        # scores PD off the qualified grid, not the penalty box). The rear grid
+        # start only drives laps-led / fast-laps scoring above.
+        start_pos = pd_start[d]
 
         # Finish points + place differential are the EXPECTED value over the
         # finish distribution (not read off one forced integer position).

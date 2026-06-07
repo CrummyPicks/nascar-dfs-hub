@@ -1717,6 +1717,35 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         else:
             dnf_data[drv] = track_stats
 
+    # ── Rear-of-field starting penalties (pre-race) ───────────────────────────
+    # DK scores place differential off the QUALIFYING grid, but a driver sent to
+    # the rear (unapproved adjustments / backup car / failed inspection) can't
+    # lead early laps or run up front. Pull the actual race-day grid, let the
+    # user confirm/add, and feed the rear start into dominator + fast-lap scoring
+    # (qualifying position still drives place differential, as DK scores it).
+    grid_start, rear_drivers = {}, set()
+    if is_prerace and race_id:
+        from src.data import fetch_starting_grid
+        try:
+            _grid = fetch_starting_grid(series_id, race_id, season)
+        except Exception:
+            _grid = {}
+        _auto = sorted(d for d in drivers
+                       if _grid.get(d) and qual_pos.get(d)
+                       and _grid[d] - qual_pos[d] >= 10)
+        _lbl = "⬇ Starting at the rear (penalties)" + (f" — {len(_auto)} detected" if _auto else "")
+        with st.expander(_lbl, expanded=bool(_auto)):
+            st.caption("Drivers moved to the back lose laps-led / fast-laps upside; "
+                       "DK still scores their place differential from the qualifying "
+                       "grid. Auto-detected from the official race-day grid (empty "
+                       "until it's posted on race morning) — add or remove as needed.")
+            picked = st.multiselect("Drivers starting at the rear", options=sorted(drivers),
+                                    default=_auto, key=f"rear_{series_id}_{race_id}",
+                                    label_visibility="collapsed")
+        rear_drivers = set(picked)
+        for d in rear_drivers:
+            grid_start[d] = _grid.get(d) or field_size
+
     # ── Run shared projection engine ──────────────────────────────────────────
     # Both the Projections tab and Accuracy tab call this same function to
     # guarantee identical math.  Data loading above is tab-specific, but the
@@ -1745,6 +1774,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         calibration=calibration,
         cross_th_lookup=cross_th_lookup,
         return_signal_details=True,
+        grid_start=grid_start,
     )
 
     # ── Build display rows from projection results ──────────────────────────
@@ -1975,9 +2005,22 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     from src.components import build_projection_column_config, interactive_drill_down_dataframe
     disp = proj[avail].copy()
     col_config = build_projection_column_config(disp)
-    st.caption("Click any driver row for race-by-race history at this track")
+    cap = "Click any driver row for race-by-race history at this track"
+    if rear_drivers:
+        cap += "  ·  🟠 amber = starting at the rear (dominator upside removed, PD still off qualifying)"
+    st.caption(cap)
+    _show = safe_fillna(disp)
+    if rear_drivers and "Driver" in _show.columns:
+        # Amber the names of drivers sent to the rear (text only — leaves the
+        # Driver value intact so the click-to-drill popup still resolves).
+        def _hl_rear(col):
+            if col.name != "Driver":
+                return ["" for _ in col]
+            return ["color:#f59e0b;font-weight:700" if str(v) in rear_drivers else ""
+                    for v in col]
+        _show = _show.style.apply(_hl_rear, axis=0)
     interactive_drill_down_dataframe(
-        safe_fillna(disp),
+        _show,
         key=f"proj_main_{series_id}_{race_id}",
         series_id=series_id, track_name=track_name,
         width="stretch", hide_index=False, height=550,

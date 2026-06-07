@@ -362,6 +362,34 @@ def fetch_lap_times(series_id: int, race_id: int, year: int = None) -> Optional[
         return None
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_starting_grid(series_id: int, race_id: int, year: int = None) -> dict:
+    """Actual race-day starting grid from the LIVE timing feed.
+
+    Unlike the weekend-feed (whose starting_position just mirrors qualifying),
+    this feed's starting_position reflects rear-of-field penalties — unapproved
+    adjustments, backup car, failed inspection. Returns {clean_driver_name:
+    starting_position}. Empty when the grid isn't posted yet (before race day)
+    or the feed is unavailable, so callers fall back to qualifying position.
+    """
+    if not race_id:
+        return {}
+    url = f"https://cf.nascar.com/live/feeds/series_{series_id}/{race_id}/live_feed.json"
+    try:
+        r = requests.get(url, timeout=20)
+        data = r.json() if r.status_code == 200 else None
+    except Exception:
+        return {}
+    out = {}
+    for v in (data or {}).get("vehicles", []) or []:
+        drv = v.get("driver") or {}
+        nm = drv.get("full_name")
+        sp = v.get("starting_position")
+        if nm and sp:
+            out[_clean_api_name(nm)] = sp
+    return out
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _parse_lap_avg_session(session: dict) -> pd.DataFrame:
     """Parse a single lap-averages session into a DataFrame."""
