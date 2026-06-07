@@ -1802,6 +1802,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         rows.append({
             "Driver": d,
             "Proj DK": pr["proj_dk"],
+            "Floor": pr.get("proj_floor"),
+            "Ceiling": pr.get("proj_ceiling"),
             "Proj Finish": pr["proj_finish"],
             "Win Odds": odds_numeric,
             "Impl %": odds_info.get("impl_pct", None),
@@ -1946,6 +1948,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     if "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
     display_cols.append("Proj DK")
+    if "Floor" in proj.columns:
+        display_cols.append("Floor")
+    if "Ceiling" in proj.columns:
+        display_cols.append("Ceiling")
     if "Value" in proj.columns:
         display_cols.append("Value")
     if "GPP Own%" in proj.columns:
