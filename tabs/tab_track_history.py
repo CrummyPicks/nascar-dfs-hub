@@ -174,7 +174,7 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
             if box_fig:
                 st.plotly_chart(box_fig, width="stretch")
         else:
-            st.info(f"No data found for {track_name}. Run `python refresh_data.py --all` to populate.")
+            st.info(f"No data found for {track_name}. Run `python scripts/refresh_data.py --all` to populate.")
 
     elif hist_view == _season_view_label:
         st.caption(f"Aggregated from {_cy} races at {track_name}  •  Click any driver row for race-by-race history")
@@ -337,7 +337,7 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id, *,
             )
         else:
             st.info(f"No data found for {_format_type_label(track_type_filter)}. "
-                    f"Run `python refresh_data.py --all` to populate.")
+                    f"Run `python scripts/refresh_data.py --all` to populate.")
 
     elif hist_view == _season_view_label:
         st.caption(f"Season data filtered to {_format_type_label(track_type_filter)} tracks ({_cy} only)")
@@ -355,4 +355,4 @@ def _render_track_type_filtered(track_type_filter, hist_view, series_id, *,
             )
         else:
             st.info(f"No season data for {_format_type_label(track_type_filter)}. "
-                    f"Run `python refresh_data.py` to populate race data.")
+                    f"Run `python scripts/refresh_data.py` to populate race data.")

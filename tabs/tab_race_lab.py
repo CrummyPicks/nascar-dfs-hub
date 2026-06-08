@@ -76,7 +76,7 @@ def _render_aggregate(scope, track_name, track_type, series_id):
                          reverse=True)
     if not years_avail:
         st.info(f"No stage / run-pace data stored for **{scope_label}** yet. "
-                "Run `python refresh_data.py` to populate it.")
+                "Run `python scripts/refresh_data.py` to populate it.")
         return
 
     sel_years = st.multiselect("Seasons", years_avail, default=years_avail,
@@ -156,7 +156,7 @@ def _render_single_race(completed_races, series_id, selected_year):
     if not rows:
         st.warning(
             "No per-stage data for this race yet. Stage metrics are computed from "
-            "the lap-times feed and backfilled — run `python refresh_data.py` to "
+            "the lap-times feed and backfilled — run `python scripts/refresh_data.py` to "
             "populate recent races."
         )
         _render_field_fallback(db_id, series_id=series_id, track_name=_track)
@@ -339,7 +339,7 @@ def _render_run_pace_agg(run_agg, single_track, *, series_id=None,
     rows = run_agg.get("rows", [])
     if not rows:
         st.info("No long-run / restart data stored for this scope yet. "
-                "Run `python refresh_data.py` to populate it.")
+                "Run `python scripts/refresh_data.py` to populate it.")
         return
     df = pd.DataFrame(rows)
     if single_track:

@@ -31,3 +31,6 @@ Thumbs.db
 exports/
 cache/
 *.log
+
+# Internal reference doc — keep local, do not publish to the repo
+APP_REFERENCE.md

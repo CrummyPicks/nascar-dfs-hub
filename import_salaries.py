@@ -352,7 +352,7 @@ def import_odds():
     else:
         print(f"\n  WARNING: 0 odds saved to DB!")
         print(f"  The race may not have resolved to a DB entry.")
-        print(f"  Try running: python refresh_data.py")
+        print(f"  Try running: python scripts/refresh_data.py")
         return None
 
 
@@ -451,7 +451,7 @@ def import_salary(recent_files):
         return race_name, count, "salaries"
     else:
         print(f"\n  WARNING: No salaries saved — race may not be in DB yet.")
-        print(f"  Try running: python refresh_data.py")
+        print(f"  Try running: python scripts/refresh_data.py")
         return None
 
 

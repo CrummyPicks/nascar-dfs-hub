@@ -2091,7 +2091,7 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
     if signal_summary["odds"] < len(race_data) * 0.5:
         missing = len(race_data) - signal_summary["odds"]
         st.caption(f"⚠️ Odds missing for {missing}/{len(race_data)} races — "
-                   f"run `python refresh_data.py --odds` before each race to save odds for backtesting")
+                   f"run `python scripts/refresh_data.py --odds` before each race to save odds for backtesting")
 
     # Test each weight combination
     combo_results = []

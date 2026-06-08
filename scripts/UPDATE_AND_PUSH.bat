@@ -4,12 +4,14 @@ echo   NASCAR DFS Hub — Update Data + Push to GitHub
 echo ============================================================
 echo.
 
+cd /d "%~dp0.."
+
 :: Step 1: Refresh data for all three series
 echo [1/3] Fetching latest race data...
 echo.
-python refresh_data.py --series cup
-python refresh_data.py --series xfinity
-python refresh_data.py --series truck
+python scripts\refresh_data.py --series cup
+python scripts\refresh_data.py --series xfinity
+python scripts\refresh_data.py --series truck
 
 :: Step 2: Stage and commit
 echo.

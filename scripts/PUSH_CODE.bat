@@ -8,7 +8,7 @@ echo This pushes all code changes AND the database
 echo to ensure salary data is never lost on deploy.
 echo.
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 git add -A
 git add nascar.db

@@ -10,17 +10,17 @@ A comprehensive NASCAR Daily Fantasy Sports (DFS) analysis tool built with Strea
 
 ### 1. Install Dependencies
 ```bash
-pip install streamlit pandas numpy plotly requests beautifulsoup4 lxml
+pip install -r requirements.txt
 ```
 
 ### 2. Initialize the Database
 ```bash
-python setup_db.py
+python scripts/setup_db.py
 ```
 
 ### 3. Populate Historical Data
 ```bash
-python refresh_data.py --all        # Fetch ALL series, ALL years (2022-2026)
+python scripts/refresh_data.py --all   # Fetch ALL series, ALL years (2022-2026)
 ```
 
 ### 4. Backfill Average Running Position
@@ -57,11 +57,13 @@ Salaries are stored in the database per race and persist across deploys via git.
 
 ### After Each Race
 
-Race results are automatically fetched from the NASCAR API when you view a completed race. To bulk-refresh:
+Race results refresh **automatically every day** via a GitHub Action
+(`.github/workflows/refresh-data.yml`), which commits the updated `nascar.db`.
+You normally do not need to refresh manually. For a one-off bulk refresh:
 
 ```bash
-python refresh_data.py              # Fetch new Cup 2026 races
-python refresh_data.py --all        # All series, all years
+python scripts/refresh_data.py              # Fetch new Cup 2026 races
+python scripts/refresh_data.py --all        # All series, all years
 ```
 
 ---
@@ -136,7 +138,7 @@ Non-admin users see read-only mode with all saved data visible.
 |--------|------|-----|
 | NASCAR API | Race results, qualifying, entry lists, lap times, practice | Automatic on page load |
 | Action Network | Win odds (Cup series only) | Automatic (cached 30 min) |
-| Database (nascar.db) | Historical results, ARP, DFS points, salaries, odds | `refresh_data.py` + `import_salaries.py` |
+| Database (nascar.db) | Historical results, ARP, DFS points, salaries, odds | `scripts/refresh_data.py` (daily Action) + `import_salaries.py` |
 | Manual upload | DK/FD salary CSVs | Admin settings panel |
 
 ---
@@ -145,12 +147,11 @@ Non-admin users see read-only mode with all saved data visible.
 
 ```
 NASCAR DFS/
-├── nascar_dfs_app.py        # Main Streamlit app
-├── setup_db.py              # Database schema initialization
-├── refresh_data.py          # Local data refresh CLI
-├── import_salaries.py       # DK/FD salary CSV import + git push
-├── projections.py           # Backend projection engine (DB-backed)
+├── nascar_dfs_app.py        # Main Streamlit app (Streamlit Cloud entry point)
+├── import_salaries.py       # DK/FD salary CSV import + git push (run manually)
+├── IMPORT_SALARIES.bat      # Double-click wrapper for import_salaries.py
 ├── nascar.db                # SQLite database (committed to git)
+├── requirements.txt         # Python dependencies
 │
 ├── src/                     # Core modules
 │   ├── config.py            # Constants, track maps, DFS scoring tables
@@ -168,15 +169,25 @@ NASCAR DFS/
 │   ├── tab_optimizer.py     # Optimizer tab
 │   └── tab_accuracy.py      # Accuracy backtesting tab
 │
-├── scrapers/                # Data collection scripts
+├── scrapers/                # Data collection / backfill modules
 │   ├── racing_reference.py  # Historical results scraper
 │   ├── salaries.py          # DK/FD salary scraper
 │   ├── backfill_arp.py      # ARP backfill from NASCAR API lap-times
+│   ├── backfill_ratings.py  # NASCAR Driver Rating + pit + run-pace backfill
+│   ├── backfill_fastest_laps.py
 │   └── frcspro.py           # Alternative data source
 │
-├── IMPORT_SALARIES.bat      # Double-click salary import (Windows)
-├── REFRESH_DATA.bat          # Double-click data refresh (Windows)
-├── START_APP.bat             # Double-click app launcher (Windows)
+├── scripts/                 # Maintenance tooling (not needed day-to-day)
+│   ├── setup_db.py          # Database schema initialization
+│   ├── refresh_data.py      # Data refresh CLI (runs daily via GitHub Action)
+│   ├── backtest_weights.py  # Offline projection-weight backtest harness
+│   ├── START_APP.bat        # Double-click local app launcher (Windows)
+│   ├── REFRESH_DATA.bat     # Manual data refresh (refresh is automatic)
+│   ├── UPDATE_AND_PUSH.bat  # Refresh + commit + push
+│   ├── PUSH_CODE.bat        # Commit + push code/DB
+│   └── SETUP.bat            # First-time pip install
+│
+├── .github/workflows/       # GitHub Actions (daily auto data refresh)
 ├── .streamlit/config.toml   # Theme configuration
 └── README.md                # This file
 ```
@@ -185,7 +196,7 @@ NASCAR DFS/
 
 ## Database Schema
 
-`setup_db.py` creates the SQLite database with these tables:
+`scripts/setup_db.py` creates the SQLite database with these tables:
 
 | Table | Purpose |
 |-------|---------|
@@ -201,7 +212,7 @@ NASCAR DFS/
 | `salaries` | DK/FD salary data per race |
 | `projections` | Saved projection outputs |
 
-The database is committed to git so Streamlit Cloud always has data. Run `setup_db.py` only once to create the schema; `refresh_data.py` populates it.
+The database is committed to git so Streamlit Cloud always has data. Run `scripts/setup_db.py` only once to create the schema; `scripts/refresh_data.py` populates it.
 
 ---
 

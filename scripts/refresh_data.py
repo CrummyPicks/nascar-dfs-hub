@@ -13,8 +13,13 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from datetime import datetime
+
+# This script lives in scripts/; add the repo root so `import src.*` resolves
+# whether it's run as `python scripts/refresh_data.py` or from inside scripts/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import SERIES_OPTIONS
 from src.data import (

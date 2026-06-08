@@ -6,7 +6,9 @@ Creates nascar.db with all required tables.
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nascar.db")
+# nascar.db lives at the repo root (one level up from scripts/).
+DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nascar.db")
 
 
 def create_database():

@@ -35,7 +35,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Ensure schema is current
-        run: python setup_db.py
+        run: python scripts/setup_db.py
 
       - name: Refresh current season (all series)
         # --year omitted on purpose: refresh_data computes CURRENT_SEASON itself.
@@ -43,9 +43,9 @@ jobs:
         # only_missing, so the 2nd/3rd invocations are fast. Odds failures are
         # already non-fatal inside refresh_data.
         run: |
-          python refresh_data.py --series cup
-          python refresh_data.py --series xfinity
-          python refresh_data.py --series truck
+          python scripts/refresh_data.py --series cup
+          python scripts/refresh_data.py --series xfinity
+          python scripts/refresh_data.py --series truck
 
       - name: Commit updated database
         run: |

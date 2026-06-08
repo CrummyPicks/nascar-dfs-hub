@@ -6,12 +6,13 @@ echo.
 echo Installing required Python packages...
 echo.
 
+cd /d "%~dp0.."
 python -m pip install --upgrade pip
-python -m pip install streamlit pandas numpy plotly requests beautifulsoup4 lxml openpyxl
+python -m pip install -r requirements.txt
 
 echo.
 echo ============================================
 echo   Setup complete!
-echo   Run START_APP.bat to launch the app.
+echo   Run scripts\START_APP.bat to launch the app.
 echo ============================================
 pause

@@ -21,7 +21,8 @@ and among DEEP starters (start >= 20) — the value-play tier we care about.
 Usage:  python backtest_weights.py
 """
 import sys, os, math, sqlite3
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Lives in scripts/; add the repo root so `import src.*` / `import tabs.*` resolve.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (DB_PATH, CROSS_SERIES_HIERARCHY, TRACK_TYPE_MAP,
                         TRACK_TYPE_PARENT, TRACK_TYPE_WEIGHT_DEFAULTS)
