@@ -110,7 +110,12 @@ def _target_ranges_expander(metric_keys, key=None):
             band = _TARGET_RANGES.get(k)
             if not band:
                 continue
-            elite, good, needs = [b.strip() for b in band.split("|")]
+            # Split on the " | " delimiter (NOT bare "|") — bias bands contain
+            # literal pipes, e.g. "|bias| < 3 | 3 - 8 | > 8".
+            parts = [b.strip() for b in band.split(" | ")]
+            if len(parts) != 3:
+                continue
+            elite, good, needs = parts
             rows.append(f"| **{k}** | {elite} | {good} | {needs} |")
         st.markdown("\n".join(rows) +
             "\n\nNASCAR has high variance — even sharp models have off races. "
