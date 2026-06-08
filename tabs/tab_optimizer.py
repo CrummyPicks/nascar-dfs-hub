@@ -502,6 +502,11 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
 
     available = pool_df[~pool_df["Driver"].isin(excluded)].copy()
     available["Proj Score"] = available["Proj Score"].fillna(0)
+    # Value is optional — lean pools (e.g. the post-race optimal in the Race
+    # Analyzer) only carry Proj Score + DK Salary. Default it so the GPP path,
+    # which routes through here, never KeyErrors on a missing column.
+    if "Value" not in available.columns:
+        available["Value"] = 0.0
     available["Value"] = available["Value"].fillna(0)
     available["DK Salary"] = available["DK Salary"].fillna(0)
     if available.empty or len(available) < roster_size:
