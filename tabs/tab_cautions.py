@@ -151,16 +151,21 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
                    "publish pit timing for every event — most common for some "
                    "Truck/Xfinity races).")
     if pit_rows:
-        st.caption("Avg/Best Box = stationary time on 4-tire stops only (the "
-                   "crew's speed) — 2-tire, fuel-only and unmeasured stops are "
-                   "excluded so the comparison is apples-to-apples. Green Stops = "
-                   "stops taken under green.")
+        st.caption("Avg/Best Box = stationary time on 4-tire stops; Best 2T = "
+                   "fastest 2-tire stop. Fuel-only and unmeasured stops are "
+                   "excluded. NASCAR's feed sometimes mislabels 2-tire stops as "
+                   "4-tire — any '4-tire' stop under 7.5s (physically impossible) "
+                   "is counted as 2-tire so crew averages stay honest. Green "
+                   "Stops = stops taken under green.")
         cols = [c for c in ["Driver", "Stops", "4-Tire Stops", "Avg Box (s)",
-                            "Best Box (s)", "Green Stops"] if c in pit_rows[0]]
+                            "Best Box (s)", "2-Tire Stops", "Best 2T (s)",
+                            "Green Stops"] if c in pit_rows[0]]
         pdf = pd.DataFrame(pit_rows)[cols]
         styled_p = pdf.style.format(
             {"Avg Box (s)": "{:.1f}", "Best Box (s)": "{:.1f}",
-             "Stops": "{:.0f}", "4-Tire Stops": "{:.0f}", "Green Stops": "{:.0f}"},
+             "Best 2T (s)": "{:.1f}", "Stops": "{:.0f}",
+             "4-Tire Stops": "{:.0f}", "2-Tire Stops": "{:.0f}",
+             "Green Stops": "{:.0f}"},
             na_rep="—")
         st.dataframe(styled_p, width="stretch", hide_index=True,
                      height=min(620, 60 + len(pdf) * 35))

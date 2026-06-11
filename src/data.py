@@ -1398,10 +1398,17 @@ def query_race_cautions(series_id: int, api_race_id: int, year: int,
         cars = _re.findall(r"\d+", head) if has_car_list else []
         cars_csv = ", ".join(cars)
         bene = seg.get("beneficiary_car_number")
+        # NASCAR sometimes labels the reason 'Unknown' while the comment says
+        # exactly what happened ("#6 Slow On Track") — fall back to the
+        # comment text minus the leading car list.
+        reason = seg.get("reason") or ""
+        if reason.strip().lower() in ("", "unknown", "—"):
+            rest = _re.sub(r'^\s*(?:#|Nos?\.\s*)[\d,\s]*', '', comment or "").strip(" -—")
+            reason = rest or reason or "—"
         cautions.append({
             "Caution": i,
             "Laps": f"{start}-{end}" if start is not None else "—",
-            "Reason": seg.get("reason") or "—",
+            "Reason": reason,
             "Laps#": (end - start + 1) if (start is not None and end is not None) else None,
             "Involved": _names(cars_csv),
             "Cars": cars_csv or "—",
@@ -1629,8 +1636,28 @@ def query_race_pit_summary(db_race_id: int, cautions: list = None) -> dict:
     def _is_four(stype):
         return (stype or "").upper().startswith("FOUR")
 
+    def _is_two(stype):
+        return (stype or "").upper().startswith("TWO")
+
+    # NASCAR's stop_type labels are UNRELIABLE: the feed tags some ~5s stops
+    # FOUR_WHEEL_CHANGE (verified vs 2026 Michigan — physically impossible;
+    # elite 4-tire stops are ~8.5-9s). Physics guard: a measured stop under
+    # 7.5s cannot be four tires — reclassify it as a 2-tire stop so it stops
+    # corrupting the 4-tire crew-speed averages and the slow-stop median.
+    MIN_FOUR_TIRE_BOX = 7.5
+
+    def _classify(stype, box):
+        """Return 'four', 'two', or None (unmeasured / fuel-only / other)."""
+        if not box or box <= 0:
+            return None
+        if _is_four(stype):
+            return "four" if box >= MIN_FOUR_TIRE_BOX else "two"
+        if _is_two(stype):
+            return "two"
+        return None
+
     # Field-median four-tire box time, for the slow-stop anomaly threshold.
-    four_box = [r[2] for r in rows if _is_four(r[4]) and r[2] and r[2] > 0]
+    four_box = [r[2] for r in rows if _classify(r[4], r[2]) == "four"]
     med_box = None
     if four_box:
         gb = sorted(four_box); n = len(gb)
@@ -1662,25 +1689,33 @@ def query_race_pit_summary(db_race_id: int, cautions: list = None) -> dict:
     repairs = []
     for name, lap, box, flag, stype in rows:
         d = by_driver.setdefault(name, {"Driver": name, "Stops": 0,
-                                        "_box": [], "Green Stops": 0})
+                                        "_box": [], "_box2": [],
+                                        "Green Stops": 0})
         d["Stops"] += 1
         if flag == 1:
             d["Green Stops"] += 1
-        # Only comparable, measured four-tire stops feed the crew-speed metric.
-        if _is_four(stype) and box and box > 0:
+        kind = _classify(stype, box)
+        if kind == "four":
+            # Only comparable, measured four-tire stops feed the crew-speed
+            # metric and the slow-stop anomaly detection.
             d["_box"].append(box)
             if med_box and box > med_box * 1.5:
                 bucket, why = _attribute_slow_stop(name, lap, box)
                 entry = {"Driver": name, "Lap": lap, "Box (s)": round(box, 1),
                          "Why": why}
                 (repairs if bucket == "repair" else likely).append(entry)
+        elif kind == "two":
+            d["_box2"].append(box)
 
     out_rows = []
     for d in by_driver.values():
         boxes = d.pop("_box")
+        boxes2 = d.pop("_box2")
         d["4-Tire Stops"] = len(boxes)
         d["Avg Box (s)"] = round(sum(boxes) / len(boxes), 1) if boxes else None
         d["Best Box (s)"] = round(min(boxes), 1) if boxes else None
+        d["2-Tire Stops"] = len(boxes2)
+        d["Best 2T (s)"] = round(min(boxes2), 1) if boxes2 else None
         out_rows.append(d)
     out_rows.sort(key=lambda x: (x["Avg Box (s)"] is None, x["Avg Box (s)"] or 999))
     likely.sort(key=lambda x: x["Lap"])

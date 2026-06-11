@@ -250,21 +250,59 @@ div[data-testid="stRadio"] label:has(input:checked) {
     border-radius: 6px !important;
 }
 
-/* ── Status strip ── */
+/* ── Status strip — page chip + data-readiness chips ── */
 .status-strip {
-    display: flex; flex-wrap: wrap; gap: 0.5rem 1.1rem; align-items: center;
+    display: flex; flex-wrap: wrap; gap: 0.45rem 0.55rem; align-items: center;
     background: #0f172a; border: 1px solid #1e293b; border-radius: 10px;
-    padding: 6px 14px; margin: 0.25rem 0 0.4rem;
-    font-size: 0.78rem; font-weight: 600; color: #94a3b8;
+    padding: 7px 12px; margin: 0.25rem 0 0.4rem;
 }
-.status-strip .ok   { color: #4ade80; }
-.status-strip .miss { color: #f87171; }
+.status-strip .page-chip {
+    font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+    font-size: 1.15rem; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; color: #38bdf8;
+    padding: 0 10px 0 2px; border-right: 2px solid #1e293b;
+    margin-right: 0.3rem; line-height: 1.4;
+}
+.status-strip .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: #111827; border: 1px solid #1e293b; border-radius: 999px;
+    padding: 3px 12px;
+}
+.status-strip .chip .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+}
+.status-strip .chip.ok .dot   { background: #4ade80; box-shadow: 0 0 6px #4ade8088; }
+.status-strip .chip.miss .dot { background: #64748b; }
+.status-strip .chip .lbl {
+    font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 1.2px;
+    text-transform: uppercase; color: #94a3b8;
+}
+.status-strip .chip .val { font-size: 0.8rem; font-weight: 600; color: #e2e8f0; }
+.status-strip .chip.miss .val { color: #64748b; }
 .status-strip .badge {
-    padding: 1px 10px; border-radius: 999px; font-size: 0.72rem;
-    letter-spacing: 0.5px; text-transform: uppercase;
+    padding: 2px 12px; border-radius: 999px; font-size: 0.78rem;
+    font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+    letter-spacing: 1.5px; font-weight: 700; text-transform: uppercase;
 }
 .status-strip .badge.upcoming  { background: #0ea5e922; color: #38bdf8; border: 1px solid #0ea5e955; }
 .status-strip .badge.completed { background: #4ade8022; color: #4ade80; border: 1px solid #4ade8055; }
+
+/* ── Active-page highlight in the top nav: the section holding the current
+   page keeps its accent bar lit + sky label; the active dropdown link is
+   tinted so it's obvious which page you're on when the menu opens. ── */
+[data-testid="stTopNavSection"]:has(a[aria-current="page"])::after { transform: scaleX(1); }
+[data-testid="stTopNavSection"]:has(a[aria-current="page"]) p,
+[data-testid="stTopNavSection"]:has(a[aria-current="page"]) span {
+    color: #38bdf8 !important;
+}
+a[data-testid="stSidebarNavLink"][aria-current="page"] {
+    background: #0ea5e91a !important; border-radius: 8px;
+}
+a[data-testid="stSidebarNavLink"][aria-current="page"] p,
+a[data-testid="stSidebarNavLink"][aria-current="page"] span {
+    color: #38bdf8 !important;
+}
 
 /* ── Mobile ── */
 @media (max-width: 768px) {
@@ -689,35 +727,37 @@ if not lap_averages_df.empty and not practice_data:
             practice_data[key] = signal
 
 # ============================================================
-# STATUS STRIP — race state + what data is loaded, at a glance
+# STATUS STRIP — current page + race state + data readiness.
+# Built here (data in scope), RENDERED after st.navigation() below so the
+# strip can lead with the active page name.
 # ============================================================
 _badge = ('<span class="badge upcoming">Upcoming</span>' if is_prerace
           else '<span class="badge completed">Completed</span>')
-_date_part = f' · {race_date_raw}' if race_date_raw else ''
+_date_part = f'<span style="color:#64748b;font-size:0.78rem;"> {race_date_raw}</span>' \
+             if race_date_raw else ''
 
 
-def _stat(label, ok, detail_ok, detail_miss="not loaded"):
+def _chip(label, ok, detail_ok, detail_miss="not loaded"):
     cls = "ok" if ok else "miss"
-    mark = "✓" if ok else "✗"
     detail = detail_ok if ok else detail_miss
-    return f'<span class="{cls}">{mark}</span> {label}: {detail}'
+    return (f'<span class="chip {cls}"><span class="dot"></span>'
+            f'<span class="lbl">{label}</span>'
+            f'<span class="val">{detail}</span></span>')
 
 
 _odds_label = {"saved": "DB", "auto": "Action Network",
                "salary_estimate": "salary estimate"}.get(odds_source, "")
 _strip_items = [
-    f'{_badge}<span style="color:#64748b;">{_date_part}</span>',
-    _stat("DK salaries", has_saved_dk, f"{len(db_dk_df)} drivers"),
-    _stat("FD salaries", has_saved_fd, f"{len(db_fd_df)} drivers"),
-    _stat("Odds", bool(odds_data), f"{len(odds_data)} ({_odds_label})"),
-    _stat("Practice", bool(practice_data), f"{len(practice_data)} drivers",
+    f'{_badge}{_date_part}',
+    _chip("DK", has_saved_dk, f"{len(db_dk_df)} drivers"),
+    _chip("FD", has_saved_fd, f"{len(db_fd_df)} drivers"),
+    _chip("Odds", bool(odds_data), f"{len(odds_data)} · {_odds_label}"),
+    _chip("Practice", bool(practice_data), f"{len(practice_data)} drivers",
           "none yet"),
 ]
 if not (has_saved_dk and odds_data):
-    _strip_items.append('<span style="color:#64748b;">→ load data on the '
-                        '<b>Data &amp; Settings</b> page</span>')
-st.markdown(f'<div class="status-strip">{"".join(f"<span>{i}</span>" for i in _strip_items)}</div>',
-            unsafe_allow_html=True)
+    _strip_items.append('<span style="color:#64748b;font-size:0.76rem;">'
+                        '→ load data on the <b>Data &amp; Settings</b> page</span>')
 
 # ============================================================
 # PAGES — grouped navigation; only the active page renders
@@ -897,4 +937,14 @@ _nav = st.navigation(
     },
     position="top",
 )
+
+# Render the status strip now that the active page is known — leading with a
+# big "you are here" chip so the current page is unmissable.
+_page_chip = f'<span class="page-chip">{_nav.icon} {_nav.title}</span>'
+st.markdown(
+    f'<div class="status-strip">{_page_chip}'
+    + "".join(_strip_items) + '</div>',
+    unsafe_allow_html=True,
+)
+
 _nav.run()

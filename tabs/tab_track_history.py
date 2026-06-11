@@ -121,8 +121,9 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
         ctrl_cols = st.columns([1, 1, 4])
         with ctrl_cols[0]:
             show_active_only = st.checkbox(
-                "Active drivers only", value=False, key="th_active_only",
-                help="Filter the table to drivers entered in the current race",
+                "Active drivers only", value=True, key="th_active_only",
+                help="Filter the table to drivers entered in the current race "
+                     "(on by default — untick to include retired/part-time drivers)",
             )
         with ctrl_cols[1]:
             highlight_active = st.checkbox(
