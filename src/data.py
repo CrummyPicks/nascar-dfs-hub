@@ -494,9 +494,9 @@ def fetch_all_practice_sessions(series_id: int, race_id: int, year: int = None) 
 def _build_car_driver_map(feed: dict) -> Dict[str, dict]:
     """Build car_number -> {driver, team, make, crew_chief} lookup."""
     car_map = {}
-    races = feed.get("weekend_race", [])
+    races = (feed.get("weekend_race") or [])
     if races:
-        for car in races[0].get("cars", []):
+        for car in (races[0].get("cars") or []):
             cn = str(car.get("car_number", "")).strip()
             if cn and car.get("driver_fullname"):
                 car_map[cn] = {
@@ -505,7 +505,7 @@ def _build_car_driver_map(feed: dict) -> Dict[str, dict]:
                     "make": car.get("car_make", ""),
                     "crew_chief": car.get("crew_chief_fullname", ""),
                 }
-        for r in races[0].get("results", []):
+        for r in (races[0].get("results") or []):
             cn = str(r.get("car_number", "")).strip()
             if cn and cn not in car_map and r.get("driver_fullname"):
                 car_map[cn] = {
@@ -521,11 +521,11 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
     """Extract entry list from weekend-feed with crew chief data."""
     if not feed:
         return pd.DataFrame()
-    races = feed.get("weekend_race", [])
+    races = (feed.get("weekend_race") or [])
     if not races:
         return pd.DataFrame()
 
-    cars = races[0].get("cars", [])
+    cars = (races[0].get("cars") or [])
     if cars:
         rows = [{
             "Car": car.get("car_number"),
@@ -536,7 +536,7 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
         } for car in cars]
         return pd.DataFrame(rows)
 
-    results = races[0].get("results", [])
+    results = (races[0].get("results") or [])
     if results:
         rows = [{
             "Car": r.get("car_number"),
@@ -556,11 +556,11 @@ def extract_qualifying(feed: dict) -> pd.DataFrame:
     if not feed:
         return pd.DataFrame()
     car_map = _build_car_driver_map(feed)
-    for run in feed.get("weekend_runs", []):
+    for run in (feed.get("weekend_runs") or []):
         rt = run.get("run_type", 0)
         rn = str(run.get("run_name", "")).lower()
         if rt == 2 or "qualif" in rn:
-            results = run.get("results", [])
+            results = run.get("results") or []
             if results:
                 rows = []
                 for r in results:
@@ -592,11 +592,11 @@ def extract_practice_lap_counts(feed: dict) -> dict:
     """
     if not feed:
         return {}
-    for run in reversed(feed.get("weekend_runs", [])):
+    for run in reversed((feed.get("weekend_runs") or [])):
         rt = run.get("run_type", 0)
         rn = str(run.get("run_name", "")).lower()
         if rt == 1 or "practice" in rn:
-            results = run.get("results", [])
+            results = run.get("results") or []
             if results:
                 counts = {}
                 car_map = _build_car_driver_map(feed)
@@ -621,11 +621,11 @@ def extract_practice_laps(feed: dict) -> list:
     if not feed:
         return []
     car_map = _build_car_driver_map(feed)
-    for run in reversed(feed.get("weekend_runs", [])):
+    for run in reversed((feed.get("weekend_runs") or [])):
         rt = run.get("run_type", 0)
         rn = str(run.get("run_name", "")).lower()
         if rt == 1 or "practice" in rn:
-            results = run.get("results", [])
+            results = run.get("results") or []
             if results:
                 driver_laps = []
                 for r in results:
@@ -633,7 +633,7 @@ def extract_practice_laps(feed: dict) -> list:
                     driver = r.get("driver_fullname")
                     if not driver and cn in car_map:
                         driver = car_map[cn]["driver"]
-                    laps = r.get("laps", [])
+                    laps = r.get("laps") or []
                     if driver and laps:
                         lap_data = []
                         for lap in laps:
@@ -652,10 +652,10 @@ def extract_race_results(feed: dict) -> pd.DataFrame:
     """Extract race results, filtering out DNQ drivers."""
     if not feed:
         return pd.DataFrame()
-    races = feed.get("weekend_race", [])
+    races = (feed.get("weekend_race") or [])
     if not races:
         return pd.DataFrame()
-    results = races[0].get("results", [])
+    results = (races[0].get("results") or [])
     if not results:
         return pd.DataFrame()
     rows = []
@@ -691,7 +691,7 @@ def extract_race_results(feed: dict) -> pd.DataFrame:
 
 def compute_fastest_laps(lap_data: dict) -> Dict[str, int]:
     """Count fastest laps per driver from lap-times data."""
-    drivers = lap_data.get("laps", [])
+    drivers = (lap_data.get("laps") or [])
     if not drivers:
         return {}
     driver_laps = {}
@@ -717,7 +717,7 @@ def compute_fastest_laps(lap_data: dict) -> Dict[str, int]:
 
 def compute_avg_running_position(lap_data: dict) -> Dict[str, float]:
     """Average running position across all race laps."""
-    drivers = lap_data.get("laps", [])
+    drivers = (lap_data.get("laps") or [])
     result = {}
     for d in drivers:
         positions = [lap["RunningPos"] for lap in d.get("Laps", [])
@@ -3999,7 +3999,7 @@ def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> d
     )
     lap_data = laps_resp.json() if laps_resp.status_code == 200 else {}
     id_to_name = {}
-    for drv in lap_data.get("laps", []):
+    for drv in (lap_data.get("laps") or []):
         nid = drv.get("NASCARDriverID")
         full = drv.get("FullName", "")
         if nid and full:
@@ -4161,7 +4161,7 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = None) -> dict
     lap_data = _fetch_laps(series_id, race_id, year)
 
     # -- 2. Extract results and fastest laps ---------------------------
-    races = feed.get("weekend_race", [])
+    races = (feed.get("weekend_race") or [])
     if not races:
         # NASCAR's weekend-feed endpoint is sometimes empty for races
         # (notably post-Chase playoff races that get rescheduled). Fall back
@@ -4176,7 +4176,7 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = None) -> dict
                 "error": "No weekend_race in feed"}
 
     race_obj = races[0]
-    results = race_obj.get("results", [])
+    results = race_obj.get("results") or []
     if not results:
         return {"drivers": 0, "race_name": "", "status": "error",
                 "error": "No results in weekend_race"}
@@ -4450,10 +4450,10 @@ def detect_prerace(feed: dict) -> bool:
     """Detect whether a race is pre-race or post-race."""
     if not feed:
         return True
-    races = feed.get("weekend_race", [])
+    races = (feed.get("weekend_race") or [])
     if not races:
         return True
-    results = races[0].get("results", [])
+    results = (races[0].get("results") or [])
     if not results:
         return True
     # All finishing_position=0 means pre-race
@@ -4571,20 +4571,20 @@ def fetch_season_standings(series_id: int, year: int = None, _v: int = 2) -> dic
         feed = fetch_weekend_feed(series_id, rid, year)
         if not feed:
             continue
-        race_list = feed.get("weekend_race", [])
+        race_list = (feed.get("weekend_race") or [])
         if not race_list:
             continue
         race_data = race_list[0]
-        results = race_data.get("results", [])
+        results = race_data.get("results") or []
         race_name = race_data.get("race_name", "")
         track_name = race_data.get("track_name") or track_map.get(rid, "")
 
         # Stage results for this race
-        stage_results = race_data.get("stage_results", [])
+        stage_results = race_data.get("stage_results") or []
         # Build driver → stage points map
         driver_stage_pts = defaultdict(int)
         for stage in stage_results:
-            for sr in stage.get("results", []):
+            for sr in (stage.get("results") or []):
                 name = _clean_api_name(sr.get("driver_fullname", ""))
                 driver_stage_pts[name] += sr.get("stage_points", 0)
 
