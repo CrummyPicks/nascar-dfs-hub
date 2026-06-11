@@ -55,46 +55,58 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         st.session_state["ra_year"] = selected_year
         st.session_state["ra_year_synced_from"] = selected_year
 
-    with st.expander("Filters", expanded=True):
-        f_cols = st.columns(4)
-        with f_cols[0]:
-            # Build year list dynamically so it rolls over with the calendar.
-            # Earliest is 2022 (Next Gen era — no historical data before this).
-            from datetime import datetime as _dt
-            _today = _dt.now()
-            _cy = _today.year + 1 if _today.month >= 10 else _today.year
-            year_options = ["All Years"] + list(range(_cy, 2021, -1))
-            default_year_idx = year_options.index(selected_year) if selected_year in year_options else 1
-            ra_year_selection = st.selectbox("Year", year_options,
-                                            index=default_year_idx, key="ra_year")
-        with f_cols[1]:
-            # Track type filter
-            subtypes = sorted(set(TRACK_TYPE_MAP.values()))
-            parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
-            type_options = ["All Types"] + parent_groups + subtypes + [CONCRETE_GROUP_LABEL]
-            ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type",
-                                         format_func=_format_track_type_label)
-        with f_cols[2]:
-            # Build track list for filtering
-            sample_year = selected_year if ra_year_selection == "All Years" else ra_year_selection
-            ra_races = fetch_race_list(ra_series_id, sample_year)
-            ra_point_races = filter_point_races(ra_races) if ra_races else []
-            tracks = sorted(set(r.get("track_name", "") for r in ra_point_races if r.get("track_name")))
-            # Filter track list by track type if selected
-            if ra_track_type != "All Types":
-                if ra_track_type.startswith("All "):
-                    parent = ra_track_type.replace("All ", "").lower()
-                    tracks = [t for t in tracks
-                              if TRACK_TYPE_PARENT.get(TRACK_TYPE_MAP.get(t, "intermediate"), "intermediate") == parent]
-                else:
-                    tracks = [t for t in tracks if TRACK_TYPE_MAP.get(t, "intermediate") == ra_track_type]
-            ra_track = st.selectbox("Track Filter", ["All Tracks"] + tracks, key="ra_track")
-        with f_cols[3]:
-            # Show track type description
-            if ra_track_type != "All Types":
-                desc_tracks = _get_tracks_for_type(ra_track_type)
-                if desc_tracks:
-                    st.caption(f"**{_format_track_type_label(ra_track_type)}**: {', '.join(desc_tracks)}")
+    from datetime import datetime as _dt
+    _today = _dt.now()
+    _cy = _today.year + 1 if _today.month >= 10 else _today.year
+
+    if mode == "Single Race":
+        # Single Race has its own race picker below — layering the aggregate
+        # Year/Track Type/Track filters on top of it just filtered a list the
+        # user can already pick from. Hide them: the picker covers every
+        # completed race of the globally selected series/season (matching how
+        # the Cautions and Race Lab single-race pickers work). Use the top-bar
+        # series/season pickers to reach other years.
+        ra_year_selection = selected_year
+        ra_track_type = "All Types"
+        ra_track = "All Tracks"
+    else:
+        with st.expander("Filters", expanded=True):
+            f_cols = st.columns(4)
+            with f_cols[0]:
+                # Build year list dynamically so it rolls over with the calendar.
+                # Earliest is 2022 (Next Gen era — no historical data before this).
+                year_options = ["All Years"] + list(range(_cy, 2021, -1))
+                default_year_idx = year_options.index(selected_year) if selected_year in year_options else 1
+                ra_year_selection = st.selectbox("Year", year_options,
+                                                index=default_year_idx, key="ra_year")
+            with f_cols[1]:
+                # Track type filter
+                subtypes = sorted(set(TRACK_TYPE_MAP.values()))
+                parent_groups = sorted(set(f"All {p.title()}" for p in set(TRACK_TYPE_PARENT.values())))
+                type_options = ["All Types"] + parent_groups + subtypes + [CONCRETE_GROUP_LABEL]
+                ra_track_type = st.selectbox("Track Type", type_options, key="ra_track_type",
+                                             format_func=_format_track_type_label)
+            with f_cols[2]:
+                # Build track list for filtering
+                sample_year = selected_year if ra_year_selection == "All Years" else ra_year_selection
+                ra_races = fetch_race_list(ra_series_id, sample_year)
+                ra_point_races = filter_point_races(ra_races) if ra_races else []
+                tracks = sorted(set(r.get("track_name", "") for r in ra_point_races if r.get("track_name")))
+                # Filter track list by track type if selected
+                if ra_track_type != "All Types":
+                    if ra_track_type.startswith("All "):
+                        parent = ra_track_type.replace("All ", "").lower()
+                        tracks = [t for t in tracks
+                                  if TRACK_TYPE_PARENT.get(TRACK_TYPE_MAP.get(t, "intermediate"), "intermediate") == parent]
+                    else:
+                        tracks = [t for t in tracks if TRACK_TYPE_MAP.get(t, "intermediate") == ra_track_type]
+                ra_track = st.selectbox("Track Filter", ["All Tracks"] + tracks, key="ra_track")
+            with f_cols[3]:
+                # Show track type description
+                if ra_track_type != "All Types":
+                    desc_tracks = _get_tracks_for_type(ra_track_type)
+                    if desc_tracks:
+                        st.caption(f"**{_format_track_type_label(ra_track_type)}**: {', '.join(desc_tracks)}")
 
     # Build completed races based on filters
     if ra_year_selection == "All Years":
