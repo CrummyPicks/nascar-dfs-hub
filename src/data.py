@@ -1563,8 +1563,9 @@ def query_race_pit_summary(db_race_id: int, cautions: list = None) -> dict:
     """Per-driver pit summary + attributed slow stops for one race.
 
     Returns {
-      "rows": [ {Driver, Stops, "4-Tire Stops", "Avg Box (s)", "Best Box (s)",
-                 "Green Stops"} ] sorted by Avg Box,
+      "rows": [ {Driver, Stops, "4-Tire Stops", "Avg 4T (s)", "Best 4T (s)",
+                 "2-Tire Stops", "Best 2T (s)", "Green Stops"} ]
+                sorted by Avg 4T,
       "likely_penalties": [ {Driver, Lap, "Box (s)", Why} ],
       "repair_stops":     [ {Driver, Lap, "Box (s)", Why} ],
     }
@@ -1712,12 +1713,12 @@ def query_race_pit_summary(db_race_id: int, cautions: list = None) -> dict:
         boxes = d.pop("_box")
         boxes2 = d.pop("_box2")
         d["4-Tire Stops"] = len(boxes)
-        d["Avg Box (s)"] = round(sum(boxes) / len(boxes), 1) if boxes else None
-        d["Best Box (s)"] = round(min(boxes), 1) if boxes else None
+        d["Avg 4T (s)"] = round(sum(boxes) / len(boxes), 1) if boxes else None
+        d["Best 4T (s)"] = round(min(boxes), 1) if boxes else None
         d["2-Tire Stops"] = len(boxes2)
         d["Best 2T (s)"] = round(min(boxes2), 1) if boxes2 else None
         out_rows.append(d)
-    out_rows.sort(key=lambda x: (x["Avg Box (s)"] is None, x["Avg Box (s)"] or 999))
+    out_rows.sort(key=lambda x: (x["Avg 4T (s)"] is None, x["Avg 4T (s)"] or 999))
     likely.sort(key=lambda x: x["Lap"])
     repairs.sort(key=lambda x: x["Lap"])
     return {"rows": out_rows, "likely_penalties": likely, "repair_stops": repairs}
