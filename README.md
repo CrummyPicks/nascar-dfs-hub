@@ -170,12 +170,10 @@ NASCAR DFS/
 │   └── tab_accuracy.py      # Accuracy backtesting tab
 │
 ├── scrapers/                # Data collection / backfill modules
-│   ├── racing_reference.py  # Historical results scraper
 │   ├── salaries.py          # DK/FD salary scraper
 │   ├── backfill_arp.py      # ARP backfill from NASCAR API lap-times
 │   ├── backfill_ratings.py  # NASCAR Driver Rating + pit + run-pace backfill
-│   ├── backfill_fastest_laps.py
-│   └── frcspro.py           # Alternative data source
+│   └── backfill_fastest_laps.py
 │
 ├── scripts/                 # Maintenance tooling (not needed day-to-day)
 │   ├── setup_db.py          # Database schema initialization

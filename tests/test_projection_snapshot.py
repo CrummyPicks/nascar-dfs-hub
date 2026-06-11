@@ -208,6 +208,24 @@ def compare(actual, expected):
     return diffs
 
 
+def test_projection_snapshot():
+    """Pytest entry point — same check as running this file as a script."""
+    assert FIXTURE_PATH.exists(), (
+        "Fixture missing — generate it with: "
+        "python tests/test_projection_snapshot.py --update"
+    )
+    inputs = build_inputs()
+    actual = run_projection(inputs)
+    expected = json.loads(FIXTURE_PATH.read_text())
+    diffs = compare(actual, expected)
+    assert not diffs, (
+        f"Projection snapshot mismatch ({len(diffs)} differences):\n"
+        + "\n".join(diffs[:20])
+        + "\nIf the engine change was intentional, regenerate with:\n"
+          "  python tests/test_projection_snapshot.py --update"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--update", action="store_true",

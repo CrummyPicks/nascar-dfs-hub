@@ -783,10 +783,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         if _reset or _key not in st.session_state:
             st.session_state[_key] = defaults[_sig]
 
-    # Weight sliders in collapsible expander
-    with st.expander("Projection Weights", expanded=False):
+    # Weight controls — open by default so users discover they can tune the
+    # projection, and know the Optimizer follows along.
+    with st.expander("Projection Weights", expanded=True):
         st.caption(f"Defaults tuned for **{parent_type}** tracks. "
-                   "Adjust weights (in 5s) — auto-normalizes to 100%.")
+                   "Adjust weights (in 5s) — auto-normalizes to 100%. "
+                   "The **Optimizer** page uses these same weights for its player pool.")
         if st.button("Reset to defaults", key=f"pw_reset_btn_{parent_type}",
                      help=f"Restore the tuned default weights for {parent_type} tracks"):
             st.session_state[f"pw_reset_{parent_type}"] = True

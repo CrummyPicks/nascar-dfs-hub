@@ -868,7 +868,8 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
     st.markdown("**Race Comparison**")
     st.caption("Projected vs actual results for a single race, with accuracy metrics.")
     if not completed_races:
-        st.info("No completed races available for this series/year.")
+        st.info("No completed races available for this series/year yet — "
+                "accuracy grading appears after races run.")
         return
 
     # Build race dropdown from all completed races
@@ -1236,7 +1237,8 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dn
             pass
 
     if not completed:
-        st.info("No completed races available for accuracy tracking.")
+        st.info("No completed races available for accuracy tracking yet — "
+                "this dashboard fills in as the season progresses.")
         return
 
     st.caption(f"Auto-generating projections for **{len(completed)} completed races** ({series_name} {selected_year})")
@@ -1503,6 +1505,7 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
 
         all_races = _query_db_completed_races(query_series, track_type=selected_type)
         context_label = f"{selected_type.replace('_', ' ').title()}"
+        apply_parent_type = selected_type
         current_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(selected_type,
                             TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {}))
     else:
@@ -1526,6 +1529,7 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
         tt = TRACK_TYPE_MAP.get(selected_track, "intermediate")
         parent_tt = TRACK_TYPE_PARENT.get(tt, tt)
         context_label = selected_track
+        apply_parent_type = parent_tt
         current_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_tt,
                             TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {}))
 
@@ -1584,6 +1588,9 @@ def _render_weight_optimizer(completed_races, series_id, selected_year, series_n
 
     if run_clicked:
         st.session_state["acc_cancel"] = False
+        # Remember which track-type's weights this backtest tunes, so
+        # "Apply Best to Projections" targets the right namespaced sliders.
+        st.session_state["acc_opt_parent_type"] = apply_parent_type
         _run_backtest(test_races, primary_sid, selected_year,
                       context_label, include_dnf, exclude_dnf=exclude_dnf)
     elif "acc_opt_results" in st.session_state:
@@ -2281,29 +2288,36 @@ def _display_backtest_results(results_df, context_label):
         f"MAE: {best['MAE']:.1f} | Rank Corr: {best['Rank Corr']:.3f}"
     )
 
-    # "Apply to Projections" button — sets session state weights
+    # "Apply to Projections" button — writes the TRACK-TYPE-NAMESPACED weight
+    # keys the Projections sliders actually use (pw_odds_{parent_type}, ...).
+    # The old bare pw_odds keys were read by nothing, so this button silently
+    # did nothing.
+    _parent = st.session_state.get("acc_opt_parent_type", "intermediate")
     apply_cols = st.columns([1.5, 4.5])
     with apply_cols[0]:
         if st.button("Apply Best to Projections", key="acc_apply_best",
                       type="primary",
-                      help="Set the projections tab sliders to these optimal weights"):
-            st.session_state["pw_odds"] = int(best["Odds"])
-            st.session_state["pw_track"] = int(best["Track"])
-            st.session_state["pw_ttype"] = int(best.get("Track Type", 0))
-            st.session_state["pw_prac"] = int(best.get("Practice", 0))
-            st.session_state["pw_team"] = int(best.get("Team", 0))
-            st.session_state["pw_qual"] = int(best.get("Qualifying", 0))
-            st.success("Applied! Switch to the Projections tab and re-run to use these weights.")
+                      help=f"Set the Projections sliders for {_parent.replace('_', ' ')} "
+                           "tracks to these optimal weights"):
+            st.session_state[f"pw_odds_{_parent}"] = int(best["Odds"])
+            st.session_state[f"pw_track_{_parent}"] = int(best["Track"])
+            st.session_state[f"pw_ttype_{_parent}"] = int(best.get("Track Type", 0))
+            st.session_state[f"pw_prac_{_parent}"] = int(best.get("Practice", 0))
+            st.session_state[f"pw_team_{_parent}"] = int(best.get("Team", 0))
+            st.session_state[f"pw_qual_{_parent}"] = int(best.get("Qualifying", 0))
+            st.success(f"Applied to {_parent.replace('_', ' ')} tracks! The Projections "
+                       "and Optimizer pages now use these weights.")
 
-    # Show current vs optimal comparison — read from projections tab session state
-    int_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {})
+    # Show current vs optimal comparison — read the same namespaced keys
+    _p_defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(_parent,
+                    TRACK_TYPE_WEIGHT_DEFAULTS.get("intermediate", {}))
     current_weights = {
-        "Odds": st.session_state.get("pw_odds", int_defaults.get("odds", 25)),
-        "Track": st.session_state.get("pw_track", int_defaults.get("track", 20)),
-        "Track Type": st.session_state.get("pw_ttype", int_defaults.get("ttype", 15)),
-        "Practice": st.session_state.get("pw_prac", int_defaults.get("prac", 10)),
-        "Team": st.session_state.get("pw_team", int_defaults.get("team", 15)),
-        "Qualifying": st.session_state.get("pw_qual", int_defaults.get("qual", 15)),
+        "Odds": st.session_state.get(f"pw_odds_{_parent}", _p_defaults.get("odds", 25)),
+        "Track": st.session_state.get(f"pw_track_{_parent}", _p_defaults.get("track", 20)),
+        "Track Type": st.session_state.get(f"pw_ttype_{_parent}", _p_defaults.get("ttype", 15)),
+        "Practice": st.session_state.get(f"pw_prac_{_parent}", _p_defaults.get("prac", 10)),
+        "Team": st.session_state.get(f"pw_team_{_parent}", _p_defaults.get("team", 15)),
+        "Qualifying": st.session_state.get(f"pw_qual_{_parent}", _p_defaults.get("qual", 15)),
     }
 
     match_mask = (

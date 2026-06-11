@@ -1,9 +1,12 @@
 """NASCAR DFS Hub — Data Layer (API fetches, DB queries, scraping)."""
 
+import logging
 import os
 import sqlite3
 from collections import defaultdict
 from typing import Dict, Optional
+
+logger = logging.getLogger("nascar_dfs.data")
 
 import numpy as np
 import pandas as pd
@@ -88,7 +91,8 @@ def fetch_race_list(series_id: int, year: int = None) -> list:
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/race_list_basic.json", timeout=15)
         return r.json() if r.status_code == 200 else []
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_race_list failed (year=%s series=%s): %s", year, series_id, e)
         return []
 
 
@@ -346,7 +350,8 @@ def fetch_weekend_feed(series_id: int, race_id: int, year: int = None) -> Option
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/weekend-feed.json", timeout=15)
         return r.json() if r.status_code == 200 else None
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_weekend_feed failed (race=%s): %s", race_id, e)
         return None
 
 
@@ -358,7 +363,8 @@ def fetch_lap_times(series_id: int, race_id: int, year: int = None) -> Optional[
     try:
         r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-times.json", timeout=30)
         return r.json() if r.status_code == 200 else None
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_lap_times failed (race=%s): %s", race_id, e)
         return None
 
 
@@ -381,7 +387,8 @@ def fetch_starting_grid(series_id: int, race_id: int, year: int = None) -> dict:
     try:
         r = requests.get(url, timeout=20)
         data = r.json() if r.status_code == 200 else None
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_starting_grid failed (race=%s): %s", race_id, e)
         return {}
     out = {}
     for v in (data or {}).get("vehicles", []) or []:
@@ -441,7 +448,8 @@ def fetch_lap_averages(series_id: int, race_id: int, year: int = None) -> pd.Dat
         if not data or not isinstance(data, list):
             return pd.DataFrame()
         return _parse_lap_avg_session(data[-1])
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_lap_averages failed (race=%s): %s", race_id, e)
         return pd.DataFrame()
 
 
@@ -3199,7 +3207,8 @@ def _fetch_action_network_odds() -> dict:
 
         return {"win": win_result, "top3": top3_result, "top5": top5_result, "top10": top10_result}
 
-    except Exception:
+    except Exception as e:
+        logger.warning("Action Network odds fetch failed: %s", e)
         return empty
 
 
@@ -3460,46 +3469,48 @@ def _resolve_db_race_id_with_fallback(race_id: int, series_id: int = None):
                         if not race_date:
                             break
 
+                        # try/finally so the connection can't leak if any
+                        # statement throws (the outer except swallows errors).
                         conn_tmp = sqlite3.connect(str(DB_PATH))
-
-                        # Try matching by date first
-                        row = conn_tmp.execute(
-                            "SELECT id FROM races WHERE race_date = ? AND series_id = ?",
-                            (race_date, sid)
-                        ).fetchone()
-                        if row:
-                            db_race_id = row[0]
-                            conn_tmp.execute(
-                                "UPDATE races SET api_race_id = ? WHERE id = ?",
-                                (race_id, db_race_id)
-                            )
-                            conn_tmp.commit()
-                        else:
-                            # Create the race entry so odds/salaries can be saved
-                            # Determine race_num (sequential within season)
-                            max_num = conn_tmp.execute(
-                                "SELECT COALESCE(MAX(race_num), 0) FROM races WHERE series_id = ? AND season = ?",
-                                (sid, year)
-                            ).fetchone()[0]
-                            conn_tmp.execute('''
-                                INSERT INTO races (series_id, track_id, season, race_num, race_name,
-                                                   race_date, laps, miles, api_race_id)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (sid, track_id, year, max_num + 1, race_name,
-                                  race_date, scheduled_laps, scheduled_dist, race_id))
-                            conn_tmp.commit()
-                            db_race_id = conn_tmp.execute(
-                                "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                            ).fetchone()[0]
-
-                        conn_tmp.close()
+                        try:
+                            # Try matching by date first
+                            row = conn_tmp.execute(
+                                "SELECT id FROM races WHERE race_date = ? AND series_id = ?",
+                                (race_date, sid)
+                            ).fetchone()
+                            if row:
+                                db_race_id = row[0]
+                                conn_tmp.execute(
+                                    "UPDATE races SET api_race_id = ? WHERE id = ?",
+                                    (race_id, db_race_id)
+                                )
+                                conn_tmp.commit()
+                            else:
+                                # Create the race entry so odds/salaries can be saved
+                                # Determine race_num (sequential within season)
+                                max_num = conn_tmp.execute(
+                                    "SELECT COALESCE(MAX(race_num), 0) FROM races WHERE series_id = ? AND season = ?",
+                                    (sid, year)
+                                ).fetchone()[0]
+                                conn_tmp.execute('''
+                                    INSERT INTO races (series_id, track_id, season, race_num, race_name,
+                                                       race_date, laps, miles, api_race_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (sid, track_id, year, max_num + 1, race_name,
+                                      race_date, scheduled_laps, scheduled_dist, race_id))
+                                conn_tmp.commit()
+                                db_race_id = conn_tmp.execute(
+                                    "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
+                                ).fetchone()[0]
+                        finally:
+                            conn_tmp.close()
                         break
                 if db_race_id:
                     break
             if db_race_id:
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("DB race-id fallback resolution failed (race=%s): %s", race_id, e)
 
     return db_race_id
 

@@ -127,7 +127,9 @@ def _render_aggregate(scope, track_name, track_type, series_id):
 # ───────────────────────── single race (full detail) ─────────────────────────
 def _render_single_race(completed_races, series_id, selected_year):
     if not completed_races:
-        st.info("No completed races available for this series/year.")
+        st.info("No completed races available for this series/year yet — "
+                "single-race breakdowns appear after races run. Use the "
+                "'This Track' or 'This Track Type' scope for pre-race research.")
         return
 
     # Race picker (most recent first).

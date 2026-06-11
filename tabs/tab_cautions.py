@@ -55,7 +55,8 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     likely_pen = pit.get("likely_penalties", [])
 
     if not cautions and not penalties and not pit_rows:
-        st.info("No caution, penalty or pit data available for this race yet.")
+        st.info("No caution, penalty or pit data available for this race yet — "
+                "this page fills in after the race runs.")
         return
 
     # Summary strip

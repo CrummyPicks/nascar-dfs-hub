@@ -33,15 +33,18 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
     # Read weights from session state (set by Projections tab sliders)
     # Defaults from shared config — 6 signals: odds, track, ttype, prac, team, qual
+    # NOTE: the Projections sliders use TRACK-TYPE-NAMESPACED keys
+    # (pw_track_{parent_type}, ...) — reading the bare keys here silently
+    # ignored every user adjustment and always used defaults.
     track_type = TRACK_TYPE_MAP.get(track_name, "intermediate")
     parent_type = TRACK_TYPE_PARENT.get(track_type, track_type)
     defaults = TRACK_TYPE_WEIGHT_DEFAULTS.get(parent_type, TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"])
-    w_track = st.session_state.get("pw_track", defaults["track"])
-    w_ttype = st.session_state.get("pw_ttype", defaults["ttype"])
-    w_odds  = st.session_state.get("pw_odds", defaults["odds"])
-    w_prac  = st.session_state.get("pw_prac", defaults["prac"])
-    w_team  = st.session_state.get("pw_team", defaults["team"])
-    w_qual  = st.session_state.get("pw_qual", defaults["qual"])
+    w_track = st.session_state.get(f"pw_track_{parent_type}", defaults["track"])
+    w_ttype = st.session_state.get(f"pw_ttype_{parent_type}", defaults["ttype"])
+    w_odds  = st.session_state.get(f"pw_odds_{parent_type}", defaults["odds"])
+    w_prac  = st.session_state.get(f"pw_prac_{parent_type}", defaults["prac"])
+    w_team  = st.session_state.get(f"pw_team_{parent_type}", defaults["team"])
+    w_qual  = st.session_state.get(f"pw_qual_{parent_type}", defaults["qual"])
 
     # Smart weight handling: drop unavailable signals, redistribute
     has_odds = bool(odds_data)
@@ -807,8 +810,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     if status_parts:
         pool_label += f"  ({', '.join(status_parts)})"
 
-    # Keep expander open if user was interacting with player pool
-    pool_expanded = st.session_state.pop("opt_pool_expanded", False)
+    # Open by default — lock/exclude/override is the heart of lineup building
+    # and shouldn't be hidden behind a collapsed expander.
+    pool_expanded = st.session_state.pop("opt_pool_expanded", True)
     with st.expander(pool_label, expanded=pool_expanded):
         # Driver-history quick-lookup. The pool's row-by-row layout uses
         # checkboxes/inputs and isn't an st.dataframe (so row-click won't

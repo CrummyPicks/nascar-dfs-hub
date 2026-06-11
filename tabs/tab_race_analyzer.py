@@ -55,7 +55,7 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         st.session_state["ra_year"] = selected_year
         st.session_state["ra_year_synced_from"] = selected_year
 
-    with st.expander("Filters", expanded=False):
+    with st.expander("Filters", expanded=True):
         f_cols = st.columns(4)
         with f_cols[0]:
             # Build year list dynamically so it rolls over with the calendar.

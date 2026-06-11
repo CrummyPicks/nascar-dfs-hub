@@ -1,11 +1,18 @@
 # ============================================================
-# NASCAR DFS DATA HUB v5.1
-# Top-bar navigation, modular architecture
+# NASCAR DFS DATA HUB v6.0
+# Grouped multipage navigation (st.navigation) — only the active
+# page renders, replacing the old 11-tab render-everything layout.
 # ============================================================
 
 from datetime import datetime
+import logging
 import streamlit as st
 import pandas as pd
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 try:
     from src.config import (
@@ -16,12 +23,10 @@ try:
         fetch_race_list, fetch_weekend_feed, fetch_lap_times, fetch_lap_averages,
         extract_entry_list, extract_qualifying, extract_race_results,
         compute_fastest_laps, detect_prerace, filter_point_races,
-        parse_dk_csv, parse_fd_csv,
-        sync_dk_salaries_to_db, sync_fd_salaries_to_db,
         fetch_nascar_odds, save_odds_to_db,
         estimate_odds_from_salaries, _clean_api_name,
         fetch_nascar_prop_odds, load_race_prop_odds, load_race_odds,
-        _fetch_all_nascar_odds, query_salaries,
+        query_salaries,
     )
 except ImportError as e:
     import streamlit as st
@@ -54,6 +59,9 @@ st.markdown("""<style>
 [data-testid="collapsedControl"] { display: none; }
 .main .block-container { padding-top: 0.5rem; }
 
+/* ── Top navigation (st.navigation position="top") ── */
+[data-testid="stTopNav"] { background: #0f172a; border-bottom: 1px solid #1e293b; }
+
 /* ── Metrics ── */
 div[data-testid="stMetric"] {
     background: linear-gradient(135deg, #111827, #0f172a);
@@ -71,7 +79,7 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
     color: #f1f5f9 !important; font-size: 1.15rem; font-weight: 700;
 }
 
-/* ── Tabs ── */
+/* ── Tabs (still used INSIDE some pages) ── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 2px; background: #0f172a; border-radius: 10px; padding: 4px;
     border: 1px solid #1e293b;
@@ -181,6 +189,22 @@ div[data-testid="stRadio"] label:has(input:checked) {
     border-radius: 6px !important;
 }
 
+/* ── Status strip ── */
+.status-strip {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 1.1rem; align-items: center;
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 10px;
+    padding: 6px 14px; margin: 0.25rem 0 0.4rem;
+    font-size: 0.78rem; font-weight: 600; color: #94a3b8;
+}
+.status-strip .ok   { color: #4ade80; }
+.status-strip .miss { color: #f87171; }
+.status-strip .badge {
+    padding: 1px 10px; border-radius: 999px; font-size: 0.72rem;
+    letter-spacing: 0.5px; text-transform: uppercase;
+}
+.status-strip .badge.upcoming  { background: #0ea5e922; color: #38bdf8; border: 1px solid #0ea5e955; }
+.status-strip .badge.completed { background: #4ade8022; color: #4ade80; border: 1px solid #4ade8055; }
+
 /* ── Mobile ── */
 @media (max-width: 768px) {
     .block-container { padding-top: 0.3rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -199,6 +223,7 @@ div[data-testid="stRadio"] label:has(input:checked) {
     .stButton > button { font-size: 0.72rem; padding: 4px 10px; }
     .stDownloadButton > button { font-size: 0.72rem; }
     [data-testid="stNumberInput"] label { font-size: 0.72rem !important; }
+    .status-strip { font-size: 0.68rem; gap: 0.3rem 0.7rem; padding: 5px 10px; }
 }
 @media (max-width: 480px) {
     .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap; gap: 1px; }
@@ -230,7 +255,8 @@ st.markdown("""<div class="nascar-header" style='
 
 
 # ============================================================
-# TOP NAVIGATION BAR (replaces sidebar)
+# TOP CONTEXT BAR — series / season / race pickers
+# (shared by every page; rendered before navigation)
 # ============================================================
 
 nav_cols = st.columns([1, 1, 4])
@@ -324,7 +350,11 @@ if races:
     scheduled_laps = selected_race.get("scheduled_laps", 0) or 0
     race_date_raw = (selected_race.get("race_date") or "")[:10]  # YYYY-MM-DD
 else:
-    st.warning("Could not fetch race list from API")
+    # Distinguish "API down" from "no data": a valid season always has races,
+    # so an empty list here means the NASCAR API was unreachable.
+    st.error("Couldn't reach the NASCAR API — the race list is unavailable. "
+             "The app will show the Daytona 500 as a fallback; refresh in a "
+             "minute to try again.")
     race_id, race_name = 5596, "Daytona 500"
     track_name = "Daytona International Speedway"
     track_type = "superspeedway"
@@ -332,326 +362,7 @@ else:
     race_date_raw = ""
     completed_races = []
     upcoming_races = []
-
-# ============================================================
-# DB HEALTH BANNER (silent when clean)
-# ============================================================
-try:
-    from tabs.tab_db_health import render_health_banner
-    render_health_banner()
-except Exception:
-    pass  # never block the app for a health-check error
-
-# ============================================================
-# SETTINGS EXPANDER (DK/FD upload, weights)
-# ============================================================
-with st.expander("Settings & Data Upload", expanded=False):
-    # ── Auto-fetch status row ──────────────────────────────────────────────
-    auto_odds = fetch_nascar_odds(series_id)
-
-    # Persist last good odds — keyed by series+race to prevent cross-series leaks
-    _odds_cache_key = f"last_good_odds_{series_id}_{race_id}"
-    if auto_odds:
-        st.session_state[_odds_cache_key] = auto_odds
-    elif _odds_cache_key in st.session_state:
-        auto_odds = st.session_state[_odds_cache_key]
-
-    # Status summary at top
-    status_parts = []
-    if auto_odds:
-        status_parts.append(f"Odds: {len(auto_odds)} drivers")
-    else:
-        status_parts.append("Odds: unavailable")
-    st.markdown(
-        f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-        f'{" | ".join(status_parts)}</p>',
-        unsafe_allow_html=True,
-    )
-
-    # Check for saved salaries in DB for this race
-    db_dk_df = query_salaries(race_id=race_id, platform="DraftKings")
-    db_fd_df = query_salaries(race_id=race_id, platform="FanDuel")
-    has_saved_dk = not db_dk_df.empty
-    has_saved_fd = not db_fd_df.empty
-
-    # ── Admin-only controls (upload, refresh, clear) ──────────────────────
-    dk_file = None
-    fd_file = None
-    practice_data = {}
-    odds_data = {}
-    odds_source = ""
-    is_cup = (series_id == 1)
-
-    # Refresh All button
-    ref_cols = st.columns([1, 1, 4])
-    with ref_cols[0]:
-        if st.button("Auto-Fetch Odds", key="refresh_all_btn", type="primary",
-                     help="Fetches win/top5/top10 odds from Action Network (Cup only). "
-                          "May not always be available — paste manually or import via script."):
-            _fetch_all_nascar_odds.clear()
-            fresh_odds = fetch_nascar_odds(series_id)
-            if fresh_odds:
-                auto_odds = fresh_odds
-                st.session_state[_odds_cache_key] = fresh_odds
-                st.success(f"Auto-fetched odds for {len(fresh_odds)} drivers")
-            else:
-                st.warning("Auto-fetch unavailable — paste odds manually")
-
-    s_cols = st.columns([1, 1, 1, 1])
-    with s_cols[0]:
-        st.markdown("**DK Salary**")
-        if has_saved_dk:
-            st.markdown(
-                f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                f'Saved: {len(db_dk_df)} drivers in DB for this race</p>',
-                unsafe_allow_html=True,
-            )
-        dk_file = st.file_uploader("DK CSV", type=["csv"], label_visibility="collapsed",
-                                   key=f"dk_upload_{race_id}")
-        if dk_file:
-            st.markdown(
-                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                'CSV uploaded — will save to DB</p>',
-                unsafe_allow_html=True,
-            )
-        if has_saved_dk:
-            if st.button("Clear DK Salaries", key=f"clear_dk_{race_id}"):
-                try:
-                    import sqlite3 as _sql
-                    _conn = _sql.connect(str(DB_PATH))
-                    _db_race = _conn.execute(
-                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                    ).fetchone()
-                    if _db_race:
-                        _conn.execute(
-                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'DraftKings'",
-                            (_db_race[0],))
-                        _conn.commit()
-                    _conn.close()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to clear salaries: {e}")
-    with s_cols[1]:
-        st.markdown("**FD Salary CSV**")
-        if has_saved_fd:
-            st.markdown(
-                f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                f'Saved: {len(db_fd_df)} drivers in DB for this race</p>',
-                unsafe_allow_html=True,
-            )
-        fd_file = st.file_uploader("FD", type=["csv"], label_visibility="collapsed",
-                                   key=f"fd_upload_{race_id}")
-        if fd_file:
-            st.markdown(
-                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                'CSV uploaded — will save to DB</p>',
-                unsafe_allow_html=True,
-            )
-        if has_saved_fd:
-            if st.button("Clear FD Salaries", key=f"clear_fd_{race_id}"):
-                try:
-                    import sqlite3 as _sql
-                    _conn = _sql.connect(str(DB_PATH))
-                    _db_race = _conn.execute(
-                        "SELECT id FROM races WHERE api_race_id = ?", (race_id,)
-                    ).fetchone()
-                    if _db_race:
-                        _conn.execute(
-                            "DELETE FROM salaries WHERE race_id = ? AND platform = 'FanDuel'",
-                            (_db_race[0],))
-                        _conn.commit()
-                    _conn.close()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to clear salaries: {e}")
-    with s_cols[2]:
-        st.markdown("**Manual Practice**")
-        practice_text = st.text_area("Practice", placeholder="Chase Elliott, 3\nDenny Hamlin, 5",
-                                     height=80, label_visibility="collapsed")
-        if practice_text.strip():
-            for line in practice_text.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 2:
-                    try:
-                        practice_data[parts[0]] = float(parts[1])
-                    except (ValueError, IndexError):
-                        pass
-    with s_cols[3]:
-        st.markdown("**Betting Odds**")
-        if auto_odds:
-            st.markdown(
-                f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                f'Auto: {len(auto_odds)} drivers loaded</p>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                'No auto odds — paste win odds below</p>',
-                unsafe_allow_html=True,
-            )
-        odds_text = st.text_area(
-            "Odds", height=120, label_visibility="collapsed",
-            placeholder="Paste win odds:\nCorey Heim+300\nKyle Busch+450\n\nOr comma/space separated:\nKyle Larson, -115\nChase Elliott +1200",
-            help="Paste win odds from any sportsbook. Header lines "
-                 "(race name, date, 'Outright') are auto-skipped.",
-            key=f"odds_paste_{series_id}_{race_id}",
-        )
-        # Parse manual odds — supports copy-paste and CSV formats
-        if odds_text.strip():
-            import re as _re
-            from src.utils import parse_american_odds as _parse_amer
-            # Lines to skip: race name headers, dates, times, section labels
-            _skip_patterns = _re.compile(
-                r'^(outright|futures?|top\s*\d|moneyline|head.to.head'
-                r'|\d{1,2}/\d{1,2}/\d{2,4}'   # dates like 4/10/26
-                r'|\d{1,2}:\d{2}\s*(am|pm)?'    # times like 2:30 PM
-                r')$', _re.IGNORECASE
-            )
-            # Odds tail: a signed/unsigned integer OR the string EVEN/EV/PK
-            # (case-insensitive). Used to detect the odds part of each line.
-            _ODDS_RE = r'(?:[+-]?\d+|even|evens|ev|pk|pick(?:\'?em)?)'
-            _has_odds_re = _re.compile(_ODDS_RE, _re.IGNORECASE)
-            _csv_odds_re = _re.compile(rf'^{_ODDS_RE}$', _re.IGNORECASE)
-            _trail_odds_re = _re.compile(rf'^(.+?)\s*({_ODDS_RE})$', _re.IGNORECASE)
-
-            def _store(name: str, raw_odds: str):
-                """Normalize the odds string to "+N"/"-N" form for downstream."""
-                val = _parse_amer(raw_odds)
-                if val is None:
-                    return False
-                odds_data[name] = f"+{val}" if val >= 0 else str(val)
-                return True
-
-            for line in odds_text.strip().split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                if _skip_patterns.match(line):
-                    continue
-                if not _has_odds_re.search(line):
-                    continue
-                # Format 1: comma-separated "Driver Name, +350"  (or ", EVEN")
-                if "," in line:
-                    parts = [p.strip() for p in line.split(",", 1)]
-                    if len(parts) == 2 and parts[0] and _csv_odds_re.match(parts[1]):
-                        if _store(parts[0], parts[1]):
-                            continue
-                # Format 2: trailing odds with optional whitespace —
-                # handles both "Driver Name +350" and "DriverName+300"
-                # plus "Connor Zilisch EVEN".
-                m = _trail_odds_re.match(line)
-                if m:
-                    name = m.group(1).strip().rstrip(",")
-                    if name:
-                        _store(name, m.group(2))
-            if odds_data:
-                odds_source = "manual"
-                st.success(f"Parsed {len(odds_data)} drivers from pasted odds")
-
-    # Odds priority: manual paste > saved DB > auto-fetched API > salary estimate
-    if not odds_data and race_id:
-        # Try saved odds from DB first (previously imported via script or manual paste)
-        saved_odds = load_race_odds(race_id, series_id)
-        if saved_odds:
-            odds_data = saved_odds
-            odds_source = "saved"
-
-    if not odds_data and auto_odds:
-        odds_data = auto_odds
-        odds_source = "auto"
-
-    # Fallback: estimate odds from DK salary when no real odds available
-    _salary_for_odds = (
-        db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]]
-        if has_saved_dk else pd.DataFrame()
-    )
-    if not odds_data and not _salary_for_odds.empty:
-        odds_data = estimate_odds_from_salaries(_salary_for_odds)
-        if odds_data:
-            odds_source = "salary_estimate"
-            st.markdown(
-                '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.2rem 0;">'
-                'Using salary-estimated odds — paste real odds to improve projections</p>',
-                unsafe_allow_html=True,
-            )
-
-    # Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
-    if odds_data:
-        odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
-
-    # Store odds source for downstream tabs to label correctly
-    st.session_state["odds_source"] = odds_source
-
-    # Show odds source info so user knows where odds came from
-    if odds_data:
-        _src_label = {"saved": "DB (imported)", "auto": "Action Network (auto)",
-                      "manual": "Manual paste", "salary_estimate": "Salary estimate"}.get(odds_source, odds_source)
-        st.markdown(
-            f'<p style="color:#94a3b8;font-size:0.78rem;margin:0.1rem 0;">'
-            f'Using {len(odds_data)} odds from: {_src_label}</p>',
-            unsafe_allow_html=True,
-        )
-    # Debug: show DB odds status for troubleshooting (verbose breakdown by sportsbook)
-    if race_id:
-        _db_odds = load_race_odds(race_id, series_id)
-        _db_count = len(_db_odds) if _db_odds else 0
-        _db_color = "#4ade80" if _db_count > 0 else "#f87171"
-        st.markdown(
-            f'<p style="color:{_db_color};font-size:0.78rem;margin:0.1rem 0;">'
-            f'DB odds for this race: {_db_count} drivers</p>',
-            unsafe_allow_html=True,
-        )
-        # Raw DB diagnostic — breakdown by sportsbook so we can tell if
-        # different sources are mixed or stale
-        try:
-            import sqlite3 as _sql
-            _conn = _sql.connect(str(DB_PATH))
-            _dbrid_row = _conn.execute(
-                "SELECT id, race_name, race_date FROM races WHERE api_race_id = ? AND series_id = ?",
-                (race_id, series_id)
-            ).fetchone()
-            if _dbrid_row:
-                _dbrid, _rname_db, _rdate_db = _dbrid_row
-                _sb_rows = _conn.execute('''
-                    SELECT sportsbook, COUNT(*) AS n, MAX(scraped_at) AS last_saved
-                    FROM odds WHERE race_id = ?
-                    GROUP BY sportsbook ORDER BY COUNT(*) DESC
-                ''', (_dbrid,)).fetchall()
-                _sample = _conn.execute('''
-                    SELECT d.full_name, o.win_odds, o.sportsbook
-                    FROM odds o JOIN drivers d ON d.id = o.driver_id
-                    WHERE o.race_id = ? ORDER BY o.win_odds ASC LIMIT 3
-                ''', (_dbrid,)).fetchall()
-                _sb_text = " | ".join(
-                    f"{sb}:{n} (saved {ts})" for sb, n, ts in _sb_rows
-                ) if _sb_rows else "none"
-                _sample_text = ", ".join(
-                    f"{n} {('+' + str(int(w))) if w and w > 0 else str(int(w) if w else '?')} [{sb}]"
-                    for n, w, sb in _sample
-                ) if _sample else "—"
-                st.markdown(
-                    f'<p style="color:#64748b;font-size:0.72rem;margin:0.1rem 0;font-family:monospace;">'
-                    f'DB race_id={_dbrid} ({_rname_db}, {_rdate_db})<br/>'
-                    f'Sportsbooks: {_sb_text}<br/>'
-                    f'Top 3: {_sample_text}</p>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<p style="color:#f87171;font-size:0.72rem;margin:0.1rem 0;">'
-                    f'DB has NO race entry for api_race_id={race_id} series_id={series_id}</p>',
-                    unsafe_allow_html=True,
-                )
-            _conn.close()
-        except Exception as _e:
-            st.markdown(
-                f'<p style="color:#f87171;font-size:0.72rem;margin:0.1rem 0;">'
-                f'DB diagnostic error: {_e}</p>',
-                unsafe_allow_html=True,
-            )
-
-
+    selected_race = {}
 
 # ============================================================
 # LOAD DATA
@@ -663,37 +374,74 @@ with st.spinner("Loading data..."):
 
 is_prerace = detect_prerace(feed)
 
-# For completed races: ONLY use saved odds, never auto-fetched upcoming odds
-if not is_prerace and race_id and odds_source != "manual":
-    saved_odds = load_race_odds(race_id, series_id)
-    if saved_odds:
-        odds_data = saved_odds
-        odds_source = "saved"
-    else:
-        odds_data = {}
-        odds_source = ""
+if races and not feed:
+    st.warning("The NASCAR API didn't return weekend data for this race — "
+               "entry list, qualifying, and results pages may be empty. "
+               "This is usually temporary; refresh in a minute.")
 
-# Persist odds to DB for the currently selected race
-# Only auto-save if no higher-priority odds (imported/manual) exist in DB
-if odds_data and race_id:
-    _has_imported = False
-    if is_prerace and odds_source in ("auto", "salary_estimate"):
-        _check_saved = load_race_odds(race_id, series_id)
-        if _check_saved:
-            # Higher-priority odds exist — don't overwrite with auto
-            _has_imported = True
-    should_save_odds = (is_prerace and odds_source in ("auto", "salary_estimate") and not _has_imported) or \
-                       odds_source == "manual"
-    if should_save_odds:
-        prop_odds = fetch_nascar_prop_odds(series_id)
-        save_odds_to_db(odds_data, race_id,
-                        sportsbook="manual" if odds_source == "manual" else "auto",
-                        top3_data=prop_odds.get("top3"),
-                        top5_data=prop_odds.get("top5"),
-                        top10_data=prop_odds.get("top10"),
-                        series_id=series_id)
-        if odds_source == "manual":
-            st.sidebar.success(f"Saved {len(odds_data)} odds to DB for race {race_id}")
+# ============================================================
+# SALARIES (from DB — uploads happen on the Data & Settings page)
+# ============================================================
+db_dk_df = query_salaries(race_id=race_id, platform="DraftKings")
+db_fd_df = query_salaries(race_id=race_id, platform="FanDuel")
+has_saved_dk = not db_dk_df.empty
+has_saved_fd = not db_fd_df.empty
+
+dk_df = (db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
+         if has_saved_dk else pd.DataFrame())
+fd_df = (db_fd_df.rename(columns={"Salary": "FD Salary"})[["Driver", "FD Salary"]].copy()
+         if has_saved_fd else pd.DataFrame())
+
+# ============================================================
+# ODDS RESOLUTION (no UI — managed on the Data & Settings page)
+# Priority: saved DB odds (incl. manual pastes) > live auto-fetch
+# (pre-race only) > salary estimate (pre-race only). Completed races
+# never fall back to live odds — those belong to the NEXT race.
+# ============================================================
+odds_data = load_race_odds(race_id, series_id) if race_id else {}
+odds_source = "saved" if odds_data else ""
+
+if not odds_data and is_prerace:
+    auto_odds = fetch_nascar_odds(series_id)
+    if auto_odds:
+        odds_data = auto_odds
+        odds_source = "auto"
+    elif not dk_df.empty:
+        est_odds = estimate_odds_from_salaries(dk_df)
+        if est_odds:
+            odds_data = est_odds
+            odds_source = "salary_estimate"
+
+    # Persist once per session so odds survive into the completed-race view.
+    if odds_data and race_id:
+        _odds_save_key = f"odds_autosaved_{series_id}_{race_id}_{odds_source}"
+        if _odds_save_key not in st.session_state:
+            try:
+                prop_odds = fetch_nascar_prop_odds(series_id)
+                save_odds_to_db(odds_data, race_id, sportsbook=odds_source,
+                                top3_data=prop_odds.get("top3"),
+                                top5_data=prop_odds.get("top5"),
+                                top10_data=prop_odds.get("top10"),
+                                series_id=series_id)
+            except Exception:
+                logging.getLogger("nascar_dfs").warning(
+                    "Failed to persist %s odds for race %s", odds_source, race_id,
+                    exc_info=True)
+            st.session_state[_odds_save_key] = True
+
+# Clean odds keys to match driver names from API (Jr. -> Jr, etc.)
+if odds_data:
+    odds_data = {_clean_api_name(k): v for k, v in odds_data.items()}
+
+# Store odds source for downstream pages (Projections labels salary estimates)
+st.session_state["odds_source"] = odds_source
+
+# ============================================================
+# PRACTICE DATA (manual paste from Data & Settings page wins;
+# otherwise auto-computed from the lap-averages feed below)
+# ============================================================
+from tabs.tab_settings import manual_practice_key
+practice_data = dict(st.session_state.get(manual_practice_key(series_id, race_id), {}))
 
 results_df = extract_race_results(feed) if feed and not is_prerace else pd.DataFrame()
 fl_counts = compute_fastest_laps(lap_data) if lap_data and not is_prerace else {}
@@ -843,70 +591,64 @@ if not lap_averages_df.empty and not practice_data:
                         key = matched
             practice_data[key] = signal
 
-# Parse salary CSVs — priority: CSV upload > saved DB
-if dk_file:
-    dk_df = parse_dk_csv(dk_file)
-elif has_saved_dk:
-    dk_df = db_dk_df.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
-else:
-    dk_df = pd.DataFrame()
+# ============================================================
+# STATUS STRIP — race state + what data is loaded, at a glance
+# ============================================================
+_badge = ('<span class="badge upcoming">Upcoming</span>' if is_prerace
+          else '<span class="badge completed">Completed</span>')
+_date_part = f' · {race_date_raw}' if race_date_raw else ''
 
-if fd_file:
-    fd_df = parse_fd_csv(fd_file)
-elif has_saved_fd:
-    fd_df = db_fd_df.rename(columns={"Salary": "FD Salary"})[["Driver", "FD Salary"]].copy()
-else:
-    fd_df = pd.DataFrame()
 
-# Sync salaries to DB:
-#   CSV upload → always sync (explicit intent for this race)
-#   Auto-fetch → only sync for prerace (auto-fetch is for the upcoming race, not historical)
-if dk_file and not dk_df.empty:
-    sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
+def _stat(label, ok, detail_ok, detail_miss="not loaded"):
+    cls = "ok" if ok else "miss"
+    mark = "✓" if ok else "✗"
+    detail = detail_ok if ok else detail_miss
+    return f'<span class="{cls}">{mark}</span> {label}: {detail}'
 
-if fd_file and not fd_df.empty:
-    sync_fd_salaries_to_db(fd_df, race_id, series_id, race_name)
 
+_odds_label = {"saved": "DB", "auto": "Action Network",
+               "salary_estimate": "salary estimate"}.get(odds_source, "")
+_strip_items = [
+    f'{_badge}<span style="color:#64748b;">{_date_part}</span>',
+    _stat("DK salaries", has_saved_dk, f"{len(db_dk_df)} drivers"),
+    _stat("FD salaries", has_saved_fd, f"{len(db_fd_df)} drivers"),
+    _stat("Odds", bool(odds_data), f"{len(odds_data)} ({_odds_label})"),
+    _stat("Practice", bool(practice_data), f"{len(practice_data)} drivers",
+          "none yet"),
+]
+if not (has_saved_dk and odds_data):
+    _strip_items.append('<span style="color:#64748b;">→ load data on the '
+                        '<b>Data &amp; Settings</b> page</span>')
+st.markdown(f'<div class="status-strip">{"".join(f"<span>{i}</span>" for i in _strip_items)}</div>',
+            unsafe_allow_html=True)
 
 # ============================================================
-# TABS
+# DB HEALTH BANNER (silent when clean)
 # ============================================================
-# st.tabs renders EVERY tab's content on each run (they're just CSS-hidden),
-# so multiple drill-down tables can try to open the driver-history dialog in
-# one run. Streamlit only allows one @st.dialog per run (shared element id),
-# so reset the per-run guard here — the first newly-clicked table wins.
+try:
+    from tabs.tab_db_health import render_health_banner
+    render_health_banner()
+except Exception:
+    pass  # never block the app for a health-check error
+
+# ============================================================
+# PAGES — grouped navigation; only the active page renders
+# ============================================================
+# Keep projection-weight widget state alive across page switches. Streamlit
+# garbage-collects a widget's session-state key on any run where the widget
+# doesn't render — under the old single-page st.tabs layout everything
+# rendered every run, but with st.navigation only the active page does. The
+# Optimizer reads the Projections sliders' pw_* keys, so re-assert them here
+# (the documented keep-alive pattern). Button keys can't be set — skip them.
+for _k in list(st.session_state.keys()):
+    if _k.startswith("pw_") and "btn" not in _k:
+        st.session_state[_k] = st.session_state[_k]
+
+# A per-run guard for the driver-history dialog (Streamlit allows only one
+# @st.dialog per run). With pages only one page renders per run, but pages
+# can still contain multiple drill-down tables — keep the guard.
 from src.components import reset_driver_dialog_guard
 reset_driver_dialog_guard()
-
-# A dedicated "Concrete" tab appears ONLY on concrete race weeks (Nashville,
-# Dover, Bristol) — surfacing the All-Concrete surface group when it's relevant,
-# without cluttering asphalt weeks.
-# Build the tab set from an ordered label list, then map labels -> tab objects.
-# Dict-keyed (not positional tuple-unpacking) so optional tabs like "Concrete"
-# can't desync the assignments. "Concrete" only appears on concrete race weeks
-# (Nashville/Dover/Bristol).
-_concrete_week = is_concrete_track(track_name)
-_tab_labels = [
-    "Race Data", "Practice", "Track History", "Race Analyzer",
-    "Projections", "Optimizer", "Race Lab", "Cautions", "Accuracy",
-    "Standings", "DB Health",
-]
-if _concrete_week:
-    _tab_labels.insert(3, "Concrete")  # right after Track History
-_tabs = dict(zip(_tab_labels, st.tabs(_tab_labels)))
-
-tab_data        = _tabs["Race Data"]
-tab_practice    = _tabs["Practice"]
-tab_history     = _tabs["Track History"]
-tab_concrete    = _tabs.get("Concrete")
-tab_race_analyzer = _tabs["Race Analyzer"]
-tab_proj        = _tabs["Projections"]
-tab_optimizer   = _tabs["Optimizer"]
-tab_racelab     = _tabs["Race Lab"]
-tab_cautions    = _tabs["Cautions"]
-tab_acc         = _tabs["Accuracy"]
-tab_standings   = _tabs["Standings"]
-tab_dbhealth    = _tabs["DB Health"]
 
 from tabs import tab_data as td
 from tabs import tab_practice as tp
@@ -919,8 +661,31 @@ from tabs import tab_cautions as tcau
 from tabs import tab_accuracy as tacc
 from tabs import tab_standings as tstand
 from tabs import tab_db_health as tdbh
+from tabs import tab_settings as tset
 
-with tab_data:
+
+def _page_projections():
+    tproj.render(
+        entry_list_df=entry_list_df, qualifying_df=qualifying_df,
+        lap_averages_df=lap_averages_df, practice_data=practice_data,
+        is_prerace=is_prerace, race_name=race_name, race_id=race_id,
+        track_name=track_name, series_id=series_id, dk_df=dk_df,
+        odds_data=odds_data, scheduled_laps=scheduled_laps,
+        race_date=race_date_raw, season=selected_year,
+    )
+
+
+def _page_optimizer():
+    topt.render(
+        entry_list_df=entry_list_df, qualifying_df=qualifying_df,
+        lap_averages_df=lap_averages_df, practice_data=practice_data,
+        is_prerace=is_prerace, race_name=race_name, race_id=race_id,
+        track_name=track_name, series_id=series_id, dk_df=dk_df,
+        odds_data=odds_data,
+    )
+
+
+def _page_race_data():
     # Load prop odds (top5/top10) from DB — always available even if live fetch fails
     _prop_odds = load_race_prop_odds(race_id, series_id) if race_id else {"top3": {}, "top5": {}, "top10": {}}
     td.render(
@@ -934,7 +699,8 @@ with tab_data:
         race_id=race_id,
     )
 
-with tab_practice:
+
+def _page_practice():
     tp.render(
         lap_averages_df=lap_averages_df, feed=feed,
         race_name=race_name, series_id=series_id,
@@ -942,42 +708,26 @@ with tab_practice:
         track_name=track_name,
     )
 
-with tab_history:
+
+def _page_track_history():
     tth.render(
         track_name=track_name, track_type=track_type, series_id=series_id,
         entry_list_df=entry_list_df,
     )
 
-if tab_concrete is not None:
-    with tab_concrete:
-        tth.render_concrete_tab(series_id=series_id, entry_list_df=entry_list_df)
 
-with tab_race_analyzer:
+def _page_concrete():
+    tth.render_concrete_tab(series_id=series_id, entry_list_df=entry_list_df)
+
+
+def _page_race_analyzer():
     tra.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
     )
 
-with tab_proj:
-    tproj.render(
-        entry_list_df=entry_list_df, qualifying_df=qualifying_df,
-        lap_averages_df=lap_averages_df, practice_data=practice_data,
-        is_prerace=is_prerace, race_name=race_name, race_id=race_id,
-        track_name=track_name, series_id=series_id, dk_df=dk_df,
-        odds_data=odds_data, scheduled_laps=scheduled_laps,
-        race_date=race_date_raw, season=selected_year,
-    )
 
-with tab_optimizer:
-    topt.render(
-        entry_list_df=entry_list_df, qualifying_df=qualifying_df,
-        lap_averages_df=lap_averages_df, practice_data=practice_data,
-        is_prerace=is_prerace, race_name=race_name, race_id=race_id,
-        track_name=track_name, series_id=series_id, dk_df=dk_df,
-        odds_data=odds_data,
-    )
-
-with tab_racelab:
+def _page_race_lab():
     trl.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
@@ -985,25 +735,69 @@ with tab_racelab:
         selected_race=selected_race,
     )
 
-with tab_cautions:
+
+def _page_cautions():
     tcau.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
     )
 
-with tab_acc:
+
+def _page_accuracy():
     tacc.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
     )
 
-with tab_standings:
+
+def _page_standings():
     tstand.render(
         series_id=series_id, series_name=series_name,
         selected_year=selected_year,
     )
 
-with tab_dbhealth:
-    tdbh.render(
-        series_id=series_id, selected_year=selected_year,
-    )
+
+def _page_db_health():
+    tdbh.render(series_id=series_id, selected_year=selected_year)
+
+
+def _page_settings():
+    tset.render(race_id=race_id, series_id=series_id,
+                race_name=race_name, is_prerace=is_prerace)
+
+
+# A dedicated "Concrete" page appears ONLY on concrete race weeks (Nashville,
+# Dover, Bristol) — surfacing the All-Concrete surface group when it's
+# relevant, without cluttering asphalt weeks.
+_research_pages = [
+    st.Page(_page_race_data, title="Race Data", icon="📋", url_path="race-data"),
+    st.Page(_page_practice, title="Practice", icon="⏱️", url_path="practice"),
+    st.Page(_page_track_history, title="Track History", icon="🏟️", url_path="track-history"),
+    st.Page(_page_race_analyzer, title="Race Analyzer", icon="🔬", url_path="race-analyzer"),
+    st.Page(_page_race_lab, title="Race Lab", icon="🧪", url_path="race-lab"),
+]
+if is_concrete_track(track_name):
+    _research_pages.insert(3, st.Page(_page_concrete, title="Concrete", icon="🧱",
+                                      url_path="concrete"))
+
+_nav = st.navigation(
+    {
+        "Build": [
+            st.Page(_page_projections, title="Projections", icon="📈",
+                    url_path="projections", default=True),
+            st.Page(_page_optimizer, title="Optimizer", icon="🧮", url_path="optimizer"),
+        ],
+        "Research": _research_pages,
+        "Review": [
+            st.Page(_page_accuracy, title="Accuracy", icon="🎯", url_path="accuracy"),
+            st.Page(_page_cautions, title="Cautions", icon="🚧", url_path="cautions"),
+            st.Page(_page_standings, title="Standings", icon="🏆", url_path="standings"),
+        ],
+        "Data": [
+            st.Page(_page_settings, title="Data & Settings", icon="⚙️", url_path="settings"),
+            st.Page(_page_db_health, title="DB Health", icon="🩺", url_path="db-health"),
+        ],
+    },
+    position="top",
+)
+_nav.run()
