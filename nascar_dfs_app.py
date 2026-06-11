@@ -49,9 +49,12 @@ st.set_page_config(page_title="NASCAR DFS Hub", page_icon="🏁", layout="wide",
                    initial_sidebar_state="collapsed")
 
 st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap');
 /* ══════════════════════════════════════════════════════════════
    NASCAR DFS Hub — Global Theme
    Palette: slate-950 bg, sky-500 accent (#0ea5e9)
+   Display font: Rajdhani (motorsport timing-screen look) for the
+   brand header + top navigation.
    ══════════════════════════════════════════════════════════════ */
 
 /* ── Base layout ── */
@@ -67,28 +70,46 @@ st.markdown("""<style>
     gap: 0.4rem; min-height: 3.2rem; padding-left: 0.6rem;
 }
 [data-testid="stTopNavSection"] {
-    padding: 8px 16px !important; border-radius: 8px;
+    padding: 8px 18px !important; border-radius: 8px;
+    position: relative;
     transition: background 0.15s ease;
 }
 [data-testid="stTopNavSection"]:hover { background: #1e293b66; }
+/* Accent bar that slides in under the section label on hover */
+[data-testid="stTopNavSection"]::after {
+    content: ""; position: absolute; left: 18px; right: 18px; bottom: 4px;
+    height: 2px; border-radius: 2px;
+    background: linear-gradient(90deg, #0ea5e9, #38bdf8);
+    transform: scaleX(0); transform-origin: left;
+    transition: transform 0.18s ease;
+}
+[data-testid="stTopNavSection"]:hover::after { transform: scaleX(1); }
 [data-testid="stTopNavSection"] p,
 [data-testid="stTopNavSection"] span,
 [data-testid="stTopNavSection"] [data-testid="stMarkdownContainer"] {
-    font-size: 1.05rem !important; font-weight: 700 !important;
-    color: #cbd5e1 !important; letter-spacing: 0.3px;
+    font-family: 'Rajdhani', 'Segoe UI', sans-serif !important;
+    font-size: 1.25rem !important; font-weight: 700 !important;
+    text-transform: uppercase; letter-spacing: 2.5px !important;
+    color: #e2e8f0 !important;
 }
+[data-testid="stTopNavSection"]:hover p,
+[data-testid="stTopNavSection"]:hover span { color: #38bdf8 !important; }
 [data-testid="stTopNavDropdownLink"] {
     padding: 10px 18px !important;
 }
 [data-testid="stTopNavDropdownLink"] p,
 [data-testid="stTopNavDropdownLink"] span {
-    font-size: 0.95rem !important; font-weight: 600 !important;
+    font-family: 'Rajdhani', 'Segoe UI', sans-serif !important;
+    font-size: 1.05rem !important; font-weight: 600 !important;
+    letter-spacing: 1px !important;
 }
+[data-testid="stTopNavDropdownLink"]:hover p,
+[data-testid="stTopNavDropdownLink"]:hover span { color: #38bdf8 !important; }
 @media (max-width: 768px) {
     [data-testid="stTopNavSection"] { padding: 6px 10px !important; }
     [data-testid="stTopNavSection"] p,
     [data-testid="stTopNavSection"] span {
-        font-size: 0.9rem !important;
+        font-size: 1rem !important; letter-spacing: 1.5px !important;
     }
 }
 
@@ -210,6 +231,14 @@ div[data-testid="stRadio"] label:has(input:checked) {
 /* ── Checkboxes ── */
 [data-testid="stCheckbox"] label span { font-size: 0.82rem; }
 
+/* ── Wide-layout toggle — never wrap the label vertically (st.toggle
+   renders as stCheckbox; .st-key-layout_wide is its widget-key class) ── */
+.st-key-layout_wide p {
+    white-space: nowrap !important; word-break: normal !important;
+    font-size: 0.82rem;
+}
+.st-key-layout_wide label { flex-wrap: nowrap !important; }
+
 /* ── Number inputs ── */
 [data-testid="stNumberInput"] input { border-radius: 6px; }
 
@@ -264,7 +293,7 @@ div[data-testid="stRadio"] label:has(input:checked) {
 }
 </style>""", unsafe_allow_html=True)
 
-# Header
+# Header — Rajdhani display type + gradient title to match the top nav
 st.markdown("""<div class="nascar-header" style='
   text-align: center;
   padding: 0.8rem 1.2rem;
@@ -275,10 +304,18 @@ st.markdown("""<div class="nascar-header" style='
   box-shadow: 0 4px 20px rgba(14,165,233,0.08);
 '>
   <h1 style='
-    color: #f1f5f9; margin: 0; font-size: 1.5rem; line-height: 1.2;
-    letter-spacing: 1.5px; font-weight: 700;
+    margin: 0; font-size: 1.9rem; line-height: 1.15;
+    font-family: "Rajdhani", "Segoe UI", sans-serif;
+    text-transform: uppercase; letter-spacing: 5px; font-weight: 700;
+    background: linear-gradient(90deg, #f1f5f9 0%, #38bdf8 50%, #f1f5f9 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: #f1f5f9;
   '>NASCAR DFS Hub</h1>
-  <p style='color: #475569; margin: 0.15rem 0 0; font-size: 0.78rem; letter-spacing: 0.5px;'>
+  <p style='
+    color: #64748b; margin: 0.1rem 0 0; font-size: 0.82rem;
+    font-family: "Rajdhani", "Segoe UI", sans-serif;
+    text-transform: uppercase; letter-spacing: 3px; font-weight: 600;
+  '>
     Projections &middot; Optimizer &middot; Analytics
   </p>
 </div>""", unsafe_allow_html=True)
