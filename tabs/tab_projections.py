@@ -2134,12 +2134,17 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)
-    display_cols.extend(["Proj Finish", "PD Upside",
-                         "Finish Pts", "Diff Pts",
-                         "Led Pts", "FL Pts", "Proj Laps Led", "Proj Fast Laps",
-                         "Avg DK", "Best DK", "Worst DK",
-                         "Avg DK (Similar)", "Similar Races"]
-                        )
+    display_cols.extend(["Proj Finish", "PD Upside"])
+    # The engine's point-component breakdown is DK-SCALED (Finish Pts uses the
+    # DK curve, Led Pts = 0.25/lap, FL Pts = 0.45/lap) — hide it in
+    # FanDuel-only mode so the table doesn't mix scoring systems. Same for
+    # the historical DK-points columns.
+    if _show_dk:
+        display_cols.extend(["Finish Pts", "Diff Pts", "Led Pts", "FL Pts"])
+    display_cols.extend(["Proj Laps Led", "Proj Fast Laps"])
+    if _show_dk:
+        display_cols.extend(["Avg DK", "Best DK", "Worst DK",
+                             "Avg DK (Similar)", "Similar Races"])
     # Signal detail columns at the end — practice before qualifying
     # Net Sig is the weighted average of all normalized signals — the value
     # the engine actually rank-orders on to assign Proj Finish. Useful for

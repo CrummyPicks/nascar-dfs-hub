@@ -59,8 +59,38 @@ st.markdown("""<style>
 [data-testid="collapsedControl"] { display: none; }
 .main .block-container { padding-top: 0.5rem; }
 
-/* ── Top navigation (st.navigation position="top") ── */
-[data-testid="stTopNav"] { background: #0f172a; border-bottom: 1px solid #1e293b; }
+/* ── Top navigation (st.navigation position="top") ──
+   Streamlit's default top-nav items are tiny on desktop — size them up so
+   Build / Research / Review / Data read as real navigation. */
+[data-testid="stTopNav"] {
+    background: #0f172a; border-bottom: 1px solid #1e293b;
+    gap: 0.4rem; min-height: 3.2rem; padding-left: 0.6rem;
+}
+[data-testid="stTopNavSection"] {
+    padding: 8px 16px !important; border-radius: 8px;
+    transition: background 0.15s ease;
+}
+[data-testid="stTopNavSection"]:hover { background: #1e293b66; }
+[data-testid="stTopNavSection"] p,
+[data-testid="stTopNavSection"] span,
+[data-testid="stTopNavSection"] [data-testid="stMarkdownContainer"] {
+    font-size: 1.05rem !important; font-weight: 700 !important;
+    color: #cbd5e1 !important; letter-spacing: 0.3px;
+}
+[data-testid="stTopNavDropdownLink"] {
+    padding: 10px 18px !important;
+}
+[data-testid="stTopNavDropdownLink"] p,
+[data-testid="stTopNavDropdownLink"] span {
+    font-size: 0.95rem !important; font-weight: 600 !important;
+}
+@media (max-width: 768px) {
+    [data-testid="stTopNavSection"] { padding: 6px 10px !important; }
+    [data-testid="stTopNavSection"] p,
+    [data-testid="stTopNavSection"] span {
+        font-size: 0.9rem !important;
+    }
+}
 
 /* ── Metrics ── */
 div[data-testid="stMetric"] {
@@ -259,7 +289,7 @@ st.markdown("""<div class="nascar-header" style='
 # (shared by every page; rendered before navigation)
 # ============================================================
 
-nav_cols = st.columns([1, 1, 3.3, 1.2])
+nav_cols = st.columns([1, 1, 3.0, 1.2, 0.55])
 
 with nav_cols[0]:
     series_name = st.selectbox("Series", list(SERIES_OPTIONS.keys()), key="series_select",
@@ -272,6 +302,27 @@ with nav_cols[3]:
                             key="platform_select", label_visibility="collapsed",
                             help="Which DFS site's salaries, projected points and "
                                  "value columns to show across the app")
+
+with nav_cols[4]:
+    # Layout: Wide uses the full browser width (default — best on desktop
+    # monitors, kills the dead side gutters). Off = centered compact column.
+    # Phones are handled by responsive CSS either way.
+    wide_mode = st.toggle("Wide", value=True, key="layout_wide",
+                          help="Use the full browser width (desktop). "
+                               "Turn off for a centered, narrower layout. "
+                               "Phones auto-adapt regardless.")
+
+if wide_mode:
+    st.markdown("""<style>
+    .block-container {
+        max-width: 100% !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+    }
+    @media (max-width: 768px) {
+        .block-container { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
+    }
+    </style>""", unsafe_allow_html=True)
 
 with nav_cols[1]:
     # Build the year list dynamically so the app rolls over to a new season
