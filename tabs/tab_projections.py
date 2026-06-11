@@ -1851,11 +1851,16 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # FD scoring: finish curve (43/40/38, -1/spot to 40th=1) + 0.5/pos diff
     # + 0.1/lap led + 0.1/lap completed. No fastest-lap points. The DK
     # diff_pts column is (start - finish) × 1.0, so FD diff = diff_pts × 0.5.
-    # Laps completed is estimated at the full race distance for everyone —
-    # a flat constant that doesn't change driver ordering, but keeps the
-    # absolute totals comparable to real FD scores.
+    #
+    # Laps completed is RELIABILITY-WEIGHTED per driver, not flat: FanDuel
+    # pays for every lap completed, so a DNF is a day-ender (lost finish
+    # points AND lost lap points) and chronically laps-down equipment leaks
+    # points weekly. query_expected_laps_fraction blends each driver's
+    # recency-weighted history of (laps completed / winner laps) toward the
+    # field median.
     from src.config import (FD_FINISH_POINTS, FD_PTS_LAPS_LED,
                             FD_PTS_LAPS_COMPLETED, FD_PTS_PLACE_DIFF)
+    from src.data import query_expected_laps_fraction
 
     def _fd_finish_pts(pf):
         """Interpolate the FD finish curve at a fractional projected finish."""
@@ -1868,12 +1873,65 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         frac = max(0.0, min(1.0, pf - lo))
         return FD_FINISH_POINTS.get(lo, 0) * (1 - frac) + FD_FINISH_POINTS.get(hi, 0) * frac
 
-    _fd_comp_pts = (race_laps or 0) * FD_PTS_LAPS_COMPLETED
+    _laps_rates = query_expected_laps_fraction(
+        series_id, before_date=(None if is_prerace else race_date) or None)
+    _rate_median = (_laps_rates.get("_field_median", {}) or {}).get("frac", 0.95)
+    _rate_names = [k for k in _laps_rates if k != "_field_median"]
+
+    def _driver_rate(d):
+        v = _laps_rates.get(d)
+        if v is None and _rate_names:
+            m = fuzzy_match_name(d, _rate_names)
+            v = _laps_rates.get(m) if m else None
+        return v or {"frac": _rate_median, "races": 0, "dnf_rate": 0.0}
+
+    _rl = race_laps or 0
+    _rates_by_driver = {d: _driver_rate(d) for d in proj["Driver"]}
+    proj["Proj Laps"] = proj["Driver"].map(
+        lambda d: round(_rl * _rates_by_driver[d]["frac"], 1))
+    proj["DNF Risk %"] = proj["Driver"].map(
+        lambda d: round(_rates_by_driver[d]["dnf_rate"] * 100, 1))
     proj["Proj FD"] = proj.apply(
         lambda r: round(_fd_finish_pts(r["Proj Finish"])
                         + r["Diff Pts"] * FD_PTS_PLACE_DIFF
                         + r["Proj Laps Led"] * FD_PTS_LAPS_LED
-                        + _fd_comp_pts, 1), axis=1)
+                        + r["Proj Laps"] * FD_PTS_LAPS_COMPLETED, 1), axis=1)
+
+    # FD floor / ceiling — DNF is modeled EXPLICITLY because on FanDuel it
+    # zeroes the laps-completed stream too (DK's floor handles this inside
+    # the engine; FD needs its own).
+    #   Floor   = P(DNF) × (crash-out ~5 laps before half distance, finish
+    #             near last) + (1-P) × (bad-but-running day: finish +7 spots,
+    #             full laps)
+    #   Ceiling = strong day: finish -6 spots, full distance, 1.5× laps led
+    def _fd_floor_ceil(r):
+        d = r["Driver"]
+        rate = _rates_by_driver[d]
+        p_dnf = min(0.35, rate["dnf_rate"])
+        start = r.get("Start")
+        try:
+            start = float(start)
+        except (TypeError, ValueError):
+            start = r["Proj Finish"]
+        dnf_finish = max(1.0, field_size - 2)
+        dnf_laps = 0.45 * _rl
+        fd_dnf = (_fd_finish_pts(dnf_finish)
+                  + (start - dnf_finish) * FD_PTS_PLACE_DIFF
+                  + dnf_laps * FD_PTS_LAPS_COMPLETED)
+        bad_finish = min(field_size, r["Proj Finish"] + 7)
+        fd_bad = (_fd_finish_pts(bad_finish)
+                  + (start - bad_finish) * FD_PTS_PLACE_DIFF
+                  + _rl * FD_PTS_LAPS_COMPLETED)
+        floor = p_dnf * fd_dnf + (1 - p_dnf) * fd_bad
+        good_finish = max(1.0, r["Proj Finish"] - 6)
+        ceil = (_fd_finish_pts(good_finish)
+                + (start - good_finish) * FD_PTS_PLACE_DIFF
+                + r["Proj Laps Led"] * 1.5 * FD_PTS_LAPS_LED
+                + _rl * FD_PTS_LAPS_COMPLETED)
+        return pd.Series({"FD Floor": round(floor, 1),
+                          "FD Ceiling": round(max(ceil, r["Proj FD"]), 1)})
+
+    proj[["FD Floor", "FD Ceiling"]] = proj.apply(_fd_floor_ceil, axis=1)
 
     # PD Upside: categorize each driver by their projected place-differential
     # potential. This is display-only — it does not modify projections.
@@ -1958,9 +2016,45 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         _own_map = _own_gpp
         _lev_map = compute_leverage(_proj_dk_dict, _own_gpp)
         proj["Leverage"] = proj["Driver"].map(_lev_map).round(2)
+
+        # ── FanDuel ownership — its own model, not a copy of DK's ──
+        # Different inputs change the chalk: FD salaries/points (5-man,
+        # different value curve) and a DNF-risk fade (FD players avoid
+        # blow-up risk because a DNF zeroes the laps-completed stream;
+        # cash fades hard, GPP partially chases the discount).
+        if "FD Salary" in proj.columns and proj["FD Salary"].notna().any():
+            _fd_sal_dict = {d: s for d, s in zip(proj["Driver"], proj["FD Salary"])
+                            if pd.notna(s)}
+            _proj_fd_dict = dict(zip(proj["Driver"], proj["Proj FD"]))
+            _dnf_dict = {d: _rates_by_driver[d]["dnf_rate"]
+                         for d in proj["Driver"]}
+            _own_kwargs_fd = dict(
+                drivers=[d for d in proj["Driver"] if d in _fd_sal_dict],
+                proj_dk=_proj_fd_dict,
+                salary=_fd_sal_dict,
+                win_odds=odds_data,
+                qual_pos=qual_pos,
+                proj_finish=_proj_finish_dict,
+                track_type=track_type,
+                field_size=field_size,
+                roster_size=5,   # FanDuel NASCAR rosters 5 drivers
+                dnf_risk=_dnf_dict,
+            )
+            _own_gpp_fd = project_ownership(contest_type="gpp", **_own_kwargs_fd)
+            _own_cash_fd = project_ownership(contest_type="cash", **_own_kwargs_fd)
+            _lev_fd = compute_leverage(_proj_fd_dict, _own_gpp_fd)
+            proj["FD GPP Own%"] = proj["Driver"].map(_own_gpp_fd).round(1)
+            proj["FD Cash Own%"] = proj["Driver"].map(_own_cash_fd).round(1)
+            proj["FD Leverage"] = proj["Driver"].map(_lev_fd).round(2)
+            st.session_state["proj_own_map_fd"] = _own_gpp_fd
+            st.session_state["proj_leverage_map_fd"] = _lev_fd
     except Exception as _ow_err:
         # Non-fatal — ownership is additive info only
         pass
+
+    # FD floor/ceiling for the optimizer's FanDuel Cash/GPP modes
+    st.session_state["proj_floor_map_fd"] = dict(zip(proj["Driver"], proj["FD Floor"]))
+    st.session_state["proj_ceiling_map_fd"] = dict(zip(proj["Driver"], proj["FD Ceiling"]))
 
     # Share Proj DK / Proj FD with optimizer tab via session state
     st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
@@ -2009,20 +2103,34 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         display_cols.append("Proj DK")
     if _show_fd and "Proj FD" in proj.columns:
         display_cols.append("Proj FD")
-    if "Floor" in proj.columns:
+    if _show_dk and "Floor" in proj.columns:
         display_cols.append("Floor")
-    if "Ceiling" in proj.columns:
+    if _show_dk and "Ceiling" in proj.columns:
         display_cols.append("Ceiling")
+    if _show_fd and "FD Floor" in proj.columns:
+        display_cols.append("FD Floor")
+    if _show_fd and "FD Ceiling" in proj.columns:
+        display_cols.append("FD Ceiling")
     if _show_dk and "Value" in proj.columns:
         display_cols.append("Value")
     if _show_fd and "FD Value" in proj.columns:
         display_cols.append("FD Value")
-    if "GPP Own%" in proj.columns:
-        display_cols.append("GPP Own%")
-    if "Cash Own%" in proj.columns:
-        display_cols.append("Cash Own%")
-    if "Leverage" in proj.columns:
-        display_cols.append("Leverage")
+    # Reliability columns — DNF risk matters on both sites; Proj Laps is the
+    # FanDuel laps-completed stream made visible.
+    if "DNF Risk %" in proj.columns:
+        display_cols.append("DNF Risk %")
+    if _show_fd and "Proj Laps" in proj.columns:
+        display_cols.append("Proj Laps")
+    # Ownership: DK-model columns in DK/Both mode, FD-model columns when
+    # FanDuel salaries exist and FD is shown.
+    if _show_dk:
+        for c in ("GPP Own%", "Cash Own%", "Leverage"):
+            if c in proj.columns:
+                display_cols.append(c)
+    if _show_fd:
+        for c in ("FD GPP Own%", "FD Cash Own%", "FD Leverage"):
+            if c in proj.columns:
+                display_cols.append(c)
     qual_col = "Qual Pos" if "Qual Pos" in proj.columns else "Proj Qual Pos"
     if qual_col in proj.columns:
         display_cols.append(qual_col)

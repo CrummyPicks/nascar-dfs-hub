@@ -217,25 +217,29 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
         0
     )
 
-    # Merge projected ownership + leverage if projections tab ran
-    own_map = st.session_state.get("proj_own_map", {})
+    # Merge projected ownership + leverage if projections tab ran. FanDuel
+    # builds use the FD-specific maps (5-man rosters, FD salaries/points and
+    # a DNF-risk ownership fade — different chalk than DK).
+    own_map = st.session_state.get(
+        "proj_own_map_fd" if use_fd_points else "proj_own_map", {})
     if own_map:
         own_norm = build_norm_lookup(own_map)
         pool["Proj Own %"] = pool["Driver"].map(
             lambda d: fuzzy_get(d, own_map, own_norm) or 0).round(1)
-    lev_map = st.session_state.get("proj_leverage_map", {})
+    lev_map = st.session_state.get(
+        "proj_leverage_map_fd" if use_fd_points else "proj_leverage_map", {})
     if lev_map:
         lev_norm = build_norm_lookup(lev_map)
         pool["Leverage"] = pool["Driver"].map(
             lambda d: fuzzy_get(d, lev_map, lev_norm) or 0).round(2)
 
-    # Floor / ceiling DK for cash vs GPP optimization (fall back to median when
-    # the projection engine hasn't populated them, e.g. the composite fallback).
-    # The stored floor/ceiling are DK-points-scaled — for a FanDuel build they
-    # would mix scales with the FD Proj Score, so skip them (floor/ceiling
-    # default to Proj Score and Cash/GPP weighting degrades gracefully).
+    # Floor / ceiling for cash vs GPP optimization (fall back to median when
+    # the projection engine hasn't populated them, e.g. the composite
+    # fallback). FD builds use the FD-scaled floor/ceiling, where DNF risk is
+    # modeled explicitly (a DNF zeroes the laps-completed stream).
     if use_fd_points:
-        floor_map, ceil_map = {}, {}
+        floor_map = st.session_state.get("proj_floor_map_fd", {})
+        ceil_map = st.session_state.get("proj_ceiling_map_fd", {})
     else:
         floor_map = st.session_state.get("proj_floor_map", {})
         ceil_map = st.session_state.get("proj_ceiling_map", {})

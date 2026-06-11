@@ -2040,6 +2040,88 @@ def query_driver_dk_points_by_track_type(
         return {}
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def query_expected_laps_fraction(series_id: int, before_date: str = None,
+                                 recent_n: int = 25) -> dict:
+    """Per-driver expected fraction of the race distance completed.
+
+    FanDuel pays 0.1/lap COMPLETED, so finishing reliability is a first-class
+    FD projection input: a DNF is a day-ender (lost finish points AND lost
+    lap points), and chronically laps-down equipment leaks points every week
+    even when it finishes. This measures both at once.
+
+    Method: for each driver's most recent `recent_n` races, frac =
+    laps_completed / (max laps_completed by anyone in that race) — using the
+    per-race winner distance as the denominator handles shortened and
+    overtime races. Recency-weighted mean (newest race weight 1.0, decaying
+    linearly to 0.4 at the window edge), then blended toward the field
+    median with a races-count prior (k=8) so a 3-race sample isn't trusted
+    as gospel.
+
+    Returns {driver: {"frac": 0-1, "races": n, "dnf_rate": 0-1}} plus a
+    special "_field_median" key with the prior used.
+    """
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where = "WHERE r.series_id = ?"
+        params = [series_id]
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+        rows = conn.execute(f'''
+            SELECT d.full_name, r.race_date, rr.laps_completed,
+                   (SELECT MAX(rr2.laps_completed) FROM race_results rr2
+                    WHERE rr2.race_id = r.id) AS winner_laps,
+                   CASE WHEN LOWER(COALESCE(rr.status,'')) NOT IN ('running','')
+                        THEN 1 ELSE 0 END AS is_dnf
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            {where}
+            ORDER BY d.full_name, r.race_date DESC
+        ''', params).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.warning("query_expected_laps_fraction failed: %s", e)
+        return {}
+
+    per_driver = {}
+    for name, _date, lc, winner_laps, is_dnf in rows:
+        if not winner_laps or winner_laps <= 0:
+            continue
+        frac = max(0.0, min(1.0, (lc or 0) / winner_laps))
+        per_driver.setdefault(name, []).append((frac, is_dnf))
+
+    raw = {}
+    for name, recs in per_driver.items():
+        recs = recs[:recent_n]   # already newest-first
+        n = len(recs)
+        if n == 0:
+            continue
+        # Linear recency decay: newest 1.0 -> oldest 0.4
+        weights = [1.0 - 0.6 * (i / max(n - 1, 1)) for i in range(n)]
+        wsum = sum(weights)
+        frac = sum(f * w for (f, _), w in zip(recs, weights)) / wsum
+        dnf_rate = sum(d for _, d in recs) / n
+        raw[name] = {"frac": frac, "races": n, "dnf_rate": dnf_rate}
+
+    if not raw:
+        return {}
+    fracs = sorted(v["frac"] for v in raw.values())
+    field_median = fracs[len(fracs) // 2]
+
+    K = 8  # prior strength in pseudo-races
+    out = {"_field_median": {"frac": round(field_median, 4), "races": 0,
+                             "dnf_rate": 0.0}}
+    for name, v in raw.items():
+        blended = (v["races"] * v["frac"] + K * field_median) / (v["races"] + K)
+        out[name] = {"frac": round(blended, 4), "races": v["races"],
+                     "dnf_rate": round(v["dnf_rate"], 3)}
+    return out
+
+
 def query_driver_track_dnf(track_name: str, series_id: int,
                             before_date: str = None,
                             min_races: int = 3) -> dict:

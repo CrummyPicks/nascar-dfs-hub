@@ -110,6 +110,7 @@ def project_ownership(
     roster_size: int = 6,
     gpp_dispersion: float = 1.0,
     contest_type: str = "gpp",
+    dnf_risk: dict | None = None,
 ) -> dict:
     """Return projected ownership % per driver.
 
@@ -131,6 +132,12 @@ def project_ownership(
         roster_size: number of roster slots (6 for Cup DK, 5 for Truck)
         gpp_dispersion: 0.5-1.5 range. <1.0 flattens (less chalk), >1.0
             concentrates (more chalk). 1.0 is neutral baseline.
+        dnf_risk: optional {driver: P(DNF) 0-1}. When provided, ownership is
+            faded for risky drivers — hard in cash (players avoid blow-up
+            risk), softer in GPP (some players chase the discount). Pass this
+            for FANDUEL projections, where a DNF zeroes the laps-completed
+            points and is a day-ender; DK calls can omit it to keep the
+            DK-calibrated model untouched.
 
     Returns:
         {driver: ownership_pct_0_to_100}
@@ -249,6 +256,11 @@ def project_ownership(
         CONCENTRATION, CAP = 3.0, 80.0
     else:
         CONCENTRATION, CAP = 2.3, 62.0
+    # DNF-risk fade (FanDuel): cash players hard-avoid blow-up risk, GPP
+    # players partially chase the resulting ownership discount.
+    _is_cash = (contest_type or "gpp").lower() == "cash"
+    _dnf_fade_strength = 0.85 if _is_cash else 0.45
+
     raw = {}
     for d in drivers:
         score = (
@@ -258,6 +270,9 @@ def project_ownership(
             + qual_score.get(d, 0) * W_QUAL
         )
         score *= pd_multiplier.get(d, 1.0)
+        if dnf_risk:
+            p = min(0.40, max(0.0, dnf_risk.get(d, 0.0) or 0.0))
+            score *= (1.0 - _dnf_fade_strength * p)
         raw[d] = max(score, 0.0) ** (CONCENTRATION * gpp_dispersion)
 
     # ── Normalize to sum to roster_size * 100 ──
