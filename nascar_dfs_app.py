@@ -623,15 +623,6 @@ st.markdown(f'<div class="status-strip">{"".join(f"<span>{i}</span>" for i in _s
             unsafe_allow_html=True)
 
 # ============================================================
-# DB HEALTH BANNER (silent when clean)
-# ============================================================
-try:
-    from tabs.tab_db_health import render_health_banner
-    render_health_banner()
-except Exception:
-    pass  # never block the app for a health-check error
-
-# ============================================================
 # PAGES — grouped navigation; only the active page renders
 # ============================================================
 # Keep projection-weight widget state alive across page switches. Streamlit
@@ -758,6 +749,13 @@ def _page_standings():
 
 
 def _page_db_health():
+    # Quick-summary banner (silent when clean) above the full diagnostics.
+    # This used to render in the shell on every page — moved here so data
+    # warnings live with the rest of the DB health info.
+    try:
+        tdbh.render_health_banner()
+    except Exception:
+        pass  # never block the page for a health-check error
     tdbh.render(series_id=series_id, selected_year=selected_year)
 
 
@@ -770,7 +768,8 @@ def _page_settings():
 # Dover, Bristol) — surfacing the All-Concrete surface group when it's
 # relevant, without cluttering asphalt weeks.
 _research_pages = [
-    st.Page(_page_race_data, title="Race Data", icon="📋", url_path="race-data"),
+    st.Page(_page_race_data, title="Race Data", icon="📋", url_path="race-data",
+            default=True),
     st.Page(_page_practice, title="Practice", icon="⏱️", url_path="practice"),
     st.Page(_page_track_history, title="Track History", icon="🏟️", url_path="track-history"),
     st.Page(_page_race_analyzer, title="Race Analyzer", icon="🔬", url_path="race-analyzer"),
@@ -784,7 +783,7 @@ _nav = st.navigation(
     {
         "Build": [
             st.Page(_page_projections, title="Projections", icon="📈",
-                    url_path="projections", default=True),
+                    url_path="projections"),
             st.Page(_page_optimizer, title="Optimizer", icon="🧮", url_path="optimizer"),
         ],
         "Research": _research_pages,
