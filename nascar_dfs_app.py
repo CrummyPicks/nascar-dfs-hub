@@ -127,7 +127,9 @@ div[data-testid="stMetric"] label {
     letter-spacing: 0.8px; font-weight: 600;
 }
 div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    color: #f1f5f9 !important; font-size: 1.15rem; font-weight: 700;
+    font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+    color: #f1f5f9 !important; font-size: 1.45rem; font-weight: 700;
+    letter-spacing: 0.5px;
 }
 
 /* ── Tabs (still used INSIDE some pages) ── */

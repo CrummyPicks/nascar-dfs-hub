@@ -67,7 +67,9 @@ def _metric_cards(metrics):
             f'<div style="background:{color}22; border:2px solid {color}; '
             f'border-radius:8px; padding:12px 16px; text-align:center;">'
             f'<span style="color:#8892a4; font-size:0.75rem; text-transform:uppercase;">{label}</span><br>'
-            f'<span style="color:{color}; font-size:1.5rem; font-weight:700;">{value}</span></div>',
+            f'<span style="font-family:\'Rajdhani\',\'Segoe UI\',sans-serif; '
+            f'color:{color}; font-size:1.7rem; font-weight:700; '
+            f'letter-spacing:0.5px;">{value}</span></div>',
             unsafe_allow_html=True,
         )
 

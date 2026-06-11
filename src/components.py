@@ -6,11 +6,18 @@ import streamlit as st
 
 
 def section_header(title: str, subtitle: str = ""):
-    """Render a styled section header for tab pages."""
+    """Render a styled section header for tab pages.
+
+    Title uses the Rajdhani display face (loaded by the app shell) so page
+    headers match the brand header / top nav; subtitles stay in the body
+    font for contrast.
+    """
     sub_html = f'<span style="color:#475569; font-size:0.78rem; margin-left:0.6rem;">{subtitle}</span>' if subtitle else ""
     st.markdown(
         f'<div style="padding:0.4rem 0;margin-bottom:0.5rem;border-bottom:1px solid #1e293b;">'
-        f'<span style="color:#e2e8f0;font-size:1.15rem;font-weight:700;letter-spacing:0.3px;">{title}</span>'
+        f'<span style="font-family:\'Rajdhani\',\'Segoe UI\',sans-serif;'
+        f'color:#e2e8f0;font-size:1.45rem;font-weight:700;'
+        f'text-transform:uppercase;letter-spacing:2px;">{title}</span>'
         f'{sub_html}</div>',
         unsafe_allow_html=True,
     )
