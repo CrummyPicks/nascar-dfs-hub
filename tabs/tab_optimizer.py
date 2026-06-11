@@ -20,7 +20,7 @@ PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
 def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
                           practice_data, race_name, track_name, series_id,
-                          dk_df, odds_data=None):
+                          dk_df, odds_data=None, use_fd_points=False):
     """Build a driver pool with projection scores for optimization.
 
     Uses the same weight system as the Projections tab — reads weights from
@@ -194,8 +194,9 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
                     odds_scores[d] = 20
     pool["OddsScore"] = pool["Driver"].map(lambda d: odds_scores.get(d, 35))
 
-    # ── Use Proj DK from Projections tab when available ──────────────────────
-    proj_dk_map = st.session_state.get("proj_dk_map", {})
+    # ── Use Proj DK / Proj FD from Projections tab when available ────────────
+    _proj_key = "proj_fd_map" if use_fd_points else "proj_dk_map"
+    proj_dk_map = st.session_state.get(_proj_key, {})
     if proj_dk_map:
         proj_dk_norm = build_norm_lookup(proj_dk_map)
         pool["Proj Score"] = pool["Driver"].map(
@@ -230,8 +231,14 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
     # Floor / ceiling DK for cash vs GPP optimization (fall back to median when
     # the projection engine hasn't populated them, e.g. the composite fallback).
-    floor_map = st.session_state.get("proj_floor_map", {})
-    ceil_map = st.session_state.get("proj_ceiling_map", {})
+    # The stored floor/ceiling are DK-points-scaled — for a FanDuel build they
+    # would mix scales with the FD Proj Score, so skip them (floor/ceiling
+    # default to Proj Score and Cash/GPP weighting degrades gracefully).
+    if use_fd_points:
+        floor_map, ceil_map = {}, {}
+    else:
+        floor_map = st.session_state.get("proj_floor_map", {})
+        ceil_map = st.session_state.get("proj_ceiling_map", {})
     if floor_map:
         fnorm = build_norm_lookup(floor_map)
         pool["Floor"] = pool["Driver"].map(
@@ -254,7 +261,8 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     # tab). In the rare case that engine didn't populate session state (e.g.
     # empty entry list), fall through silently to a simplified composite —
     # both use the same weight settings, so the user experience is consistent.
-    engine_label = "Proj DK from projection engine"
+    engine_label = ("Proj FD from projection engine" if use_fd_points
+                    else "Proj DK from projection engine")
 
     # Preserve all pool columns (includes Proj Own % / Leverage if present)
     return pool.sort_values("Proj Score", ascending=False).reset_index(drop=True), engine_label
@@ -640,39 +648,57 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
 
 def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
-           odds_data=None):
-    """Render the Optimizer tab."""
+           odds_data=None, fd_df=None, platform="DraftKings"):
+    """Render the Optimizer tab.
+
+    platform: "DraftKings", "FanDuel", or "Both". A lineup is always built
+    for ONE site — with "Both" selected, a site toggle appears here. FanDuel
+    rules: 5-driver roster, $50k cap, no fastest-lap points.
+    """
     from src.components import section_header
     section_header("Lineup Optimizer", race_name)
 
-    if dk_df.empty:
-        # Try loading salaries from DB for completed races
-        from src.data import query_salaries
-        db_sal = query_salaries(race_id=race_id, platform="DraftKings")
-        if not db_sal.empty and "Salary" in db_sal.columns:
-            dk_df = db_sal.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
-        if dk_df.empty:
-            if not is_prerace:
-                st.warning("No saved salary data for this race. Upload a DK CSV below to add it.")
-                dk_upload = st.file_uploader(
-                    "Upload DK Salary CSV for this race",
-                    type=["csv"], key=f"opt_dk_upload_{race_id}")
-                if dk_upload:
-                    from src.data import parse_dk_csv, sync_dk_salaries_to_db
-                    dk_df = parse_dk_csv(dk_upload)
-                    if not dk_df.empty:
-                        count = sync_dk_salaries_to_db(dk_df, race_id, series_id, race_name)
-                        st.success(f"Saved {count} DK salaries to DB for {race_name}")
-                        st.rerun()
-                    else:
-                        st.error("Could not parse DK CSV")
-                return
-            else:
-                st.info("No salary data available. Upload a DK CSV in Settings to enable the optimizer.")
-                return
+    if fd_df is None:
+        fd_df = pd.DataFrame()
 
-    # Initialize session state — clear when race/series changes
-    race_key = f"{series_id}_{race_id}"
+    # Resolve the site this lineup is for. Internally the pool keeps using
+    # the "DK Salary" column name regardless of site (it's the one salary
+    # column the whole optimizer pipeline reads); FD mode swaps in FanDuel
+    # salaries/points/cap/roster and relabels at display/export time.
+    if platform == "Both":
+        site = st.radio("Build lineup for", ["DraftKings", "FanDuel"],
+                        horizontal=True, key="opt_site",
+                        help="A lineup belongs to one site. Salaries, cap, "
+                             "roster size and scoring switch accordingly.")
+    else:
+        site = platform
+    is_fd = (site == "FanDuel")
+
+    if is_fd:
+        from src.config import FD_SALARY_CAP, FD_ROSTER_SIZE
+        site_cap, site_roster = FD_SALARY_CAP, FD_ROSTER_SIZE
+        sal_source = (fd_df.rename(columns={"FD Salary": "DK Salary"})
+                      if not fd_df.empty else pd.DataFrame())
+    else:
+        site_cap, site_roster = SALARY_CAP, ROSTER_SIZE
+        sal_source = dk_df
+
+    if sal_source.empty:
+        # Try loading salaries from DB
+        from src.data import query_salaries
+        db_sal = query_salaries(race_id=race_id,
+                                platform="FanDuel" if is_fd else "DraftKings")
+        if not db_sal.empty and "Salary" in db_sal.columns:
+            sal_source = db_sal.rename(columns={"Salary": "DK Salary"})[["Driver", "DK Salary"]].copy()
+        if sal_source.empty:
+            st.info(f"No {site} salary data for this race — load the CSV on "
+                    "the Data & Settings page to enable the optimizer.")
+            return
+    dk_df = sal_source
+
+    # Initialize session state — clear when race/series/site changes (a DK
+    # lineup or lock set is meaningless for a FanDuel build and vice versa)
+    race_key = f"{series_id}_{race_id}_{site}"
     if st.session_state.get("opt_race_key") != race_key:
         st.session_state.opt_race_key = race_key
         st.session_state.opt_lineup = []
@@ -692,12 +718,14 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
     if "opt_overrides" not in st.session_state:
         st.session_state.opt_overrides = {}
 
-    # --- Settings bar ---
+    # --- Settings bar --- (site-keyed so DK/FD each keep their own defaults)
     s1, s2, s3, s4 = st.columns(4)
     with s1:
-        salary_cap = st.number_input("Salary Cap", 40000, 60000, SALARY_CAP, 1000, key="opt_cap")
+        salary_cap = st.number_input("Salary Cap", 40000, 60000, site_cap, 1000,
+                                     key=f"opt_cap_{site}")
     with s2:
-        roster_size = st.number_input("Roster Size", 4, 8, ROSTER_SIZE, key="opt_roster")
+        roster_size = st.number_input("Roster Size", 4, 8, site_roster,
+                                      key=f"opt_roster_{site}")
     with s3:
         mode = st.selectbox("Mode", ["Projection", "Cash", "GPP"], key="opt_mode",
                             help="Projection: the straight best-projected lineups "
@@ -729,7 +757,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         pool, engine_label = _get_projection_pool(
             entry_list_df, qualifying_df, lap_averages_df,
             practice_data, race_name, track_name, series_id,
-            dk_df, odds_data=odds_data)
+            dk_df, odds_data=odds_data, use_fd_points=is_fd)
 
     if pool.empty:
         st.warning("Could not build projection pool. Check salary data.")
@@ -1357,8 +1385,9 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 row["Projected"] = round(sum(d["Proj Score"] for d in lu), 1)
                 dk_rows.append(row)
             dk_csv = pd.DataFrame(dk_rows).to_csv(index=False).encode("utf-8")
-            st.download_button("Export DK Import CSV", dk_csv,
-                               f"{race_name.replace(' ', '_')}_lineups.csv",
+            _site_tag = "FD" if is_fd else "DK"
+            st.download_button(f"Export {_site_tag} Import CSV", dk_csv,
+                               f"{race_name.replace(' ', '_')}_{_site_tag}_lineups.csv",
                                "text/csv", key="opt_export_dk")
         with exp_cols[1]:
             detail_rows = []
@@ -1366,7 +1395,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                 for d in lu:
                     detail_rows.append({
                         "Lineup": i + 1, "Driver": d["Driver"],
-                        "DK Salary": d["DK Salary"],
+                        ("FD Salary" if is_fd else "DK Salary"): d["DK Salary"],
                         "Proj Score": round(d["Proj Score"], 1),
                         "Value": round(d.get("Value", 0), 2),
                     })

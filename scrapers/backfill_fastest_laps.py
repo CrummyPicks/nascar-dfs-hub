@@ -14,25 +14,27 @@ Usage:
 
 import sqlite3
 import requests
+import sys
 import time
 import argparse
 import os
 import re
 from collections import defaultdict
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# Use the ONE canonical scoring implementation. This script used to carry
+# its own DK/FD tables and they had both drifted from the real scoring
+# (DK 21st was 22 instead of 21; FD 1st was 52 instead of 43) — every
+# manual run silently rewrote dfs_points with wrong values.
+from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS
+from src.utils import calc_dk_points, calc_fd_points
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "nascar.db")
 NASCAR_API_BASE = "https://cf.nascar.com/cacher"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-}
-
-# DK scoring
-DK_FINISH_POINTS = {
-    1: 45, 2: 42, 3: 41, 4: 40, 5: 39, 6: 38, 7: 37, 8: 36, 9: 35, 10: 34,
-    11: 32, 12: 31, 13: 30, 14: 29, 15: 28, 16: 27, 17: 26, 18: 25, 19: 24, 20: 23,
-    21: 22, 22: 21, 23: 20, 24: 19, 25: 18, 26: 17, 27: 16, 28: 15, 29: 14, 30: 13,
-    31: 12, 32: 11, 33: 10, 34: 9, 35: 8, 36: 7, 37: 6, 38: 5, 39: 4, 40: 3,
 }
 
 
@@ -84,30 +86,6 @@ def compute_fastest_laps(lap_data: dict) -> dict:
         if best_d:
             counts[best_d] += 1
     return dict(counts)
-
-
-def calc_dk_points(finish, start, laps_led, fastest_laps):
-    """Calculate DraftKings points."""
-    finish_pts = DK_FINISH_POINTS.get(finish, max(0, 44 - finish)) if finish else 0
-    diff = ((start or finish or 40) - (finish or 40)) * 1.0
-    led = (laps_led or 0) * 0.25
-    fl = (fastest_laps or 0) * 0.45
-    return finish_pts + diff + led + fl
-
-
-def calc_fd_points(finish, start, laps_led, fastest_laps):
-    """Calculate FanDuel points."""
-    FD = {
-        1: 52, 2: 47, 3: 44, 4: 42, 5: 41, 6: 40, 7: 39, 8: 38, 9: 37, 10: 36,
-        11: 34, 12: 33, 13: 32, 14: 31, 15: 30, 16: 29, 17: 28, 18: 27, 19: 26, 20: 25,
-        21: 22, 22: 21, 23: 20, 24: 19, 25: 18, 26: 17, 27: 16, 28: 15, 29: 14, 30: 13,
-        31: 12, 32: 11, 33: 10, 34: 9, 35: 8, 36: 7, 37: 6, 38: 5, 39: 4, 40: 3,
-    }
-    finish_pts = FD.get(finish, max(0, 51 - finish)) if finish else 0
-    diff = ((start or finish or 40) - (finish or 40)) * 0.5
-    led = (laps_led or 0) * 0.1
-    fl = (fastest_laps or 0) * 0.2
-    return finish_pts + diff + led + fl
 
 
 def _fuzzy_get(name, fl_map):
@@ -221,7 +199,7 @@ def main():
         # Get current race_results for this race
         results = conn.execute("""
             SELECT rr.id, rr.driver_id, rr.start_pos, rr.finish_pos,
-                   rr.laps_led, rr.fastest_laps, d.full_name
+                   rr.laps_led, rr.fastest_laps, rr.laps_completed, d.full_name
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             WHERE rr.race_id = ?
@@ -248,26 +226,23 @@ def main():
             finish = rr["finish_pos"] or 0
             start = rr["start_pos"] or 0
             ll = rr["laps_led"] or 0
+            laps_comp = rr["laps_completed"] or 0
             dk_pts = calc_dk_points(finish, start, ll, new_fl)
-            fd_pts = calc_fd_points(finish, start, ll, new_fl)
+            fd_pts = calc_fd_points(finish, start, ll, laps_comp)
 
             # DK score breakdown
-            dk_place = DK_FINISH_POINTS.get(finish, max(0, 44 - finish)) if finish else 0
+            dk_place = DK_FINISH_POINTS.get(finish, 0) if finish else 0
             dk_diff = ((start or finish or 40) - (finish or 40)) * 1.0
             dk_led = ll * 0.25
             dk_fl = new_fl * 0.45
 
-            # FD score breakdown
-            FD_PTS = {
-                1: 52, 2: 47, 3: 44, 4: 42, 5: 41, 6: 40, 7: 39, 8: 38, 9: 37, 10: 36,
-                11: 34, 12: 33, 13: 32, 14: 31, 15: 30, 16: 29, 17: 28, 18: 27, 19: 26, 20: 25,
-                21: 22, 22: 21, 23: 20, 24: 19, 25: 18, 26: 17, 27: 16, 28: 15, 29: 14, 30: 13,
-                31: 12, 32: 11, 33: 10, 34: 9, 35: 8, 36: 7, 37: 6, 38: 5, 39: 4, 40: 3,
-            }
-            fd_place = FD_PTS.get(finish, max(0, 51 - finish)) if finish else 0
+            # FD score breakdown — FD pays NO fastest-lap points; the
+            # laps-completed component (0.1/lap) has no dedicated column,
+            # so the stored breakdown sums to dfs_score minus comp points.
+            fd_place = FD_FINISH_POINTS.get(finish, 0) if finish else 0
             fd_diff = ((start or finish or 40) - (finish or 40)) * 0.5
             fd_led = ll * 0.1
-            fd_fl = new_fl * 0.2
+            fd_fl = 0.0
 
             # Upsert dfs_points with full breakdown
             conn.execute("""

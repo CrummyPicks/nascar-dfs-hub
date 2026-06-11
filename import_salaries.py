@@ -391,20 +391,48 @@ def clear_odds():
     return None
 
 
-def import_salary(recent_files):
-    """Import salaries for one series+race. Returns (race_name, count, type) or None."""
+def _filter_files_by_platform(recent_files, platform):
+    """Narrow the CSV candidate list to one platform's files."""
+    if platform == "dk":
+        return [(f, m) for f, m in recent_files
+                if os.path.basename(f).lower().startswith("dk")]
+    if platform == "fd":
+        return [(f, m) for f, m in recent_files
+                if "fanduel" in os.path.basename(f).lower()
+                or os.path.basename(f).lower().startswith("fd")]
+    return recent_files
+
+
+def import_salary(recent_files, platform=None):
+    """Import salaries for one series+race. Returns (race_name, count, type) or None.
+
+    platform: "dk", "fd", or None (auto-detect from the file's columns).
+    """
     series_id, series_name = pick_series()
 
-    # Pick CSV
-    csv_path = pick_csv(recent_files)
+    # Pick CSV — narrowed to the chosen platform's files when one was picked
+    candidates = _filter_files_by_platform(recent_files, platform)
+    if platform and not candidates:
+        plat_label = "DraftKings (DKSalaries*.csv)" if platform == "dk" else "FanDuel (FanDuel*.csv)"
+        print(f"  No recent {plat_label} files found in Downloads/Desktop.")
+    csv_path = pick_csv(candidates)
     if not csv_path:
         print("  No file selected. Skipping.")
         return None
 
     print(f"\n  File: {os.path.basename(csv_path)}")
 
-    # Parse
-    platform = detect_platform(csv_path)
+    # Parse — sanity-check the file's columns against the chosen platform
+    detected = detect_platform(csv_path)
+    if platform and detected != platform:
+        want = "DraftKings" if platform == "dk" else "FanDuel"
+        looks = "DraftKings" if detected == "dk" else "FanDuel"
+        confirm = input(f"  ! You chose {want} import but this file looks like a "
+                        f"{looks} export. Continue as {looks}? (y/N): ").strip().lower()
+        if confirm != "y":
+            print("  Cancelled.")
+            return None
+    platform = detected
     if platform == "dk":
         df = parse_dk_csv(open(csv_path, "rb"))
         sal_col = "DK Salary"
@@ -475,6 +503,23 @@ def _sync_db_with_origin():
     if _git("fetch", "origin").returncode != 0:
         print("  ! Could not reach GitHub — continuing with the local database.")
         return
+
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if branch != "main":
+        # On a feature branch: NEVER reset to origin/main — that wipes the
+        # branch's code commits (this exact accident destroyed the app-revamp
+        # branch on 2026-06-10). Just refresh nascar.db from origin instead.
+        if _git("status", "--porcelain", "nascar.db").stdout.strip():
+            print(f"  ! On branch '{branch}' and nascar.db has uncommitted "
+                  "changes — skipping sync so nothing is lost.")
+            return
+        if _git("checkout", "origin/main", "--", "nascar.db").returncode == 0:
+            print(f"  OK — pulled latest nascar.db from GitHub. (On branch "
+                  f"'{branch}'; code commits untouched.)")
+        else:
+            print("  ! Could not refresh nascar.db — continuing with local copy.")
+        return
+
     behind = _git("rev-list", "--count", "HEAD..origin/main").stdout.strip() or "0"
     ahead = _git("rev-list", "--count", "origin/main..HEAD").stdout.strip() or "0"
     if behind == "0" and ahead == "0":
@@ -484,8 +529,17 @@ def _sync_db_with_origin():
         print("  ! You have uncommitted changes — skipping auto-sync so nothing "
               "is lost. Commit/stash them (or run `git pull`) and retry.")
         return
-    # Any local-ahead commits here are superseded auto-generated DB blobs; origin's
-    # daily refresh is the authoritative superset, so reset to it.
+    if ahead != "0":
+        # Only reset away local-ahead commits if they touch NOTHING but
+        # nascar.db (i.e. superseded auto-generated DB blobs). Code commits
+        # must never be silently discarded.
+        changed = _git("diff", "--name-only", "origin/main...HEAD").stdout.strip().splitlines()
+        non_db = [f for f in changed if f and f != "nascar.db"]
+        if non_db:
+            print(f"  ! Local commits contain code changes ({', '.join(non_db[:5])}"
+                  f"{'...' if len(non_db) > 5 else ''}) — NOT resetting.")
+            print("    Push/merge them first, or rerun with --no-sync.")
+            return
     if _git("reset", "--hard", "origin/main").returncode == 0:
         print(f"  OK — local DB synced with GitHub (was behind {behind}, ahead {ahead}).")
     else:
@@ -512,37 +566,44 @@ def main():
 
     while True:
         print(f"\n  What would you like to do?")
-        print(f"    [1] Import DK/FD Salaries (from CSV)")
-        print(f"    [2] Import Sportsbook Odds (paste from website)")
-        print(f"    [3] Import Both (salaries + odds for same race)")
-        print(f"    [4] Clear odds for a race (wrong race / wrong series)")
+        print(f"    [1] Import DraftKings Salaries (from CSV)")
+        print(f"    [2] Import FanDuel Salaries (from CSV)")
+        print(f"    [3] Import Sportsbook Odds (paste from website)")
+        print(f"    [4] Import Both (salaries + odds for same race)")
+        print(f"    [5] Clear odds for a race (wrong race / wrong series)")
         print(f"    [q] Done — commit & push")
 
-        choice = input(f"\n  Select (1/2/3/4/q) [1]: ").strip().lower()
+        choice = input(f"\n  Select (1/2/3/4/5/q) [1]: ").strip().lower()
 
         if choice in ("q", "quit", "exit", "done"):
             break
 
         if choice == "2":
-            result = import_odds()
+            result = import_salary(recent_files, platform="fd")
             if result:
                 imported.append(result)
         elif choice == "3":
+            result = import_odds()
+            if result:
+                imported.append(result)
+        elif choice == "4":
             # Import both for same flow
             print(f"\n  --- Import Salaries ---")
-            sal_result = import_salary(recent_files)
+            plat = input("  Salary platform — DraftKings or FanDuel? (d/f) [d]: ").strip().lower()
+            sal_result = import_salary(recent_files,
+                                       platform="fd" if plat == "f" else "dk")
             if sal_result:
                 imported.append(sal_result)
             print(f"\n  --- Import Odds ---")
             odds_result = import_odds()
             if odds_result:
                 imported.append(odds_result)
-        elif choice == "4":
+        elif choice == "5":
             result = clear_odds()
             if result:
                 imported.append(result)
         else:
-            result = import_salary(recent_files)
+            result = import_salary(recent_files, platform="dk")
             if result:
                 imported.append(result)
 
@@ -640,7 +701,18 @@ def main():
         else:
             print(f"  OK: {r2.stdout.strip()}")
 
-        # Step 3: git push
+        # Step 3: git push — only from main. Pushing a feature branch from
+        # here could publish unapproved code; prod deploys from main anyway.
+        rb = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                            capture_output=True, text=True, cwd=project_dir)
+        cur_branch = rb.stdout.strip()
+        if cur_branch != "main":
+            print(f"\n  [3/3] git push — SKIPPED (on branch '{cur_branch}', not main)")
+            print(f"  Your import is committed locally. It goes live when "
+                  f"'{cur_branch}' is merged to main and pushed.")
+            input("\n  Press Enter to close...")
+            return
+
         print(f"\n  [3/3] git push")
         r3 = subprocess.run(["git", "push"],
                             capture_output=True, text=True, cwd=project_dir)

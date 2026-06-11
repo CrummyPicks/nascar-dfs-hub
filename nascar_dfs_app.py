@@ -259,12 +259,19 @@ st.markdown("""<div class="nascar-header" style='
 # (shared by every page; rendered before navigation)
 # ============================================================
 
-nav_cols = st.columns([1, 1, 4])
+nav_cols = st.columns([1, 1, 3.3, 1.2])
 
 with nav_cols[0]:
     series_name = st.selectbox("Series", list(SERIES_OPTIONS.keys()), key="series_select",
                                label_visibility="collapsed")
     series_id = SERIES_OPTIONS[series_name]
+
+with nav_cols[3]:
+    # Platform filter: which site's salaries/projections to show app-wide.
+    platform = st.selectbox("Platform", ["DraftKings", "FanDuel", "Both"],
+                            key="platform_select", label_visibility="collapsed",
+                            help="Which DFS site's salaries, projected points and "
+                                 "value columns to show across the app")
 
 with nav_cols[1]:
     # Build the year list dynamically so the app rolls over to a new season
@@ -663,6 +670,7 @@ def _page_projections():
         track_name=track_name, series_id=series_id, dk_df=dk_df,
         odds_data=odds_data, scheduled_laps=scheduled_laps,
         race_date=race_date_raw, season=selected_year,
+        fd_df=fd_df, platform=platform,
     )
 
 
@@ -672,7 +680,7 @@ def _page_optimizer():
         lap_averages_df=lap_averages_df, practice_data=practice_data,
         is_prerace=is_prerace, race_name=race_name, race_id=race_id,
         track_name=track_name, series_id=series_id, dk_df=dk_df,
-        odds_data=odds_data,
+        odds_data=odds_data, fd_df=fd_df, platform=platform,
     )
 
 
@@ -687,7 +695,7 @@ def _page_race_data():
         track_type=track_type, dk_df=dk_df, fd_df=fd_df,
         completed_races=completed_races, selected_year=selected_year,
         fl_counts=fl_counts, odds_data=odds_data, prop_odds=_prop_odds,
-        race_id=race_id,
+        race_id=race_id, platform=platform,
     )
 
 

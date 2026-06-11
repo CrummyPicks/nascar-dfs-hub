@@ -203,14 +203,21 @@ def calc_dk_points(finish, start, laps_led, fastest_laps):
         return 0.0
 
 
-def calc_fd_points(finish, start, laps_led, fastest_laps):
-    """Calculate FanDuel NASCAR DFS points."""
+def calc_fd_points(finish, start, laps_led, laps_completed=0):
+    """Calculate FanDuel NASCAR DFS points.
+
+    Official FD scoring (verified 2026-06): finish points (43/40/38, then -1
+    per spot to 40th=1) + 0.5/position differential + 0.1/lap led +
+    0.1/lap COMPLETED. FanDuel does NOT award fastest-lap points — the old
+    version of this function wrongly paid 0.5/fastest lap and ignored laps
+    completed.
+    """
     try:
         place_pts = FD_FINISH_POINTS.get(int(finish), 0)
         diff_pts = (int(start) - int(finish)) * 0.5
         led_pts = int(laps_led) * 0.1
-        fl_pts = int(fastest_laps) * 0.5
-        return round(place_pts + diff_pts + led_pts + fl_pts, 2)
+        comp_pts = int(laps_completed or 0) * 0.1
+        return round(place_pts + diff_pts + led_pts + comp_pts, 2)
     except (ValueError, TypeError):
         return 0.0
 

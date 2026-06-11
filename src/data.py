@@ -1552,26 +1552,40 @@ def query_race_run_pace(series_id: int, api_race_id: int, year: int,
     return {"rows": compute_run_pace_rows(fetch_lap_times(series_id, api_race_id, year))}
 
 
-def query_race_pit_summary(db_race_id: int) -> dict:
-    """Per-driver pit summary + likely pit penalties for one race.
+def query_race_pit_summary(db_race_id: int, cautions: list = None) -> dict:
+    """Per-driver pit summary + attributed slow stops for one race.
 
     Returns {
       "rows": [ {Driver, Stops, "4-Tire Stops", "Avg Box (s)", "Best Box (s)",
                  "Green Stops"} ] sorted by Avg Box,
       "likely_penalties": [ {Driver, Lap, "Box (s)", Why} ],
+      "repair_stops":     [ {Driver, Lap, "Box (s)", Why} ],
     }
     Box-time metrics use ONLY four-tire stops with a measured stationary time:
     NASCAR's feed mixes 4-tire (~9-10s), 2-tire (~4s), fuel-only, and a -1
     sentinel for unmeasured stops, so blending them (or counting -1) corrupts the
     average and makes 'best' = -1. Four-tire-only is the comparable crew-speed
-    signal. A 'likely penalty' is an abnormally SLOW four-tire stop vs the field
-    median (suggests a problem / served penalty) — NASCAR doesn't publish in-race
-    penalties cleanly, so it's heuristic. (Position change around a stop is NOT
-    used: under green you cycle behind cars who haven't pitted yet, then cycle
-    back, so per-stop position deltas are transient, not crew performance.)
+    signal.
+
+    Slow-stop ATTRIBUTION (an abnormally slow stop is only a "likely penalty"
+    when nothing else explains it — slow stops used to be blanket-labelled
+    penalties, which flagged wrecked cars doing body repairs on lap 2):
+      1. Driver appears in a caution's involved-cars list at/before the stop
+         lap  -> damage repair, attributed to that caution.
+      2. Driver's finishing status isn't Running (Accident/Mechanical/...)
+         -> repairs, attributed to the status.
+      3. Stop is extreme (>3x median or >25s) -> repairs/major service. A
+         served penalty (drive-through/stop-go) doesn't sit ON the box that
+         long; multi-minute box times are crash repair.
+      4. Otherwise (moderately slow, clean driver, no incident) -> likely
+         penalty or crew problem.
+    `cautions` is the parsed list from query_race_cautions (optional — without
+    it rules 2/3 still apply). (Position change around a stop is NOT used:
+    under green you cycle behind cars who haven't pitted yet, then cycle back,
+    so per-stop position deltas are transient, not crew performance.)
     """
     if not DB_PATH.exists() or db_race_id is None:
-        return {"rows": [], "likely_penalties": []}
+        return {"rows": [], "likely_penalties": [], "repair_stops": []}
     try:
         conn = sqlite3.connect(str(DB_PATH))
         rows = conn.execute('''
@@ -1580,11 +1594,37 @@ def query_race_pit_summary(db_race_id: int) -> dict:
             FROM pit_stops ps JOIN drivers d ON d.id = ps.driver_id
             WHERE ps.race_id = ?
         ''', (db_race_id,)).fetchall()
+        status_rows = conn.execute('''
+            SELECT d.full_name, rr.status
+            FROM race_results rr JOIN drivers d ON d.id = rr.driver_id
+            WHERE rr.race_id = ?
+        ''', (db_race_id,)).fetchall()
         conn.close()
     except Exception:
-        return {"rows": [], "likely_penalties": []}
+        return {"rows": [], "likely_penalties": [], "repair_stops": []}
     if not rows:
-        return {"rows": [], "likely_penalties": []}
+        return {"rows": [], "likely_penalties": [], "repair_stops": []}
+
+    status_map = {nm: (s or "") for nm, s in status_rows}
+
+    # Incident windows from the caution timeline: (start_lap, involved set,
+    # reason). Names come from the same drivers table as pit rows, so they
+    # match directly; normalize anyway for safety.
+    incident_windows = []
+    for c in (cautions or []):
+        involved = c.get("Involved") or []
+        if not involved:
+            continue
+        lap_range = str(c.get("Laps") or "")
+        try:
+            start_lap = int(lap_range.split("-")[0])
+        except (ValueError, IndexError):
+            continue
+        incident_windows.append((
+            start_lap,
+            {normalize_driver_name(n) for n in involved},
+            c.get("Reason") or "incident",
+        ))
 
     def _is_four(stype):
         return (stype or "").upper().startswith("FOUR")
@@ -1596,8 +1636,30 @@ def query_race_pit_summary(db_race_id: int) -> dict:
         gb = sorted(four_box); n = len(gb)
         med_box = gb[n // 2] if n % 2 else (gb[n // 2 - 1] + gb[n // 2]) / 2
 
+    def _attribute_slow_stop(name, lap, box):
+        """Return (bucket, why) for one anomalously slow 4-tire stop."""
+        norm = normalize_driver_name(name)
+        # 1. Known incident involvement at/before this stop (1-lap slack for
+        #    feed timing) -> damage repair, attributed to that caution.
+        for start_lap, involved, reason in incident_windows:
+            if norm in involved and lap >= start_lap - 1:
+                return ("repair", f"Damage repair — involved in lap-{start_lap} "
+                                  f"caution ({reason}); {box:.1f}s stop")
+        # 2. Driver didn't finish Running -> wrenching, not a penalty.
+        status = status_map.get(name, "")
+        if status and status.lower() not in ("running", "finished"):
+            return ("repair", f"Repairs — finished '{status}'; {box:.1f}s stop")
+        # 3. Way too long for a served penalty -> major service/repair.
+        if box > max(med_box * 3, 25):
+            return ("repair", f"Extended stop ({box:.1f}s) — likely repairs, "
+                              "too long for a served penalty")
+        # 4. Unexplained, moderately slow -> the actual derived-penalty case.
+        return ("penalty", f"Slow 4-tire stop ({box:.1f}s vs {med_box:.1f}s "
+                           "field median) — possible penalty or crew problem")
+
     by_driver = {}
     likely = []
+    repairs = []
     for name, lap, box, flag, stype in rows:
         d = by_driver.setdefault(name, {"Driver": name, "Stops": 0,
                                         "_box": [], "Green Stops": 0})
@@ -1608,10 +1670,10 @@ def query_race_pit_summary(db_race_id: int) -> dict:
         if _is_four(stype) and box and box > 0:
             d["_box"].append(box)
             if med_box and box > med_box * 1.5:
-                likely.append({
-                    "Driver": name, "Lap": lap, "Box (s)": round(box, 1),
-                    "Why": f"Slow 4-tire stop ({box:.1f}s vs {med_box:.1f}s field median)",
-                })
+                bucket, why = _attribute_slow_stop(name, lap, box)
+                entry = {"Driver": name, "Lap": lap, "Box (s)": round(box, 1),
+                         "Why": why}
+                (repairs if bucket == "repair" else likely).append(entry)
 
     out_rows = []
     for d in by_driver.values():
@@ -1622,7 +1684,8 @@ def query_race_pit_summary(db_race_id: int) -> dict:
         out_rows.append(d)
     out_rows.sort(key=lambda x: (x["Avg Box (s)"] is None, x["Avg Box (s)"] or 999))
     likely.sort(key=lambda x: x["Lap"])
-    return {"rows": out_rows, "likely_penalties": likely}
+    repairs.sort(key=lambda x: x["Lap"])
+    return {"rows": out_rows, "likely_penalties": likely, "repair_stops": repairs}
 
 
 def query_race_stage_breakdown(db_race_id: int) -> dict:
@@ -3934,7 +3997,7 @@ def _fetch_and_store_via_loopstats(series_id: int, race_id: int, year: int) -> d
               laps_led, fastest, arp, rating, team_name))
 
         dk = calc_dk_points(finish_pos, start_pos, laps_led, fastest)
-        fd = calc_fd_points(finish_pos, start_pos, laps_led, fastest)
+        fd = calc_fd_points(finish_pos, start_pos, laps_led, laps_completed)
         for platform, score in [("DraftKings", dk), ("FanDuel", fd)]:
             conn.execute('''
                 INSERT INTO dfs_points (race_id, driver_id, platform, dfs_score)
@@ -4162,7 +4225,7 @@ def fetch_and_store_race(series_id: int, race_id: int, year: int = None) -> dict
 
             # Compute and upsert DFS points for both platforms
             dk_score = calc_dk_points(finish_pos, start_pos, laps_led, fastest)
-            fd_score = calc_fd_points(finish_pos, start_pos, laps_led, fastest)
+            fd_score = calc_fd_points(finish_pos, start_pos, laps_led, laps_completed)
 
             for platform, score in [("DraftKings", dk_score), ("FanDuel", fd_score)]:
                 conn.execute(

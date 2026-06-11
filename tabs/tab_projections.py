@@ -729,8 +729,17 @@ def _cap_and_redistribute(result: dict, max_per_driver: float,
 
 def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
-           odds_data=None, scheduled_laps=0, race_date="", season=None):
-    """Render the Projections tab."""
+           odds_data=None, scheduled_laps=0, race_date="", season=None,
+           fd_df=None, platform="DraftKings"):
+    """Render the Projections tab.
+
+    platform: "DraftKings", "FanDuel", or "Both" — controls which salary /
+    projected-points / value columns are shown. The engine itself is
+    platform-agnostic (projected finish, laps led, fastest laps); DK and FD
+    points are both derived from those same components.
+    """
+    if fd_df is None:
+        fd_df = pd.DataFrame()
     if season is None:
         from datetime import datetime as _dt
         _t = _dt.now()
@@ -903,6 +912,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         odds_data=odds_data or {}, calibration=calibration,
         race_id=race_id, race_name=race_name, is_prerace=is_prerace,
         race_date=race_date, season=season,
+        fd_df=fd_df, platform=platform,
     )
 
 
@@ -1252,8 +1262,11 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                             practice_data, wn, track_name, series_id, dk_df,
                             race_laps, odds_data=None, calibration=None,
                             race_id=None, race_name="", is_prerace=True,
-                            race_date="", season=None):
+                            race_date="", season=None, fd_df=None,
+                            platform="DraftKings"):
     """Build DFS-aware projections that estimate actual DK point components."""
+    if fd_df is None:
+        fd_df = pd.DataFrame()
     if season is None:
         from datetime import datetime as _dt
         _t = _dt.now()
@@ -1834,6 +1847,34 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
 
     proj = pd.DataFrame(rows)
 
+    # ── Projected FanDuel points — derived from the SAME engine outputs ──
+    # FD scoring: finish curve (43/40/38, -1/spot to 40th=1) + 0.5/pos diff
+    # + 0.1/lap led + 0.1/lap completed. No fastest-lap points. The DK
+    # diff_pts column is (start - finish) × 1.0, so FD diff = diff_pts × 0.5.
+    # Laps completed is estimated at the full race distance for everyone —
+    # a flat constant that doesn't change driver ordering, but keeps the
+    # absolute totals comparable to real FD scores.
+    from src.config import (FD_FINISH_POINTS, FD_PTS_LAPS_LED,
+                            FD_PTS_LAPS_COMPLETED, FD_PTS_PLACE_DIFF)
+
+    def _fd_finish_pts(pf):
+        """Interpolate the FD finish curve at a fractional projected finish."""
+        try:
+            pf = float(pf)
+        except (TypeError, ValueError):
+            return 0.0
+        lo = max(1, min(40, int(pf)))
+        hi = max(1, min(40, lo + 1))
+        frac = max(0.0, min(1.0, pf - lo))
+        return FD_FINISH_POINTS.get(lo, 0) * (1 - frac) + FD_FINISH_POINTS.get(hi, 0) * frac
+
+    _fd_comp_pts = (race_laps or 0) * FD_PTS_LAPS_COMPLETED
+    proj["Proj FD"] = proj.apply(
+        lambda r: round(_fd_finish_pts(r["Proj Finish"])
+                        + r["Diff Pts"] * FD_PTS_PLACE_DIFF
+                        + r["Proj Laps Led"] * FD_PTS_LAPS_LED
+                        + _fd_comp_pts, 1), axis=1)
+
     # PD Upside: categorize each driver by their projected place-differential
     # potential. This is display-only — it does not modify projections.
     # - High:     start >= P25 AND projected finish <= P20 (bounce-back)
@@ -1866,7 +1907,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         proj = fuzzy_merge(proj, base_df[["Driver", "Car"]].drop_duplicates("Driver"),
                            on="Driver", how="left")
 
-    # Merge salary
+    # Merge salaries (both platforms — display filtering happens later)
     if not dk_df.empty:
         proj = fuzzy_merge(proj, dk_df, on="Driver", how="left",
                            right_cols=["DK Salary"])
@@ -1875,8 +1916,17 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             (proj["Proj DK"] / (proj["DK Salary"] / 1000)).round(2),
             np.nan
         )
+    if not fd_df.empty:
+        proj = fuzzy_merge(proj, fd_df, on="Driver", how="left",
+                           right_cols=["FD Salary"])
+        proj["FD Value"] = np.where(
+            proj["FD Salary"].notna() & (proj["FD Salary"] > 0),
+            (proj["Proj FD"] / (proj["FD Salary"] / 1000)).round(2),
+            np.nan
+        )
 
-    proj = proj.sort_values("Proj DK", ascending=False).reset_index(drop=True)
+    _rank_col = "Proj FD" if platform == "FanDuel" else "Proj DK"
+    proj = proj.sort_values(_rank_col, ascending=False).reset_index(drop=True)
     proj.index = proj.index + 1
     proj.index.name = "Rank"
 
@@ -1912,8 +1962,9 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         # Non-fatal — ownership is additive info only
         pass
 
-    # Share Proj DK with optimizer tab via session state
+    # Share Proj DK / Proj FD with optimizer tab via session state
     st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
+    st.session_state["proj_fd_map"] = dict(zip(proj["Driver"], proj["Proj FD"]))
     # Share per-driver detail so optimizer can identify projected dominators
     st.session_state["proj_detail_map"] = _proj_detail
     # Floor / ceiling DK for cash vs GPP optimization
@@ -1947,15 +1998,25 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     impl_col = "Est. Impl %" if odds_col_name == "Est. Odds" else "Impl %"
     if impl_col in proj.columns and proj[impl_col].notna().any():
         display_cols.append(impl_col)
-    if "DK Salary" in proj.columns:
+    # Platform-specific salary / points / value columns
+    _show_dk = platform in ("DraftKings", "Both")
+    _show_fd = platform in ("FanDuel", "Both")
+    if _show_dk and "DK Salary" in proj.columns:
         display_cols.append("DK Salary")
-    display_cols.append("Proj DK")
+    if _show_fd and "FD Salary" in proj.columns:
+        display_cols.append("FD Salary")
+    if _show_dk:
+        display_cols.append("Proj DK")
+    if _show_fd and "Proj FD" in proj.columns:
+        display_cols.append("Proj FD")
     if "Floor" in proj.columns:
         display_cols.append("Floor")
     if "Ceiling" in proj.columns:
         display_cols.append("Ceiling")
-    if "Value" in proj.columns:
+    if _show_dk and "Value" in proj.columns:
         display_cols.append("Value")
+    if _show_fd and "FD Value" in proj.columns:
+        display_cols.append("FD Value")
     if "GPP Own%" in proj.columns:
         display_cols.append("GPP Own%")
     if "Cash Own%" in proj.columns:

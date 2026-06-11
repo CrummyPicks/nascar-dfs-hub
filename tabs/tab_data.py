@@ -24,8 +24,12 @@ from src.charts import (
 def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
            results_df, is_prerace, series_id, race_name, track_name, track_type,
            dk_df, fd_df, completed_races, selected_year, fl_counts, odds_data=None,
-           prop_odds=None, race_id=None):
-    """Render the consolidated Data tab — same wide table for pre and post race."""
+           prop_odds=None, race_id=None, platform="Both"):
+    """Render the consolidated Data tab — same wide table for pre and post race.
+
+    platform: "DraftKings" / "FanDuel" / "Both" — gates which salary columns
+    are merged into the table.
+    """
 
     series_name = SERIES_LABELS.get(series_id, "Cup")
     section_header(f"NASCAR — {series_name} Data")
@@ -58,7 +62,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         res["DK Pts"] = res.apply(
             lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
         res["FD Pts"] = res.apply(
-            lambda r: calc_fd_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+            lambda r: calc_fd_points(r["Finish Position"], r["Start"], r["Laps Led"],
+                                     r.get("Laps", 0)), axis=1)
         res["Pos Diff"] = (res["Start"] - res["Finish Position"]).astype("Int64")
         want = ["Driver", "Finish Position", "Start", "Car", "Team", "Manufacturer",
                 "Crew Chief", "Laps Led", "Fastest Laps", "Avg Run",
@@ -76,10 +81,10 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     # --- Merge additional data sources (dedup right side to prevent row multiplication) ---
 
-    # DK/FD Salary
-    if not dk_df.empty:
+    # DK/FD Salary — gated by the global platform picker
+    if platform in ("DraftKings", "Both") and not dk_df.empty:
         master = fuzzy_merge(master, dk_df, on="Driver", how="left")
-    if not fd_df.empty:
+    if platform in ("FanDuel", "Both") and not fd_df.empty:
         master = fuzzy_merge(master, fd_df, on="Driver", how="left")
 
     # Betting odds (preserve raw values — sportsbooks already post clean

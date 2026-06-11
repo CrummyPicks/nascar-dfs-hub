@@ -512,14 +512,21 @@ DK_FINISH_POINTS = {
     31: 10, 32: 9, 33: 8, 34: 7, 35: 6, 36: 5, 37: 4, 38: 3, 39: 2, 40: 1,
 }
 
-FD_FINISH_POINTS = {
-    1: 43, 2: 40, 3: 38, 4: 36, 5: 34, 6: 32, 7: 30, 8: 28, 9: 26, 10: 24,
-    11: 22, 12: 20, 13: 19, 14: 18, 15: 17, 16: 16, 17: 15, 18: 14, 19: 13, 20: 12,
-    21: 11, 22: 10, 23: 9, 24: 8, 25: 7, 26: 6, 27: 5, 28: 4, 29: 3, 30: 3,
-}
+# Official FanDuel NASCAR finish points (verified against FanDuel's scoring
+# table 2026-06): 1st=43, 2nd=40, 3rd=38, then -1 per position to 40th=1.
+FD_FINISH_POINTS = {1: 43, 2: 40, 3: 38}
+FD_FINISH_POINTS.update({pos: 41 - pos for pos in range(4, 41)})  # 4th=37 ... 40th=1
 
-SALARY_CAP = 50000
-ROSTER_SIZE = 6
+# FanDuel per-lap/diff scoring (DK differs: 0.25 led / 0.45 fastest / 1.0 diff;
+# FD has NO fastest-laps points but DOES pay laps completed).
+FD_PTS_LAPS_LED = 0.1
+FD_PTS_LAPS_COMPLETED = 0.1
+FD_PTS_PLACE_DIFF = 0.5
+
+SALARY_CAP = 50000          # DraftKings cap
+ROSTER_SIZE = 6             # DraftKings roster
+FD_SALARY_CAP = 50000       # FanDuel cap (same $50k, but only 5 drivers)
+FD_ROSTER_SIZE = 5          # FanDuel roster
 
 # ----------------------------
 # EXHIBITION RACE FILTER KEYWORDS

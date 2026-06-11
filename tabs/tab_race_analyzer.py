@@ -228,7 +228,7 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
                                  r["Laps Led"], r["Fastest Laps"]), axis=1)
     results["FD Pts"] = results.apply(
         lambda r: calc_fd_points(r["Finish Position"], r["Start"],
-                                 r["Laps Led"], r["Fastest Laps"]), axis=1)
+                                 r["Laps Led"], r.get("Laps", 0)), axis=1)
     results["Pos Diff"] = (results["Start"] - results["Finish Position"]).astype("Int64")
 
     # Merge DK Salary from database
@@ -427,7 +427,7 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
             fl_count = fuzzy_get(driver, fl, fl_norm) or 0
             arp_val = fuzzy_get(driver, avg_run, arp_norm)
             dk = calc_dk_points(fp, start, ll, fl_count)
-            fd = calc_fd_points(fp, start, ll, fl_count)
+            fd = calc_fd_points(fp, start, ll, row.get("Laps", 0))
             all_rows.append({
                 "Driver": driver,
                 "Car": str(row.get("Car", "")),

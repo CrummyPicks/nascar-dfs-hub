@@ -50,9 +50,11 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     penalties = data.get("prerace_penalties", [])
     summ = data.get("summary", {})
 
-    pit = query_race_pit_summary(db_id) if db_id else {"rows": [], "likely_penalties": []}
+    pit = (query_race_pit_summary(db_id, cautions=cautions) if db_id
+           else {"rows": [], "likely_penalties": [], "repair_stops": []})
     pit_rows = pit.get("rows", [])
     likely_pen = pit.get("likely_penalties", [])
+    repair_stops = pit.get("repair_stops", [])
 
     if not cautions and not penalties and not pit_rows:
         st.info("No caution, penalty or pit data available for this race yet — "
@@ -87,11 +89,23 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     if prows:
         st.dataframe(pd.DataFrame(prows), width="stretch", hide_index=True)
     else:
-        st.caption("No pre-race penalties reported, and no pit anomalies detected.")
+        st.caption("No pre-race penalties reported, and no unexplained pit anomalies detected.")
     st.caption("Pre-race penalties are parsed from official race comments "
                "(confirmed). NASCAR doesn't publish in-race penalties in a clean "
-               "field, so 'Likely' rows are derived from pit anomalies "
-               "(an abnormally slow 4-tire stop vs the field median).")
+               "field, so 'Likely' rows are derived from pit anomalies — but only "
+               "when nothing else explains the slow stop. Slow stops attributed "
+               "to crash damage or repairs are listed separately below.")
+
+    # Slow stops explained by a real event (wreck involvement, DNF status,
+    # repair-length stop) — informational, NOT penalties.
+    if repair_stops:
+        with st.expander(f"Damage / repair stops ({len(repair_stops)}) — slow stops "
+                         "explained by an incident, not penalties", expanded=False):
+            rrows = [{"When": f"Lap {r['Lap']}", "Driver": r["Driver"],
+                      "Box (s)": r["Box (s)"], "Attribution": r["Why"]}
+                     for r in repair_stops]
+            st.dataframe(pd.DataFrame(rrows), width="stretch", hide_index=True,
+                         height=min(420, 60 + len(rrows) * 36))
     st.divider()
 
     # ── Caution timeline ──
