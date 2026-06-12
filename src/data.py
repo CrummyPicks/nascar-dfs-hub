@@ -940,6 +940,66 @@ def load_actual_ownership(api_race_id: int, series_id: int = None) -> dict:
     return out
 
 
+def _ensure_contest_lines_table(conn):
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS contest_lines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            cash_line REAL,
+            gpp_mincash REAL,
+            saved_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(race_id, platform)
+        )
+    ''')
+
+
+def save_contest_lines(api_race_id: int, series_id: int, platform: str,
+                       cash_line=None, gpp_mincash=None) -> bool:
+    """Store REAL contest lines (the score needed to cash) recorded post-race
+    — calibrates the Profit Sim away from its Monte-Carlo field proxy."""
+    if not DB_PATH.exists() or (cash_line is None and gpp_mincash is None):
+        return False
+    db_race_id = _resolve_db_race_id_with_fallback(api_race_id, series_id)
+    if not db_race_id:
+        return False
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        _ensure_contest_lines_table(conn)
+        conn.execute('''
+            INSERT INTO contest_lines (race_id, platform, cash_line, gpp_mincash)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(race_id, platform) DO UPDATE SET
+              cash_line=COALESCE(excluded.cash_line, contest_lines.cash_line),
+              gpp_mincash=COALESCE(excluded.gpp_mincash, contest_lines.gpp_mincash),
+              saved_at=datetime('now')
+        ''', (db_race_id, platform, cash_line, gpp_mincash))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def load_contest_lines(db_race_id: int, platform: str) -> dict:
+    """{cash_line, gpp_mincash} (values may be None) for one DB race id."""
+    if not DB_PATH.exists() or not db_race_id:
+        return {}
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        _ensure_contest_lines_table(conn)
+        row = conn.execute('''
+            SELECT cash_line, gpp_mincash FROM contest_lines
+            WHERE race_id = ? AND platform = ?
+        ''', (db_race_id, platform)).fetchone()
+    except Exception:
+        row = None
+    finally:
+        conn.close()
+    if not row:
+        return {}
+    return {"cash_line": row[0], "gpp_mincash": row[1]}
+
+
 def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
                                      min_season: int = 2022,
                                      before_date: str = None,

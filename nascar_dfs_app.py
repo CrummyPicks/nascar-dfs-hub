@@ -877,6 +877,7 @@ def _page_accuracy():
     tacc.render(
         completed_races=completed_races, series_id=series_id,
         selected_year=selected_year, series_name=series_name,
+        platform=platform,
     )
 
 

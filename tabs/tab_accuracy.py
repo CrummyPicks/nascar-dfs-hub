@@ -855,10 +855,42 @@ def _generate_race_projections(race, series_id, weights=None):
     # Convert proj_rows list to {driver: dk_points} dict
     proj_dk = {row["driver"]: row["proj_dk"] for row in proj_rows}
 
+    # FanDuel projections from the SAME engine rows (FD finish curve, 0.5x
+    # diff, 0.1x led, reliability-weighted laps completed) — so the Accuracy
+    # page can grade FD too when the platform picker asks for it.
+    proj_fd = {}
+    try:
+        from src.config import (FD_FINISH_POINTS, FD_PTS_PLACE_DIFF,
+                                FD_PTS_LAPS_LED, FD_PTS_LAPS_COMPLETED)
+        from src.data import query_expected_laps_fraction
+
+        def _fd_fin(pf):
+            lo = max(1, min(40, int(pf)))
+            hi = max(1, min(40, lo + 1))
+            frac = max(0.0, min(1.0, float(pf) - lo))
+            return (FD_FINISH_POINTS.get(lo, 0) * (1 - frac)
+                    + FD_FINISH_POINTS.get(hi, 0) * frac)
+
+        _rates = query_expected_laps_fraction(series_id,
+                                              before_date=race_date) or {}
+        _med = (_rates.get("_field_median", {}) or {}).get("frac", 0.95)
+        _rl = race_laps or 200
+        for row in proj_rows:
+            d = row["driver"]
+            fr = (_rates.get(d) or {}).get("frac", _med)
+            proj_fd[d] = round(_fd_fin(row["proj_finish"])
+                               + row["diff_pts"] * FD_PTS_PLACE_DIFF
+                               + row["laps_led"] * FD_PTS_LAPS_LED
+                               + _rl * fr * FD_PTS_LAPS_COMPLETED, 1)
+    except Exception:
+        proj_fd = {}
+
     return proj_dk, proj_detail, actuals, {
         "has_odds": bool(odds_finish),
         "has_track": bool(th_data),
         "has_qual": bool(qual_pos),
+        "proj_fd": proj_fd,
+        "race_id_api": race_id,
     }
 
 
@@ -869,8 +901,15 @@ def _generate_race_projections(race, series_id, weights=None):
 
 # ── Main Render ──────────────────────────────────────────────────────────────
 
-def render(*, completed_races, series_id, selected_year, series_name="Cup"):
-    """Render the Accuracy tab."""
+def render(*, completed_races, series_id, selected_year, series_name="Cup",
+           platform="DraftKings"):
+    """Render the Accuracy tab.
+
+    platform: global picker — DK/FD/Both. Race Comparison grades the chosen
+    site(s); the Dashboard's saved-history grading is DK-based with an FD
+    history note until FD saves accumulate; Profit Sim has its own site
+    selector (it needs per-site salaries anyway).
+    """
     section_header("Projection Accuracy")
     st.caption("Compare projections vs actual results to improve future weight tuning")
 
@@ -893,10 +932,22 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     st.divider()
 
     if mode == "Race Comparison":
-        _render_race_comparison(completed_races, series_id, selected_year, exclude_dnf)
+        _render_race_comparison(completed_races, series_id, selected_year,
+                                exclude_dnf, platform=platform)
     elif mode == "Accuracy Dashboard":
+        if platform == "FanDuel":
+            st.info("The Accuracy Dashboard's season history grades DraftKings "
+                    "projections. FanDuel projection history started saving on "
+                    "2026-06-11 — FD trend grading unlocks as those pre-race "
+                    "saves accumulate. For per-race FD grading today, use "
+                    "**Race Comparison** (it regenerates and grades FD live).")
         _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dnf)
     elif mode == "Weight Optimizer":
+        if platform == "FanDuel":
+            st.caption("The Weight Optimizer grades DraftKings points. The same "
+                       "signal weights drive both sites' projected finish — FD "
+                       "differs mainly via the laps-completed reliability layer, "
+                       "which isn't weight-tunable.")
         _render_weight_optimizer(completed_races, series_id, selected_year, series_name, exclude_dnf)
     elif mode == "Profit Sim":
         _render_profit_sim(series_id, series_name)
@@ -986,8 +1037,20 @@ def _render_profit_sim(series_id, series_name):
         "from the best lineup's percentile pushing 99+ on your best weeks."
     )
 
+    n_real = sum(1 for r in results if r.get("line_source") == "real")
+    if n_real:
+        st.caption(f"**{n_real}/{n} races graded against REAL contest lines** "
+                   "(recorded on Data & Settings); the rest use the simulated-"
+                   "field proxy.")
+    else:
+        st.caption("All races graded against the simulated-field proxy — "
+                   "record real cash lines on **Data & Settings → Actual "
+                   "Contest Lines** after each week to calibrate this with "
+                   "real results.")
+
     rows = [{
         "Date": r["date"][:10], "Track": r["track"],
+        "Line": r.get("line_source", "proxy"),
         "Cash Score": r["cash_score"], "Cash Line": r["cash_line"],
         "Margin": r["cash_margin"], "Beat": "Y" if r["beat_cash"] else "N",
         "Cash %ile": r["cash_pctile"],
@@ -1000,6 +1063,58 @@ def _render_profit_sim(series_id, series_name):
 
 
 # ── Race Comparison ──────────────────────────────────────────────────────────
+
+def _fd_actuals_for_race(race_id, series_id):
+    """{driver: actual FD pts} for a completed race (DB, incl. laps completed)."""
+    try:
+        from tabs.tab_projections import _resolve_db_race_id
+        from src.profit_sim import _load_fd_actuals
+        db_id = _resolve_db_race_id(race_id, series_id)
+        if not db_id:
+            return {}
+        conn = sqlite3.connect(PROJ_DB)
+        try:
+            return _load_fd_actuals(conn, db_id)
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def _render_fd_comparison_metrics(meta, graded_drivers, race_id, series_id):
+    """FanDuel grading cards for Race Comparison — same engine run, FD scoring
+    on both sides (projected FD incl. reliability laps; actual FD from DB)."""
+    proj_fd = (meta or {}).get("proj_fd") or {}
+    if not proj_fd:
+        return
+    actual_fd = _fd_actuals_for_race(race_id, series_id)
+    if not actual_fd:
+        st.caption("FanDuel grading unavailable — actual FD points need "
+                   "laps-completed data in the DB for this race.")
+        return
+    from src.utils import normalize_driver_name
+    norm_actual = {normalize_driver_name(k): v for k, v in actual_fd.items()}
+    pairs = []
+    for d in graded_drivers:
+        pv = proj_fd.get(d)
+        av = actual_fd.get(d)
+        if av is None:
+            av = norm_actual.get(normalize_driver_name(str(d)))
+        if pv is not None and av is not None:
+            pairs.append((d, float(pv), float(av)))
+    if len(pairs) < 5:
+        return
+    df = pd.DataFrame(pairs, columns=["Driver", "Proj FD", "Actual FD"])
+    mae = (df["Proj FD"] - df["Actual FD"]).abs().mean()
+    corr = df["Proj FD"].corr(df["Actual FD"])
+    rank_corr = df["Proj FD"].rank().corr(df["Actual FD"].rank())
+    st.markdown("**FanDuel**")
+    _metric_cards([
+        ("FD Pts MAE", f"{mae:.1f}", _metric_color(mae, 12, 20, True)),
+        ("FD Pts Correlation", f"{corr:.3f}", _metric_color(corr, 0.60, 0.40, False)),
+        ("FD Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.60, 0.40, False)),
+    ])
+
 
 def _render_ownership_grading(race_id, series_id):
     """Grade our PROJECTED ownership against pasted ACTUAL contest ownership.
@@ -1064,7 +1179,8 @@ def _render_ownership_grading(race_id, series_id):
                        "build the validation sample.")
 
 
-def _render_race_comparison(completed_races, series_id, selected_year, exclude_dnf=True):
+def _render_race_comparison(completed_races, series_id, selected_year,
+                            exclude_dnf=True, platform="DraftKings"):
     """Compare projections vs actuals for a single race.
 
     Works for ANY completed race — auto-generates projections using default
@@ -1216,14 +1332,20 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
     corr_finish = graded["Proj Finish"].corr(graded["Actual Finish"])
     rank_corr = graded["Proj DK Finish"].corr(graded["Actual DK Finish"])
 
-    _metric_cards([
-        ("DK Pts MAE", f"{mae_dk:.1f}", _metric_color(mae_dk, 15, 25, True)),
-        ("DK Finish MAE", f"{mae_dk_finish:.1f}", _metric_color(mae_dk_finish, 7.5, 10, True)),
-        ("Finish MAE", f"{mae_finish:.1f}", _metric_color(mae_finish, 7.5, 10, True)),
-        ("DK Pts Correlation", f"{corr_dk:.3f}", _metric_color(corr_dk, 0.60, 0.40, False)),
-        ("Finish Correlation", f"{corr_finish:.3f}", _metric_color(corr_finish, 0.50, 0.30, False)),
-        ("DK Finish Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.60, 0.40, False)),
-    ])
+    if platform in ("DraftKings", "Both"):
+        if platform == "Both":
+            st.markdown("**DraftKings**")
+        _metric_cards([
+            ("DK Pts MAE", f"{mae_dk:.1f}", _metric_color(mae_dk, 15, 25, True)),
+            ("DK Finish MAE", f"{mae_dk_finish:.1f}", _metric_color(mae_dk_finish, 7.5, 10, True)),
+            ("Finish MAE", f"{mae_finish:.1f}", _metric_color(mae_finish, 7.5, 10, True)),
+            ("DK Pts Correlation", f"{corr_dk:.3f}", _metric_color(corr_dk, 0.60, 0.40, False)),
+            ("Finish Correlation", f"{corr_finish:.3f}", _metric_color(corr_finish, 0.50, 0.30, False)),
+            ("DK Finish Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.60, 0.40, False)),
+        ])
+    if platform in ("FanDuel", "Both"):
+        _render_fd_comparison_metrics(meta, graded["Driver"].tolist(),
+                                      race_id, series_id)
 
     _scope = (f"running finishers only — {n_dnf} DNF{'s' if n_dnf != 1 else ''} excluded"
               if (exclude_dnf and graded is not comp_filtered)

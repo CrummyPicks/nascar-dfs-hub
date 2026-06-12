@@ -232,6 +232,19 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
 
     cash_line = field[len(field) // 2]                  # median field lineup
     mincash_line = field[int(len(field) * 0.80)]        # top ~20% pays
+    line_source = "proxy"
+
+    # REAL contest lines (recorded post-race on Data & Settings) override the
+    # simulated-field proxy — that's the calibration that turns "beats a
+    # naive field" into "would actually have cashed".
+    from src.data import load_contest_lines
+    real = load_contest_lines(db_id, platform)
+    if real.get("cash_line"):
+        cash_line = float(real["cash_line"])
+        line_source = "real"
+    if real.get("gpp_mincash"):
+        mincash_line = float(real["gpp_mincash"])
+        line_source = "real"
 
     return {
         "race": race_name, "track": track_name, "date": race_date,
@@ -247,4 +260,5 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
         "gpp_best": max(gpp_scores),
         "gpp_best_pctile": pct_of(max(gpp_scores)),
         "n_pool": len(pool),
+        "line_source": line_source,
     }

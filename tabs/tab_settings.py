@@ -255,6 +255,46 @@ def render(race_id: int, series_id: int, race_name: str, is_prerace: bool):
 
     st.divider()
     _render_actual_ownership_section(race_id, series_id)
+    st.divider()
+    _render_contest_lines_section(race_id, series_id)
+
+
+def _render_contest_lines_section(race_id: int, series_id: int):
+    """Record REAL contest lines post-race — calibrates the Profit Sim away
+    from its simulated-field proxy toward actual results."""
+    from src.data import save_contest_lines
+
+    st.markdown("##### 5 · Actual Contest Lines (post-race)")
+    st.caption(
+        "From your contest results: the score that cashed a 50/50 (cash "
+        "line) and/or min-cashed your GPP. The Profit Sim uses these REAL "
+        "lines instead of its simulated-field proxy wherever they exist."
+    )
+    l_cols = st.columns([1, 1, 1, 1.4])
+    with l_cols[0]:
+        line_platform = st.selectbox("Site ", ["DraftKings", "FanDuel"],
+                                     key=f"line_plat_{race_id}")
+    with l_cols[1]:
+        cash_line = st.number_input("Cash line (50/50)", 0.0, 500.0, 0.0, 0.5,
+                                    key=f"line_cash_{race_id}",
+                                    help="0 = not recorded")
+    with l_cols[2]:
+        gpp_line = st.number_input("GPP min-cash", 0.0, 500.0, 0.0, 0.5,
+                                   key=f"line_gpp_{race_id}",
+                                   help="0 = not recorded")
+    with l_cols[3]:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Save lines", key=f"line_save_{race_id}",
+                     disabled=(cash_line <= 0 and gpp_line <= 0)):
+            ok = save_contest_lines(
+                race_id, series_id, line_platform,
+                cash_line=cash_line if cash_line > 0 else None,
+                gpp_mincash=gpp_line if gpp_line > 0 else None)
+            if ok:
+                st.success("Saved — the Profit Sim now grades this race "
+                           "against real lines")
+            else:
+                st.error("Could not save — race not resolvable in DB")
 
 
 def _render_actual_ownership_section(race_id: int, series_id: int):
