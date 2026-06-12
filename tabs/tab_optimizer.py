@@ -20,7 +20,8 @@ PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 
 def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
                           practice_data, race_name, track_name, series_id,
-                          dk_df, odds_data=None, use_fd_points=False):
+                          dk_df, odds_data=None, use_fd_points=False,
+                          race_id=None):
     """Build a driver pool with projection scores for optimization.
 
     Uses the same weight system as the Projections tab — reads weights from
@@ -197,12 +198,34 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     # ── Use Proj DK / Proj FD from Projections tab when available ────────────
     _proj_key = "proj_fd_map" if use_fd_points else "proj_dk_map"
     proj_dk_map = st.session_state.get(_proj_key, {})
+    _proj_origin = "engine"
+
+    # Fresh session, Optimizer opened before Projections: the session maps
+    # are empty. Fall back to the auto-saved pre-race projections in the DB
+    # (written by the Projections page) before resorting to the crude
+    # composite — the composite collapses most of the field onto nearly
+    # identical scores and makes the value chart look broken.
+    # (Saved projections are DK-points; only usable for DK builds.)
+    if not proj_dk_map and not use_fd_points and race_id:
+        try:
+            from tabs.tab_accuracy import load_saved_projections
+            _saved = load_saved_projections(race_id=race_id, series_id=series_id)
+            if not _saved.empty and "proj_dk" in _saved.columns:
+                proj_dk_map = {r["driver"]: r["proj_dk"]
+                               for _, r in _saved.iterrows()
+                               if r.get("driver") and pd.notna(r.get("proj_dk"))}
+                if proj_dk_map:
+                    _proj_origin = "saved"
+        except Exception:
+            pass
+
     if proj_dk_map:
         proj_dk_norm = build_norm_lookup(proj_dk_map)
         pool["Proj Score"] = pool["Driver"].map(
             lambda d: fuzzy_get(d, proj_dk_map, proj_dk_norm) or 0).round(1)
     else:
-        # Fallback: weighted composite from individual signals
+        # Last resort: weighted composite from individual signals
+        _proj_origin = "composite"
         pool["Proj Score"] = (
             pool["TrackScore"] * wn["track"] +
             pool["TypeScore"]  * wn["track_type"] +
@@ -261,12 +284,15 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     else:
         pool["Ceiling"] = pool["Ceiling"].fillna(pool["Proj Score"])
 
-    # Projections come from the projection engine (shared with the Projections
-    # tab). In the rare case that engine didn't populate session state (e.g.
-    # empty entry list), fall through silently to a simplified composite —
-    # both use the same weight settings, so the user experience is consistent.
-    engine_label = ("Proj FD from projection engine" if use_fd_points
-                    else "Proj DK from projection engine")
+    # Honest label for where the numbers came from — the render() caller
+    # shows a warning when we had to degrade.
+    _pts = "Proj FD" if use_fd_points else "Proj DK"
+    if _proj_origin == "engine":
+        engine_label = f"{_pts} from projection engine"
+    elif _proj_origin == "saved":
+        engine_label = f"{_pts} from saved pre-race projections (DB)"
+    else:
+        engine_label = "simplified composite"
 
     # Preserve all pool columns (includes Proj Own % / Leverage if present)
     return pool.sort_values("Proj Score", ascending=False).reset_index(drop=True), engine_label
@@ -732,13 +758,21 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                                       key=f"opt_roster_{site}")
     with s3:
         mode = st.selectbox("Mode", ["Projection", "Cash", "GPP"], key="opt_mode",
-                            help="Projection: the straight best-projected lineups "
-                                 "(highest median points). Cash: optimize for FLOOR "
-                                 "(steady, consistent — chalkier, lower variance). "
-                                 "GPP: optimize for CEILING + leverage (upside "
-                                 "dominators / deep-PD plays, weighted toward "
-                                 "lower-owned drivers). Cash/GPP need the Projections "
-                                 "tab to have run (for floor/ceiling/ownership).")
+                            format_func=lambda m: {
+                                "Projection": "Projection — best median score",
+                                "Cash": "Cash — maximize floor (safety)",
+                                "GPP": "GPP — maximize ceiling + leverage",
+                            }[m],
+                            help="ONE projection engine produces three numbers per "
+                                 "driver: median (Proj), Floor, and Ceiling. This "
+                                 "picker changes which one the optimizer maximizes — "
+                                 "not the projections themselves. Projection: highest "
+                                 "median points (pure expectation). Cash: optimize "
+                                 "FLOOR — steady, low-variance, avoids DNF risk. "
+                                 "GPP: optimize CEILING + leverage toward lower-owned "
+                                 "drivers (and optional stacking). Cash/GPP need the "
+                                 "Projections page to have run for floor/ceiling/"
+                                 "ownership.")
     with s4:
         max_exposure = st.slider("Max Exposure %", 10, 100,
                                  60 if mode == "GPP" else 100, 5, key="opt_exposure",
@@ -761,11 +795,18 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         pool, engine_label = _get_projection_pool(
             entry_list_df, qualifying_df, lap_averages_df,
             practice_data, race_name, track_name, series_id,
-            dk_df, odds_data=odds_data, use_fd_points=is_fd)
+            dk_df, odds_data=odds_data, use_fd_points=is_fd,
+            race_id=race_id)
 
     if pool.empty:
         st.warning("Could not build projection pool. Check salary data.")
         return
+
+    if engine_label == "simplified composite":
+        st.warning("⚠️ Using a simplified composite projection — most of the "
+                   "field will look nearly identical. Open the **Projections** "
+                   "page once, then come back: the optimizer will pick up the "
+                   "full engine numbers (dominators, floor/ceiling, ownership).")
 
     # ─── Dominator recommendation banner (display-only guidance) ──
     try:
