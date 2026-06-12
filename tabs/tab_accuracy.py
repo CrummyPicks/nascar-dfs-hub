@@ -414,11 +414,18 @@ def _get_default_weights(track_type="intermediate"):
 DEFAULT_WEIGHTS = _get_default_weights("intermediate")
 
 
-def _generate_race_projections(race, series_id, weights=None):
-    """Generate projections for a completed race using the shared engine.
+def _generate_race_projections(race, series_id, weights=None,
+                               drivers_override=None, qual_pos_override=None,
+                               practice_override=None):
+    """Generate projections for a race using the shared engine.
 
     Uses the SAME DB queries and compute_projections() engine as the live
     Projections tab to guarantee identical results.
+
+    Works for COMPLETED races (drivers + start from stored results) and —
+    when drivers_override is provided — for UPCOMING races too (drivers from
+    the entry list, qual_pos_override from qualifying). This is what lets
+    the Optimizer self-serve projections without a Projections-page visit.
 
     Returns (proj_dict, proj_detail, actuals_df, meta_dict) or (None,)*4.
     proj_dict: {driver: proj_dk_points}
@@ -445,9 +452,12 @@ def _generate_race_projections(race, series_id, weights=None):
 
     actuals = _load_actual_results(race, series_id)
     if actuals.empty:
-        return None, None, None, None
+        if not drivers_override:
+            return None, None, None, None
+        actuals = pd.DataFrame(columns=["Driver", "Start"])
 
-    drivers = actuals["Driver"].unique().tolist()
+    drivers = (list(drivers_override) if drivers_override
+               else actuals["Driver"].unique().tolist())
     field_size = len(drivers)
     race_date = race.get("race_date", "")[:10] if race.get("race_date") else None
     mid_field = field_size * 0.5
@@ -717,15 +727,19 @@ def _generate_race_projections(race, series_id, weights=None):
                 adj = max(-1.5, min(1.5, delta * 0.5))
                 mfr_adjustment[d] = adj
 
-    # ── 5. Qualifying (from actual start positions) ──
-    qual_pos = {}
-    for _, row in actuals.iterrows():
-        if pd.notna(row.get("Start")):
-            qual_pos[row["Driver"]] = int(row["Start"])
+    # ── 5. Qualifying — actual start positions (completed) or override (pre-race) ──
+    qual_pos = dict(qual_pos_override) if qual_pos_override else {}
+    if not qual_pos:
+        for _, row in actuals.iterrows():
+            if pd.notna(row.get("Start")):
+                qual_pos[row["Driver"]] = int(row["Start"])
 
-    # ── 6. Practice — load from NASCAR API (same source as projections tab) ──
-    practice_data = {}
+    # ── 6. Practice — caller-provided signal (live coverage-weighted) wins;
+    #      otherwise load from the NASCAR API ──
+    practice_data = dict(practice_override) if practice_override else {}
     try:
+        if practice_data:
+            raise StopIteration  # skip the API fetch — we already have it
         from src.data import fetch_lap_averages
         yr = _get_race_year(race)
         lap_avg_df = fetch_lap_averages(series_id, race_id, yr)

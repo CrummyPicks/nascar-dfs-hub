@@ -811,6 +811,7 @@ def _page_optimizer():
         is_prerace=is_prerace, race_name=race_name, race_id=race_id,
         track_name=track_name, series_id=series_id, dk_df=dk_df,
         odds_data=odds_data, fd_df=fd_df, platform=platform,
+        race_date=race_date_raw, scheduled_laps=scheduled_laps,
     )
 
 

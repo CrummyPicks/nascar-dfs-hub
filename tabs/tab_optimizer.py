@@ -21,7 +21,7 @@ PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
 def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
                           practice_data, race_name, track_name, series_id,
                           dk_df, odds_data=None, use_fd_points=False,
-                          race_id=None):
+                          race_id=None, race_date="", scheduled_laps=0):
     """Build a driver pool with projection scores for optimization.
 
     Uses the same weight system as the Projections tab — reads weights from
@@ -203,11 +203,53 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     proj_dk_map = st.session_state.get(_proj_key, {}) if _maps_fresh else {}
     _proj_origin = "engine"
 
-    # Fresh session, Optimizer opened before Projections: the session maps
-    # are empty. Fall back to the auto-saved pre-race projections in the DB
-    # (written by the Projections page) before resorting to the crude
-    # composite — the composite collapses most of the field onto nearly
-    # identical scores and makes the value chart look broken.
+    # No fresh maps? SELF-SERVE: run the full projection engine headlessly —
+    # the same builder the Accuracy page uses, generalized for upcoming races
+    # (drivers from the entry list, qualifying as override). The Optimizer
+    # must never require a Projections-page visit. Result is stored back into
+    # the session maps, so this runs once per race switch.
+    if not proj_dk_map and race_id:
+        try:
+            from tabs.tab_accuracy import _generate_race_projections
+            _drv_src = None
+            if entry_list_df is not None and not entry_list_df.empty:
+                _drv_src = entry_list_df["Driver"].dropna().tolist()
+            elif not dk_df.empty:
+                _drv_src = dk_df["Driver"].dropna().tolist()
+            _qual_ov = {}
+            if (qualifying_df is not None and not qualifying_df.empty
+                    and "Qualifying Position" in qualifying_df.columns):
+                for _, _qr in qualifying_df.iterrows():
+                    _qp = _qr.get("Qualifying Position")
+                    if _qr.get("Driver") and pd.notna(_qp):
+                        _qual_ov[_qr["Driver"]] = int(_qp)
+            _race_dict = {"race_id": race_id, "race_name": race_name,
+                          "track_name": track_name, "race_date": race_date,
+                          "scheduled_laps": scheduled_laps}
+            _pdk, _pdetail, _, _meta = _generate_race_projections(
+                _race_dict, series_id,
+                drivers_override=_drv_src,
+                qual_pos_override=_qual_ov or None,
+                practice_override=practice_data or None)
+            if _pdk:
+                # Cache as the session maps (same shape the Projections page
+                # writes) so reruns and the dominator banner are instant.
+                st.session_state["proj_maps_key"] = f"{series_id}_{race_id}"
+                st.session_state["proj_dk_map"] = _pdk
+                st.session_state["proj_fd_map"] = (_meta or {}).get("proj_fd", {})
+                st.session_state["proj_detail_map"] = _pdetail or {}
+                st.session_state["proj_floor_map"] = {
+                    d: v.get("proj_floor") for d, v in (_pdetail or {}).items()}
+                st.session_state["proj_ceiling_map"] = {
+                    d: v.get("proj_ceiling") for d, v in (_pdetail or {}).items()}
+                _maps_fresh = True
+                proj_dk_map = (st.session_state["proj_fd_map"] if use_fd_points
+                               else _pdk)
+        except Exception:
+            pass
+
+    # Still nothing (engine build failed)? Fall back to the auto-saved
+    # pre-race projections in the DB (written by the Projections page).
     # (Saved projections are DK-points; only usable for DK builds.)
     if not proj_dk_map and not use_fd_points and race_id:
         try:
@@ -686,7 +728,8 @@ def _generate_lineups(pool_df, salary_cap, roster_size, num_lineups,
 
 def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
            is_prerace, race_name, race_id, track_name, series_id, dk_df,
-           odds_data=None, fd_df=None, platform="DraftKings"):
+           odds_data=None, fd_df=None, platform="DraftKings",
+           race_date="", scheduled_laps=0):
     """Render the Optimizer tab.
 
     platform: "DraftKings", "FanDuel", or "Both". A lineup is always built
@@ -804,7 +847,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             entry_list_df, qualifying_df, lap_averages_df,
             practice_data, race_name, track_name, series_id,
             dk_df, odds_data=odds_data, use_fd_points=is_fd,
-            race_id=race_id)
+            race_id=race_id, race_date=race_date,
+            scheduled_laps=scheduled_laps)
 
     if pool.empty:
         st.warning("Could not build projection pool. Check salary data.")
