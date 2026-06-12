@@ -34,10 +34,16 @@ def _get_tracks_for_type(track_type: str) -> list:
     return resolve_track_group(track_type)
 
 
-def render(*, completed_races, series_id, selected_year, series_name="Cup"):
-    """Render the Race Analyzer tab."""
+def render(*, completed_races, series_id, selected_year, series_name="Cup",
+           platform="DraftKings"):
+    """Render the Race Analyzer tab.
+
+    platform: global picker value — tables show both sites' points, but
+    charts and headline metrics plot one site at a time (Both -> DK).
+    """
     section_header("Race Analyzer")
     st.caption(f"Analyzing **{series_name}** — {selected_year} (change series/year in the top bar)")
+    pform = "FanDuel" if platform == "FanDuel" else "DraftKings"
 
     # --- Mode selector ---
     mode = st.radio("Analysis Mode",
@@ -184,18 +190,19 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     year_label = "All Years" if ra_year_selection == "All Years" else str(ra_year_selection)
 
     if mode == "Single Race":
-        _render_single_race(ra_completed, ra_series_id, years_to_fetch)
+        _render_single_race(ra_completed, ra_series_id, years_to_fetch, pform)
     elif mode == "Season Summary":
-        _render_season_summary(ra_completed, ra_series_id, year_label, years_to_fetch)
+        _render_season_summary(ra_completed, ra_series_id, year_label, years_to_fetch, pform)
     elif mode == "By Track Type":
-        _render_by_track_type(ra_completed, ra_series_id, year_label, years_to_fetch, ra_track_type)
+        _render_by_track_type(ra_completed, ra_series_id, year_label, years_to_fetch, ra_track_type, pform)
     elif mode == "Driver Lookup":
         _render_driver_lookup(ra_completed, ra_series_id, year_label, years_to_fetch)
     elif mode == "Driver Comparison":
         _render_driver_comparison(ra_completed, ra_series_id, year_label, years_to_fetch)
 
 
-def _render_single_race(completed_races, series_id, years_to_fetch):
+def _render_single_race(completed_races, series_id, years_to_fetch,
+                        platform="DraftKings"):
     """Single race detailed view."""
     if not completed_races:
         st.info("No completed races match the selected filters.")
@@ -279,8 +286,9 @@ def _render_single_race(completed_races, series_id, years_to_fetch):
         width="stretch", hide_index=True, height=520,
     )
 
-    # Chart
-    fig = race_scatter(results)
+    # Chart — follows the global platform picker
+    fig = race_scatter(results,
+                       pts_col="FD Pts" if platform == "FanDuel" else "DK Pts")
     if fig:
         st.plotly_chart(fig, width="stretch", key="ra_single_scatter")
 
@@ -460,7 +468,8 @@ def _build_season_data(completed_races, series_id, years_to_fetch):
     return pd.DataFrame(all_rows)
 
 
-def _render_season_summary(completed_races, series_id, year_label, years_to_fetch):
+def _render_season_summary(completed_races, series_id, year_label, years_to_fetch,
+                           platform="DraftKings"):
     """Season summary — aggregated stats across all completed races."""
     if not completed_races:
         st.info("No completed races found for the selected filters.")
@@ -539,23 +548,26 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
     from src.charts import DARK_LAYOUT, apply_dark_theme, season_scatter
     from src.utils import short_name_series
 
-    # Top 25 Avg DK Points bar chart
-    top_dk = agg.head(25).copy()
-    if not top_dk.empty:
-        top_dk = top_dk.sort_values("Avg DK", ascending=True)
+    # Top 25 Avg fantasy points bar chart — follows the platform picker
+    _ptag = "FD" if platform == "FanDuel" else "DK"
+    _avg_col = f"Avg {_ptag}"
+    top_dk = (agg.sort_values(_avg_col, ascending=False).head(25).copy()
+              if _avg_col in agg.columns else agg.head(25).copy())
+    if not top_dk.empty and _avg_col in top_dk.columns:
+        top_dk = top_dk.sort_values(_avg_col, ascending=True)
         top_dk["Short"] = short_name_series(top_dk["Driver"].tolist())
         fig_dk = go.Figure(go.Bar(
             y=top_dk["Short"],
-            x=top_dk["Avg DK"],
+            x=top_dk[_avg_col],
             orientation="h",
-            marker=dict(color=top_dk["Avg DK"], colorscale="Viridis",
-                        showscale=True, colorbar=dict(title="Avg DK")),
-            hovertemplate="<b>%{customdata[0]}</b><br>Avg DK: %{x:.1f}<extra></extra>",
+            marker=dict(color=top_dk[_avg_col], colorscale="Viridis",
+                        showscale=True, colorbar=dict(title=_avg_col)),
+            hovertemplate="<b>%{customdata[0]}</b><br>" + _avg_col + ": %{x:.1f}<extra></extra>",
             customdata=top_dk[["Driver"]].values,
         ))
         fig_dk.update_layout(**DARK_LAYOUT, height=max(400, len(top_dk) * 18),
-                             title=f"Top 25 Avg DK Points — {year_label}",
-                             xaxis_title="Avg DK Points", yaxis_title="")
+                             title=f"Top 25 Avg {_ptag} Points — {year_label}",
+                             xaxis_title=f"Avg {_ptag} Points", yaxis_title="")
         apply_dark_theme(fig_dk)
         st.plotly_chart(fig_dk, width="stretch", key="ra_season_dk_bar")
 
@@ -579,14 +591,17 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
         apply_dark_theme(fig_fin)
         st.plotly_chart(fig_fin, width="stretch", key="ra_season_fin_bar")
 
-    # Season scatter: Avg Running Pos vs Avg DK Pts
-    if not season_df.empty and "Avg Run" in season_df.columns:
+    # Season scatter: Avg Running Pos vs Avg fantasy pts (platform-aware)
+    _pts_src = "FD Pts" if platform == "FanDuel" else "DK Pts"
+    if (not season_df.empty and "Avg Run" in season_df.columns
+            and _pts_src in season_df.columns):
+        _pts_avg = f"Avg {_ptag} Pts"
         avg_data = season_df.dropna(subset=["Avg Run"]).groupby(["Driver", "Car"]).agg(
             **{"Avg Running Pos": ("Avg Run", "mean"),
-               "Avg DK Pts": ("DK Pts", "mean")}
+               _pts_avg: (_pts_src, "mean")}
         ).round(1).reset_index()
 
-        fig = season_scatter(avg_data)
+        fig = season_scatter(avg_data, pts_col=_pts_avg)
         if fig:
             st.plotly_chart(fig, width="stretch")
 
@@ -596,7 +611,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
 
 
 def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch,
-                          selected_track_type="All Types"):
+                          selected_track_type="All Types", platform="DraftKings"):
     """Aggregate driver stats across all tracks of a selected type."""
     # Track type selector — subtypes + parent groups
     subtypes = sorted(set(TRACK_TYPE_MAP.values()))
@@ -734,39 +749,42 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
         width="stretch", hide_index=False, height=550,
     )
 
-    # Avg Running Pos vs Avg DK Points scatter chart
+    # Avg Running Pos vs Avg fantasy points scatter chart (platform-aware)
+    _tt_tag = "FD" if platform == "FanDuel" else "DK"
+    _tt_avg = f"Avg {_tt_tag}"
     if ("Avg Run" in agg.columns and agg["Avg Run"].notna().any()
-            and "Avg DK" in agg.columns):
-        scatter_data = agg.dropna(subset=["Avg Run"])[["Driver", "Car", "Avg Run", "Avg DK"]].copy()
+            and _tt_avg in agg.columns):
+        scatter_data = agg.dropna(subset=["Avg Run"])[["Driver", "Car", "Avg Run", _tt_avg]].copy()
         scatter_data = scatter_data.rename(columns={
             "Avg Run": "Avg Running Pos",
-            "Avg DK": "Avg DK Pts",
+            _tt_avg: f"Avg {_tt_tag} Pts",
         })
         from src.charts import season_scatter
-        fig = season_scatter(scatter_data)
+        fig = season_scatter(scatter_data, pts_col=f"Avg {_tt_tag} Pts")
         if fig:
-            fig.update_layout(title=f"Avg Running Pos vs Avg DK — {chosen_type.title()} Tracks")
+            fig.update_layout(title=f"Avg Running Pos vs Avg {_tt_tag} — {chosen_type.title()} Tracks")
             st.plotly_chart(fig, width="stretch", key="ra_tt_scatter")
     else:
-        # Fallback: plot Avg Finish vs Avg DK
+        # Fallback: plot Avg Finish vs Avg fantasy points
         import plotly.graph_objects as go
         from src.charts import DARK_LAYOUT, apply_dark_theme
         plot_df = agg[agg["Races"] >= 2].head(40).copy()
-        if not plot_df.empty:
+        if not plot_df.empty and _tt_avg in plot_df.columns:
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=plot_df["Avg Finish"], y=plot_df["Avg DK"],
+                x=plot_df["Avg Finish"], y=plot_df[_tt_avg],
                 mode="markers+text", text=plot_df["Car"],
                 textposition="top right", textfont=dict(size=9, color="#8892a4"),
                 marker=dict(size=10, color="#0ea5e9", opacity=0.8),
-                hovertemplate="<b>%{customdata[0]}</b><br>Avg Finish: %{x:.1f}<br>Avg DK: %{y:.1f}",
+                hovertemplate="<b>%{customdata[0]}</b><br>Avg Finish: %{x:.1f}<br>"
+                              + _tt_avg + ": %{y:.1f}",
                 customdata=plot_df[["Driver"]].values,
             ))
             fig.update_layout(
                 **DARK_LAYOUT, height=450,
-                title=f"Avg Finish vs Avg DK — {chosen_type.title()} Tracks",
+                title=f"Avg Finish vs Avg {_tt_tag} — {chosen_type.title()} Tracks",
                 xaxis_title="Avg Finish Position",
-                yaxis_title="Avg DK Points",
+                yaxis_title=f"Avg {_tt_tag} Points",
                 xaxis=dict(autorange="reversed"),
             )
             apply_dark_theme(fig)

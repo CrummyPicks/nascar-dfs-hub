@@ -40,7 +40,8 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     if view_mode == "Charts":
         _render_charts_view(completed_races, series_id, selected_year, results_df,
-                            lap_data, fl_counts, is_prerace, track_name)
+                            lap_data, fl_counts, is_prerace, track_name,
+                            platform=platform)
         return
 
     # --- Determine base driver list ---
@@ -443,8 +444,13 @@ def _render_track_type_history(master_df, track_type, series_id, track_name=""):
 
 def _render_charts_view(completed_races, series_id, selected_year,
                         results_df, lap_data, fl_counts, is_prerace,
-                        track_name=""):
-    """Render the Charts view."""
+                        track_name="", platform="DraftKings"):
+    """Render the Charts view. Charts plot ONE site's scoring at a time —
+    with "Both" selected they default to DraftKings (noted in a caption)."""
+    eff_platform = "FanDuel" if platform == "FanDuel" else "DraftKings"
+    if platform == "Both":
+        st.caption("Charts show **DraftKings** scoring — switch the platform "
+                   "picker to FanDuel for FD-scored charts.")
 
     # If postrace, show DFS histogram and start vs finish (full width, stacked)
     if not is_prerace and not results_df.empty:
@@ -453,17 +459,23 @@ def _render_charts_view(completed_races, series_id, selected_year,
         _fl_norm = build_norm_lookup(fl_counts)
         res["Fastest Laps"] = res["Driver"].map(
             lambda d: fuzzy_get(d, fl_counts, _fl_norm) or 0).astype("Int64")
-        res["DFS Points"] = res.apply(
-            lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+        if eff_platform == "FanDuel":
+            res["DFS Points"] = res.apply(
+                lambda r: calc_fd_points(r["Finish Position"], r["Start"],
+                                         r["Laps Led"], r.get("Laps", 0)), axis=1)
+        else:
+            res["DFS Points"] = res.apply(
+                lambda r: calc_dk_points(r["Finish Position"], r["Start"],
+                                         r["Laps Led"], r["Fastest Laps"]), axis=1)
 
-        fig = dfs_histogram(res)
+        fig = dfs_histogram(res, platform=eff_platform)
         st.plotly_chart(fig, width="stretch")
 
         fig = start_vs_finish_scatter(res)
         st.plotly_chart(fig, width="stretch")
 
     # Season trend line
-    trend_fig = season_trend_line(series_id, selected_year)
+    trend_fig = season_trend_line(series_id, selected_year, platform=eff_platform)
     if trend_fig:
         st.divider()
         st.plotly_chart(trend_fig, width="stretch")
@@ -495,7 +507,7 @@ def _render_charts_view(completed_races, series_id, selected_year,
 
         # Avg Fantasy Points vs Avg Running Position
         st.divider()
-        fig = fantasy_vs_arp_scatter(track_name, series_id)
+        fig = fantasy_vs_arp_scatter(track_name, series_id, platform=eff_platform)
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_fantasy_vs_arp")
 
@@ -519,12 +531,19 @@ def _render_charts_view(completed_races, series_id, selected_year,
         _arp_norm = build_norm_lookup(avg_run_data)
         race_res["Fastest Laps"] = race_res["Driver"].map(
             lambda d: fuzzy_get(d, fl_counts, _fl_norm2) or 0).astype("Int64")
-        race_res["DK Pts"] = race_res.apply(
-            lambda r: calc_dk_points(r["Finish Position"], r["Start"], r["Laps Led"], r["Fastest Laps"]), axis=1)
+        if eff_platform == "FanDuel":
+            race_res["FD Pts"] = race_res.apply(
+                lambda r: calc_fd_points(r["Finish Position"], r["Start"],
+                                         r["Laps Led"], r.get("Laps", 0)), axis=1)
+        else:
+            race_res["DK Pts"] = race_res.apply(
+                lambda r: calc_dk_points(r["Finish Position"], r["Start"],
+                                         r["Laps Led"], r["Fastest Laps"]), axis=1)
         race_res["Avg Run"] = race_res["Driver"].map(
             lambda d: fuzzy_get(d, avg_run_data, _arp_norm))
 
-        fig = race_scatter(race_res)
+        fig = race_scatter(race_res,
+                           pts_col="FD Pts" if eff_platform == "FanDuel" else "DK Pts")
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_race_scatter")
 

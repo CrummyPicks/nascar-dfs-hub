@@ -37,35 +37,50 @@ def apply_dark_theme(fig):
     return fig
 
 
-def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
-    """DFS points bar chart — each driver sorted by points with score breakdown on hover."""
-    from src.utils import calc_dk_points
-    from src.config import DK_FINISH_POINTS
+def dfs_histogram(results_df: pd.DataFrame, height: int = 400,
+                  platform: str = "DraftKings") -> go.Figure:
+    """DFS points bar chart — each driver sorted by points with score breakdown
+    on hover. `platform` switches the hover component math and labels between
+    DraftKings and FanDuel scoring (caller supplies the matching "DFS Points")."""
+    from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS
+
+    is_fd = platform == "FanDuel"
+    tag = "FD" if is_fd else "DK"
 
     df = results_df.dropna(subset=["DFS Points"]).sort_values("DFS Points", ascending=True).copy()
     if df.empty:
         return go.Figure()
 
-    # Compute DK point components for hover breakdown
+    # Compute per-platform point components for hover breakdown
     hover_texts = []
     for _, row in df.iterrows():
         fp = int(row.get("Finish Position", 0))
         start = int(row.get("Start", 0))
         ll = int(row.get("Laps Led", 0))
-        fl = int(row.get("Fastest Laps", 0))
-        finish_pts = DK_FINISH_POINTS.get(fp, 0)
-        diff_pts = (start - fp) * 1.0
-        led_pts = ll * 0.25
-        fl_pts = fl * 0.45
-        total = finish_pts + diff_pts + led_pts + fl_pts
+        if is_fd:
+            laps = int(row.get("Laps", 0) or 0)
+            finish_pts = FD_FINISH_POINTS.get(fp, 0)
+            diff_pts = (start - fp) * 0.5
+            led_pts = ll * 0.1
+            comp_pts = laps * 0.1
+            total = finish_pts + diff_pts + led_pts + comp_pts
+            tail = f"Laps Completed: {laps} ({comp_pts:.1f} pts)"
+        else:
+            fl = int(row.get("Fastest Laps", 0))
+            finish_pts = DK_FINISH_POINTS.get(fp, 0)
+            diff_pts = (start - fp) * 1.0
+            led_pts = ll * 0.25
+            fl_pts = fl * 0.45
+            total = finish_pts + diff_pts + led_pts + fl_pts
+            tail = f"Fastest Laps: {fl} ({fl_pts:.1f} pts)"
         hover_texts.append(
             f"<b>{row['Driver']}</b><br>"
-            f"DK Pts: {total:.1f}<br>"
+            f"{tag} Pts: {total:.1f}<br>"
             f"─────────────<br>"
             f"Finish: P{fp} ({finish_pts} pts)<br>"
             f"Start: P{start} → P{fp} ({diff_pts:+.1f} pts)<br>"
             f"Laps Led: {ll} ({led_pts:.1f} pts)<br>"
-            f"Fastest Laps: {fl} ({fl_pts:.1f} pts)"
+            f"{tail}"
         )
 
     short_names = short_name_series(df["Driver"].tolist())
@@ -78,7 +93,7 @@ def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
             color=df["DFS Points"],
             colorscale="RdYlGn",
             showscale=True,
-            colorbar=dict(title="DK Pts"),
+            colorbar=dict(title=f"{tag} Pts"),
         ),
         hovertemplate="%{customdata}<extra></extra>",
         customdata=hover_texts,
@@ -86,8 +101,8 @@ def dfs_histogram(results_df: pd.DataFrame, height: int = 400) -> go.Figure:
     fig.update_layout(
         **DARK_LAYOUT,
         height=max(height, len(df) * 16),
-        title="DFS Points by Driver",
-        xaxis_title="DraftKings Points",
+        title=f"DFS Points by Driver ({platform})",
+        xaxis_title=f"{platform} Points",
         yaxis_title="",
         yaxis=dict(tickfont=dict(size=10)),
     )
@@ -264,17 +279,21 @@ def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
     return apply_dark_theme(fig)
 
 
-def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
-    """Avg Running Position vs Avg DK Points scatter with car numbers.
+def season_scatter(season_data: pd.DataFrame, height: int = 500,
+                   pts_col: str = "Avg DK Pts") -> go.Figure:
+    """Avg Running Position vs Avg fantasy points scatter with car numbers.
 
-    Expects columns: Driver, Car, Avg Running Pos, Avg DK Pts
+    Expects columns: Driver, Car, Avg Running Pos, and `pts_col`
+    (e.g. "Avg DK Pts" or "Avg FD Pts").
     """
     if season_data.empty:
         return None
 
-    y_col = "Avg DK Pts" if "Avg DK Pts" in season_data.columns else None
+    y_col = pts_col if pts_col in season_data.columns else (
+        "Avg DK Pts" if "Avg DK Pts" in season_data.columns else None)
     if y_col is None:
         return None
+    _tag = "FD" if "FD" in y_col else "DK"
 
     fig = go.Figure()
 
@@ -290,7 +309,7 @@ def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
         textposition="middle center",
         textfont=dict(size=10, color="white"),
         marker=dict(size=28, color="#1e293b", line=dict(width=1.5, color="#64748b")),
-        hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>DK Pts: %{y:.1f}<extra></extra>",
+        hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>" + _tag + " Pts: %{y:.1f}<extra></extra>",
         customdata=season_data[["Driver"]].values,
     ))
 
@@ -301,32 +320,38 @@ def season_scatter(season_data: pd.DataFrame, height: int = 500) -> go.Figure:
     fig.update_layout(
         **DARK_LAYOUT,
         height=height,
-        title="Season Overview: Avg Running Position vs DK Points",
+        title=f"Season Overview: Avg Running Position vs {_tag} Points",
         xaxis_title="Avg Running Pos",
-        yaxis_title="Avg DK Pts",
+        yaxis_title=y_col,
         xaxis=dict(autorange="reversed"),
     )
     return apply_dark_theme(fig)
 
 
-def race_scatter(results_df: pd.DataFrame, height: int = 350) -> go.Figure:
-    """Avg Running Position vs DK Points scatter for a single race."""
-    if "Avg Run" not in results_df.columns or "DK Pts" not in results_df.columns:
-        return None
+def race_scatter(results_df: pd.DataFrame, height: int = 350,
+                 pts_col: str = "DK Pts") -> go.Figure:
+    """Avg Running Position vs fantasy points scatter for a single race.
 
-    clean = results_df.dropna(subset=["Avg Run", "DK Pts"]).copy()
+    pts_col: which points column to plot ("DK Pts" or "FD Pts")."""
+    if pts_col not in results_df.columns and "DK Pts" in results_df.columns:
+        pts_col = "DK Pts"
+    if "Avg Run" not in results_df.columns or pts_col not in results_df.columns:
+        return None
+    _tag = "FD" if "FD" in pts_col else "DK"
+
+    clean = results_df.dropna(subset=["Avg Run", pts_col]).copy()
     if clean.empty:
         return None
 
     fig = go.Scatter(
-        x=clean["Avg Run"], y=clean["DK Pts"],
+        x=clean["Avg Run"], y=clean[pts_col],
         mode="markers+text",
         text=clean["Car"].astype(str) if "Car" in clean.columns else clean["Driver"],
         textposition="top center",
         textfont=dict(size=9),
-        marker=dict(size=12, color=clean["DK Pts"], colorscale="Viridis",
-                    showscale=True, colorbar=dict(title="DK Pts")),
-        hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>DK Pts: %{y:.1f}<extra></extra>",
+        marker=dict(size=12, color=clean[pts_col], colorscale="Viridis",
+                    showscale=True, colorbar=dict(title=f"{_tag} Pts")),
+        hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>" + _tag + " Pts: %{y:.1f}<extra></extra>",
         customdata=clean[["Driver"]].values,
     )
 
@@ -334,9 +359,9 @@ def race_scatter(results_df: pd.DataFrame, height: int = 350) -> go.Figure:
     fig_obj.update_layout(
         **DARK_LAYOUT,
         height=height,
-        title="Avg Running Position vs DK Points",
+        title=f"Avg Running Position vs {_tag} Points",
         xaxis_title="Avg Running Pos",
-        yaxis_title="DK Points",
+        yaxis_title=f"{_tag} Points",
         xaxis=dict(autorange="reversed"),
     )
     return apply_dark_theme(fig_obj)
@@ -402,8 +427,14 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
     return apply_dark_theme(fig)
 
 
-def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go.Figure:
-    """Salary vs Projected Points scatter — highlights value plays."""
+def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
+                                 salary_label: str = "DK Salary") -> go.Figure:
+    """Salary vs Projected Points scatter — highlights value plays.
+
+    salary_label: axis/title label only. The data column is always named
+    "DK Salary" internally (the optimizer's one salary column), but FanDuel
+    builds carry FD salaries in it — pass "FD Salary" so the chart is honest.
+    """
     if "DK Salary" not in pool_df.columns or "Proj Score" not in pool_df.columns:
         return None
     clean = pool_df.dropna(subset=["DK Salary", "Proj Score"]).copy()
@@ -446,7 +477,7 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400) -> go
     fig.update_layout(
         **DARK_LAYOUT, height=height,
         title="Salary vs Projected Points (above line = good value)",
-        xaxis_title="DK Salary", yaxis_title="Projected Points",
+        xaxis_title=salary_label, yaxis_title="Projected Points",
     )
     fig.add_annotation(
         x=0.02, y=0.98, xref="paper", yref="paper",
@@ -502,18 +533,24 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
 
 
 def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
-                            height: int = 450) -> go.Figure:
-    """Avg DK Fantasy Points vs Avg Running Position at a track — shows value."""
+                            height: int = 450,
+                            platform: str = "DraftKings") -> go.Figure:
+    """Avg fantasy points vs Avg Running Position at a track — shows value.
+
+    platform: "DraftKings" or "FanDuel" — switches the per-race scoring."""
     import sqlite3
     from src.config import DB_PATH
-    from src.utils import calc_dk_points
+    from src.utils import calc_dk_points, calc_fd_points
+    is_fd = platform == "FanDuel"
+    tag = "FD" if is_fd else "DK"
     if not DB_PATH.exists():
         return None
     try:
         conn = sqlite3.connect(str(DB_PATH))
         rows = conn.execute('''
             SELECT d.full_name, rr.finish_pos, rr.start_pos,
-                   rr.laps_led, rr.fastest_laps, rr.avg_running_position
+                   rr.laps_led, rr.fastest_laps, rr.avg_running_position,
+                   rr.laps_completed
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r ON r.id = rr.race_id
@@ -528,22 +565,26 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
     if not rows or len(rows) < 5:
         return None
 
-    # Compute DK points per race-driver, then aggregate
+    # Compute platform points per race-driver, then aggregate
     from collections import defaultdict
     driver_pts = defaultdict(list)
     driver_arp = defaultdict(list)
-    for name, fp, sp, ll, fl, arp in rows:
-        dk = calc_dk_points(fp, sp or fp, ll or 0, fl or 0)
-        driver_pts[name].append(dk)
+    for name, fp, sp, ll, fl, arp, laps in rows:
+        if is_fd:
+            pts = calc_fd_points(fp, sp or fp, ll or 0, laps or 0)
+        else:
+            pts = calc_dk_points(fp, sp or fp, ll or 0, fl or 0)
+        driver_pts[name].append(pts)
         if arp and arp > 0:
             driver_arp[name].append(arp)
 
+    pts_col = f"Avg {tag} Pts"
     records = []
     for name in driver_pts:
         if len(driver_pts[name]) >= 2 and driver_arp.get(name):
             records.append({
                 "Driver": name,
-                "Avg DK Pts": round(np.mean(driver_pts[name]), 1),
+                pts_col: round(np.mean(driver_pts[name]), 1),
                 "Avg Run Pos": round(np.mean(driver_arp[name]), 1),
                 "Races": len(driver_pts[name]),
             })
@@ -554,29 +595,29 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
     df = pd.DataFrame(records)
 
     fig = go.Figure(go.Scatter(
-        x=df["Avg Run Pos"], y=df["Avg DK Pts"],
+        x=df["Avg Run Pos"], y=df[pts_col],
         mode="markers+text",
         text=df["Driver"].apply(_last_name),
         textposition="top center",
         textfont=dict(size=9, color="#94a3b8"),
         marker=dict(
             size=df["Races"].clip(upper=12) + 6,
-            color=df["Avg DK Pts"],
+            color=df[pts_col],
             colorscale="RdYlGn",
             showscale=True,
-            colorbar=dict(title="Avg DK"),
+            colorbar=dict(title=f"Avg {tag}"),
             line=dict(width=1, color="#334155"),
         ),
         hovertemplate="%{customdata[0]}<br>Avg Run Pos: %{x:.1f}<br>"
-                      "Avg DK Pts: %{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",
+                      f"Avg {tag} Pts: " + "%{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",
         customdata=df[["Driver", "Races"]].values,
     ))
 
     fig.update_layout(
         **DARK_LAYOUT, height=height,
-        title=f"Avg Fantasy Points vs Avg Running Position — {track_name}",
+        title=f"Avg Fantasy Points ({platform}) vs Avg Running Position — {track_name}",
         xaxis_title="Avg Running Position",
-        yaxis_title="Avg DK Points",
+        yaxis_title=f"Avg {tag} Points",
         xaxis=dict(autorange="reversed"),
     )
     fig.add_annotation(
@@ -590,8 +631,10 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
 def season_trend_line(series_id: int = 1, season: int = None,
                        drivers: list = None, top_n: int = 10,
                        last_n_races: int = 5,
-                       height: int = 400) -> go.Figure:
-    """Line chart of DK points across the most recent N races — shows form trends.
+                       height: int = 400,
+                       platform: str = "DraftKings") -> go.Figure:
+    """Line chart of fantasy points across the most recent N races — form trends.
+    `platform` selects which site's stored scores to plot (dfs_points has both).
 
     Uses a categorical x-axis with "Track Name (Date)" labels so the chart
     renders correctly regardless of how the race_date column is stored
@@ -607,19 +650,24 @@ def season_trend_line(series_id: int = 1, season: int = None,
         return None
     try:
         conn = sqlite3.connect(str(DB_PATH))
+        # NOTE: races has track_id, not track_name — the old query selected
+        # r.track_name, threw 'no such column', and the except returned None,
+        # so this chart NEVER rendered. Join tracks for the name.
         df = pd.read_sql_query('''
             SELECT d.full_name as Driver,
                    r.id          as RaceId,
                    r.race_name   as Race,
-                   r.track_name  as Track,
+                   t.name        as Track,
                    r.race_date   as Date,
                    dp.dfs_score  as DK_Pts
             FROM dfs_points dp
             JOIN drivers d ON d.id = dp.driver_id
             JOIN races   r ON r.id = dp.race_id
-            WHERE r.series_id = ? AND r.season = ? AND dp.platform = 'DraftKings'
+            LEFT JOIN tracks t ON t.id = r.track_id
+            WHERE r.series_id = ? AND r.season = ? AND dp.platform = ?
             ORDER BY r.race_date, r.id
-        ''', conn, params=[series_id, season])
+        ''', conn, params=[series_id, season,
+                           "FanDuel" if platform == "FanDuel" else "DraftKings"])
         conn.close()
     except Exception:
         return None
@@ -672,14 +720,15 @@ def season_trend_line(series_id: int = 1, season: int = None,
     df = df.sort_values(["Driver", "_x_idx"])
 
     n_races = len(label_order)
+    _tag = "FD" if platform == "FanDuel" else "DK"
     title_suffix = f" — Last {n_races} Race{'s' if n_races != 1 else ''}"
     fig = px.line(df, x="Label", y="DK_Pts", color="Driver",
                   markers=True,
-                  title=f"{season} Season DK Points Trend{title_suffix}",
+                  title=f"{season} Season {_tag} Points Trend{title_suffix}",
                   hover_data={"Race": True, "Label": False, "_x_idx": False})
     fig.update_xaxes(type="category", categoryorder="array", categoryarray=label_order)
     fig.update_layout(**DARK_LAYOUT, height=height,
-                      xaxis_title="", yaxis_title="DK Points",
+                      xaxis_title="", yaxis_title=f"{_tag} Points",
                       legend=dict(font=dict(size=9)))
     return apply_dark_theme(fig)
 

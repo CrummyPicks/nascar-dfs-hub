@@ -2217,18 +2217,36 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         column_config=col_config,
     )
 
-    # Chart — all drivers, stacked bar with component breakdown on hover
+    # Chart — all drivers, stacked bar with component breakdown on hover.
+    # Follows the platform picker: FanDuel mode rebuilds the components in
+    # FD scoring (FD finish curve, 0.5x diff, 0.1x led, 0.1x laps completed)
+    # instead of showing DK-scale bars under an FD sort.
     import plotly.graph_objects as go
+    _chart_fd = (platform == "FanDuel")
+    _tag = "FD" if _chart_fd else "DK"
     chart_df = proj.copy()
-    chart_df = chart_df.sort_values("Proj DK", ascending=True)  # horizontal bar: bottom = best
+    if _chart_fd:
+        chart_df["Finish Pts"] = chart_df["Proj Finish"].map(_fd_finish_pts).round(1)
+        chart_df["Diff Pts"] = (chart_df["Diff Pts"] * FD_PTS_PLACE_DIFF).round(1)
+        chart_df["Led Pts"] = (chart_df["Proj Laps Led"] * FD_PTS_LAPS_LED).round(1)
+        chart_df["Laps Pts"] = (chart_df["Proj Laps"] * FD_PTS_LAPS_COMPLETED).round(1)
+    _rank_pts = "Proj FD" if _chart_fd else "Proj DK"
+    chart_df = chart_df.sort_values(_rank_pts, ascending=True)  # horizontal bar: bottom = best
 
-    # Build stacked horizontal bar with DK scoring components
+    # Build stacked horizontal bar with scoring components
     # Positive components stack right, negative Diff Pts stacks left
-    pos_components = {
-        "Finish Pts": "#0ea5e9",
-        "Led Pts": "#fb923c",
-        "FL Pts": "#f472b6",
-    }
+    if _chart_fd:
+        pos_components = {
+            "Finish Pts": "#0ea5e9",
+            "Led Pts": "#fb923c",
+            "Laps Pts": "#f472b6",
+        }
+    else:
+        pos_components = {
+            "Finish Pts": "#0ea5e9",
+            "Led Pts": "#fb923c",
+            "FL Pts": "#f472b6",
+        }
 
     from src.utils import short_name_series
     chart_df["Short"] = short_name_series(chart_df["Driver"].tolist())
@@ -2275,16 +2293,26 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Custom hover with all components
     custom_hover = []
     for _, row in chart_df.iterrows():
+        if _chart_fd:
+            _last_lines = (
+                f"Laps Pts: {row.get('Laps Pts', 0):.1f}<br>"
+                f"Laps Led: {row.get('Proj Laps Led', 0):.0f}<br>"
+                f"Proj Laps: {row.get('Proj Laps', 0):.0f}<br>"
+            )
+        else:
+            _last_lines = (
+                f"FL Pts: {row.get('FL Pts', 0):.1f}<br>"
+                f"Laps Led: {row.get('Proj Laps Led', 0):.0f}<br>"
+                f"Fast Laps: {row.get('Proj Fast Laps', 0):.0f}<br>"
+            )
         text = (
             f"<b>{row['Driver']}</b><br>"
-            f"Proj DK: {row.get('Proj DK', 0):.1f}<br>"
+            f"Proj {_tag}: {row.get(_rank_pts, 0):.1f}<br>"
             f"Proj Finish: {row.get('Proj Finish', 0):.1f}<br>"
             f"Finish Pts: {row.get('Finish Pts', 0):.1f}<br>"
             f"Diff Pts: {row.get('Diff Pts', 0):+.1f}<br>"
             f"Led Pts: {row.get('Led Pts', 0):.1f}<br>"
-            f"FL Pts: {row.get('FL Pts', 0):.1f}<br>"
-            f"Laps Led: {row.get('Proj Laps Led', 0):.0f}<br>"
-            f"Fast Laps: {row.get('Proj Fast Laps', 0):.0f}<br>"
+            f"{_last_lines}"
             f"Track: {pd.to_numeric(row.get('Track', 0), errors='coerce') or 0:.1f}"
         )
         custom_hover.append(text)
@@ -2292,7 +2320,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # Add invisible scatter trace for rich hover
     fig.add_trace(go.Scatter(
         y=chart_df["Short"],
-        x=chart_df["Proj DK"],
+        x=chart_df[_rank_pts],
         mode="markers",
         marker=dict(size=1, opacity=0),
         hovertext=custom_hover,
@@ -2305,8 +2333,8 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     fig.update_layout(
         **DARK_LAYOUT,
         barmode="relative",
-        title="All Drivers — Projected DK Points Breakdown",
-        xaxis_title="Projected DK Points",
+        title=f"All Drivers — Projected {_tag} Points Breakdown",
+        xaxis_title=f"Projected {_tag} Points",
         yaxis_title="",
         height=max(400, n_drivers * 22),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
