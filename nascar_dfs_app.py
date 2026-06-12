@@ -45,8 +45,8 @@ except KeyError as e:
 # ============================================================
 # PAGE CONFIG & CSS
 # ============================================================
-st.set_page_config(page_title="NASCAR DFS Hub", page_icon="🏁", layout="wide",
-                   initial_sidebar_state="collapsed")
+st.set_page_config(page_title="NASCAR DFS Hub", page_icon="assets/favicon.png",
+                   layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap');
@@ -747,8 +747,17 @@ def _chip(label, ok, detail_ok, detail_miss="not loaded"):
 
 _odds_label = {"saved": "DB", "auto": "Action Network",
                "salary_estimate": "salary estimate"}.get(odds_source, "")
+# Track-type badge — colored to the type so the race context reads instantly
+from src.config import TRACK_TYPE_DISPLAY
+_tt_color = TRACK_TYPE_COLORS.get(track_type, "#3b82f6")
+_tt_label = TRACK_TYPE_DISPLAY.get(track_type, track_type.title())
+if is_concrete_track(track_name):
+    _tt_label += " · Concrete"
+_tt_badge = (f'<span class="badge" style="background:{_tt_color}22;'
+             f'color:{_tt_color};border:1px solid {_tt_color}55;'
+             f'margin-left:6px;">{_tt_label}</span>')
 _strip_items = [
-    f'{_badge}{_date_part}',
+    f'{_badge}{_tt_badge}{_date_part}',
     _chip("DK", has_saved_dk, f"{len(db_dk_df)} drivers"),
     _chip("FD", has_saved_fd, f"{len(db_fd_df)} drivers"),
     _chip("Odds", bool(odds_data), f"{len(odds_data)} · {_odds_label}"),

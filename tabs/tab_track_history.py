@@ -166,7 +166,8 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
                 st.plotly_chart(fig, width="stretch")
 
             # ARP vs Avg Finish scatter — shows wreck luck
-            arp_fig = arp_vs_finish_scatter(hist_df, track_name)
+            arp_fig = arp_vs_finish_scatter(hist_df, track_name,
+                                            series_id=series_id)
             if arp_fig:
                 st.plotly_chart(arp_fig, width="stretch")
 

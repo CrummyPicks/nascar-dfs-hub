@@ -755,6 +755,37 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
                                    key_prefix=scope_key)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _car_badge_url(series_id: int, driver_name: str):
+    """NASCAR CDN car-number badge for a driver's most recent ride, or None.
+
+    Looks up the latest car number from race_results, then HEAD-checks the
+    CDN so we never render a broken image. Cached for a day."""
+    try:
+        import sqlite3
+        import requests
+        from src.config import DB_PATH
+        conn = sqlite3.connect(str(DB_PATH))
+        row = conn.execute('''
+            SELECT rr.car_number FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            WHERE d.full_name = ? AND r.series_id = ?
+              AND rr.car_number IS NOT NULL AND rr.car_number != ''
+            ORDER BY r.race_date DESC LIMIT 1
+        ''', (driver_name, series_id or 1)).fetchone()
+        conn.close()
+        car = str(row[0]).strip() if row and row[0] is not None else ""
+        if not car.isdigit() or series_id not in (1, 2, 3):
+            return None
+        url = f"https://cf.nascar.com/data/images/carbadges/{series_id}/{car}.png"
+        r = requests.head(url, timeout=3,
+                          headers={"User-Agent": "Mozilla/5.0"})
+        return url if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
 @st.dialog("Driver History", width="large")
 def render_driver_history_dialog(driver_name: str, series_id: int,
                                   track_name: str = None,
@@ -781,11 +812,19 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         _t = _dt.now()
         season = _t.year + 1 if _t.month >= 10 else _t.year
 
+    # Header — official car-number badge (when the CDN has it) + driver name
+    _badge_url = _car_badge_url(series_id, driver_name)
+    _badge_html = (f'<img src="{_badge_url}" style="height:40px;'
+                   f'vertical-align:middle;margin-right:10px;" />'
+                   if _badge_url else "")
     st.markdown(
-        f'<div style="margin:-0.4rem 0 0.4rem 0;">'
-        f'<span style="color:#e2e8f0;font-size:1.05rem;font-weight:700;">{driver_name}</span>'
+        f'<div style="margin:-0.4rem 0 0.4rem 0;display:flex;align-items:center;">'
+        f'{_badge_html}'
+        f'<span><span style="color:#e2e8f0;font-size:1.15rem;font-weight:700;'
+        f'font-family:\'Rajdhani\',\'Segoe UI\',sans-serif;letter-spacing:1px;">'
+        f'{driver_name}</span>'
         f' &nbsp;<span style="color:#64748b;font-size:0.82rem;">— race history</span>'
-        f'</div>', unsafe_allow_html=True)
+        f'</span></div>', unsafe_allow_html=True)
 
     # Series selector — defaults to the SERIES OF THE RACE THE USER CLICKED
     # (series_id) so the popup opens in the most relevant context, while still

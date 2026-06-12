@@ -396,8 +396,13 @@ def race_scatter(results_df: pd.DataFrame, height: int = 350,
 
 
 def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
-                           height: int = 450) -> go.Figure:
-    """Avg Running Position vs Avg Finish scatter — shows wreck luck."""
+                           height: int = 450,
+                           series_id: int = None) -> go.Figure:
+    """Avg Running Position vs Avg Finish scatter — shows wreck luck.
+
+    This chart clusters mid-pack, so points are labeled with CAR NUMBERS
+    (1-3 chars, collision-proof) when series_id is provided — full names
+    stay in the hover. Falls back to selective last names without it."""
     if "Avg Run Pos" not in hist_df.columns or "Avg Finish" not in hist_df.columns:
         return None
 
@@ -407,35 +412,59 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
 
     # Color by how much ARP differs from finish (luck factor)
     clean["Luck"] = clean["Avg Run Pos"] - clean["Avg Finish"]
-
-    # Label only the story-tellers: best finishers + the luck outliers in
-    # both directions. The mid-pack cluster stays hover-only.
     clean = clean.reset_index(drop=True)
-    notable = set(clean.nsmallest(8, "Avg Finish").index)
-    notable |= set(clean.nlargest(5, "Luck").index)    # unlucky (ran >> finished)
-    notable |= set(clean.nsmallest(5, "Luck").index)   # lucky
-    labels, positions = _selective_labels(clean, "Driver", notable)
 
-    fig = go.Figure(go.Scatter(
-        x=clean["Avg Finish"],
-        y=clean["Avg Run Pos"],
-        mode="markers+text",
-        text=labels,
-        textposition=positions,
-        textfont=dict(size=10, color="#cbd5e1"),
-        customdata=clean[["Driver"]].values,
-        marker=dict(
-            size=14,
-            color=clean["Luck"],
-            colorscale="RdYlGn",
-            cmid=0,
-            showscale=True,
-            colorbar=dict(title="Luck<br>(ARP-Finish)"),
-            line=dict(width=1, color="#334155"),
-        ),
-        hovertemplate="%{customdata[0]}<br>Avg Finish: %{x:.1f}<br>Avg Run Pos: %{y:.1f}"
-                      "<br>Luck: %{marker.color:.1f}<extra></extra>",
-    ))
+    car_map, color_map = {}, {}
+    if series_id:
+        from src.data import query_latest_car_numbers, query_car_colors
+        car_map = query_latest_car_numbers(series_id) or {}
+        color_map = query_car_colors(series_id) or {}
+
+    if car_map:
+        # Timing-pylon style: the CAR NUMBER *is* the marker, tinted in the
+        # team's color (derived from NASCAR's official badge art). No dots —
+        # the cleanest possible dense scatter. Luck stays encoded by position
+        # vs the diagonal (and in the hover).
+        cars = [car_map.get(d, "•") for d in clean["Driver"]]
+        colors = [color_map.get(c, "#94a3b8") for c in cars]
+        fig = go.Figure(go.Scatter(
+            x=clean["Avg Finish"],
+            y=clean["Avg Run Pos"],
+            mode="text",
+            text=cars,
+            textfont=dict(size=15, color=colors,
+                          family="Rajdhani, Segoe UI, sans-serif"),
+            customdata=clean[["Driver", "Luck"]].values,
+            hovertemplate="%{customdata[0]}<br>Avg Finish: %{x:.1f}"
+                          "<br>Avg Run Pos: %{y:.1f}"
+                          "<br>Luck: %{customdata[1]:.1f}<extra></extra>",
+        ))
+    else:
+        notable = set(clean.nsmallest(12, "Avg Finish").index)
+        notable |= set(clean.nlargest(6, "Avg Finish").index)
+        notable |= set(clean.nlargest(8, "Luck").index)
+        notable |= set(clean.nsmallest(8, "Luck").index)
+        labels, positions = _selective_labels(clean, "Driver", notable)
+        fig = go.Figure(go.Scatter(
+            x=clean["Avg Finish"],
+            y=clean["Avg Run Pos"],
+            mode="markers+text",
+            text=labels,
+            textposition=positions,
+            textfont=dict(size=10, color="#cbd5e1"),
+            customdata=clean[["Driver"]].values,
+            marker=dict(
+                size=14,
+                color=clean["Luck"],
+                colorscale="RdYlGn",
+                cmid=0,
+                showscale=True,
+                colorbar=dict(title="Luck<br>(ARP-Finish)"),
+                line=dict(width=1, color="#334155"),
+            ),
+            hovertemplate="%{customdata[0]}<br>Avg Finish: %{x:.1f}<br>Avg Run Pos: %{y:.1f}"
+                          "<br>Luck: %{marker.color:.1f}<extra></extra>",
+        ))
 
     # Add diagonal reference line (ARP = Finish)
     max_val = max(clean["Avg Finish"].max(), clean["Avg Run Pos"].max()) + 2
@@ -491,15 +520,12 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
         line=dict(dash="dash", color="#475569", width=1),
     )
 
-    # Driver dots — label the best values + the top-salary names everyone
-    # compares against; mid-pack hover-only so the chart stays readable.
+    # Driver dots — salary spreads the field along x, so there's room to
+    # label EVERYONE; alternating above/below placement handles neighbors.
+    # (Selective labeling is reserved for charts with dense clusters.)
     clean = clean.reset_index(drop=True)
     value_col = clean["Value"] if "Value" in clean.columns else clean["Proj Score"]
-    _val_series = value_col if hasattr(value_col, "nlargest") else clean["Proj Score"]
-    notable = set(pd.Series(_val_series).nlargest(10).index)
-    notable |= set(clean["DK Salary"].nlargest(6).index)
-    notable |= set(clean["Proj Score"].nlargest(6).index)
-    labels, positions = _selective_labels(clean, "Driver", notable)
+    labels, positions = _selective_labels(clean, "Driver", set(clean.index))
     fig.add_trace(go.Scatter(
         x=clean["DK Salary"], y=clean["Proj Score"],
         mode="markers+text",
@@ -639,30 +665,47 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
 
     df = pd.DataFrame(records)
 
-    # Label top scorers + best ARP runners; mid-pack hover-only.
+    # Timing-pylon style: car numbers in team colors ARE the markers (full
+    # name + races in hover). Falls back to selective names if colors fail.
     df = df.reset_index(drop=True)
-    notable = set(df.nlargest(10, pts_col).index)
-    notable |= set(df.nsmallest(5, "Avg Run Pos").index)
-    labels, positions = _selective_labels(df, "Driver", notable)
-
-    fig = go.Figure(go.Scatter(
-        x=df["Avg Run Pos"], y=df[pts_col],
-        mode="markers+text",
-        text=labels,
-        textposition=positions,
-        textfont=dict(size=10, color="#cbd5e1"),
-        marker=dict(
-            size=df["Races"].clip(upper=12) + 6,
-            color=df[pts_col],
-            colorscale="RdYlGn",
-            showscale=True,
-            colorbar=dict(title=f"Avg {tag}"),
-            line=dict(width=1, color="#334155"),
-        ),
-        hovertemplate="%{customdata[0]}<br>Avg Run Pos: %{x:.1f}<br>"
-                      f"Avg {tag} Pts: " + "%{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",
-        customdata=df[["Driver", "Races"]].values,
-    ))
+    from src.data import query_latest_car_numbers, query_car_colors
+    car_map = query_latest_car_numbers(series_id) or {}
+    color_map = query_car_colors(series_id) or {}
+    if car_map:
+        cars = [car_map.get(d, "•") for d in df["Driver"]]
+        colors = [color_map.get(c, "#94a3b8") for c in cars]
+        fig = go.Figure(go.Scatter(
+            x=df["Avg Run Pos"], y=df[pts_col],
+            mode="text",
+            text=cars,
+            textfont=dict(size=15, color=colors,
+                          family="Rajdhani, Segoe UI, sans-serif"),
+            hovertemplate="%{customdata[0]}<br>Avg Run Pos: %{x:.1f}<br>"
+                          f"Avg {tag} Pts: " + "%{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",
+            customdata=df[["Driver", "Races"]].values,
+        ))
+    else:
+        notable = set(df.nlargest(14, pts_col).index)
+        notable |= set(df.nsmallest(8, "Avg Run Pos").index)
+        labels, positions = _selective_labels(df, "Driver", notable)
+        fig = go.Figure(go.Scatter(
+            x=df["Avg Run Pos"], y=df[pts_col],
+            mode="markers+text",
+            text=labels,
+            textposition=positions,
+            textfont=dict(size=10, color="#cbd5e1"),
+            marker=dict(
+                size=df["Races"].clip(upper=12) + 6,
+                color=df[pts_col],
+                colorscale="RdYlGn",
+                showscale=True,
+                colorbar=dict(title=f"Avg {tag}"),
+                line=dict(width=1, color="#334155"),
+            ),
+            hovertemplate="%{customdata[0]}<br>Avg Run Pos: %{x:.1f}<br>"
+                          f"Avg {tag} Pts: " + "%{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",
+            customdata=df[["Driver", "Races"]].values,
+        ))
 
     fig.update_layout(
         **DARK_LAYOUT, height=height,
@@ -671,11 +714,12 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
         yaxis_title=f"Avg {tag} Points",
         xaxis=dict(autorange="reversed"),
     )
-    fig.add_annotation(
-        x=0.02, y=0.02, xref="paper", yref="paper",
-        text="Bubble size = number of races",
-        showarrow=False, font=dict(size=9, color="#64748b"),
-    )
+    if not car_map:   # bubbles only exist in the fallback rendering
+        fig.add_annotation(
+            x=0.02, y=0.02, xref="paper", yref="paper",
+            text="Bubble size = number of races",
+            showarrow=False, font=dict(size=9, color="#64748b"),
+        )
     return apply_dark_theme(fig)
 
 
@@ -864,11 +908,9 @@ def ownership_leverage_scatter(proj_df: pd.DataFrame, pts_col: str = "Proj DK",
     df["Leverage"] = (df[pts_col] / df[own_col]).round(2)
     _tag = "FD" if "FD" in pts_col else "DK"
 
-    # Label the leverage plays + the heaviest chalk; mid-pack hover-only
-    notable = set(df.nlargest(8, "Leverage").index)
-    notable |= set(df.nlargest(6, own_col).index)
-    notable |= set(df.nlargest(5, pts_col).index)
-    labels, positions = _selective_labels(df, "Driver", notable)
+    # Ownership spreads the field along x — label everyone, alternating
+    # placement to dodge neighbors.
+    labels, positions = _selective_labels(df, "Driver", set(df.index))
 
     fig = go.Figure(go.Scatter(
         x=df[own_col], y=df[pts_col],

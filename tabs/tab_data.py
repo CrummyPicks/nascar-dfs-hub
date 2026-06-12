@@ -342,8 +342,57 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     status = "Post-race" if not is_prerace else "Pre-race"
     st.caption(f"{field_count} drivers  •  {status}  •  Click any driver row for race-by-race history")
 
+    # Visual encoding on the value-relevant numeric columns: green-scale for
+    # "higher is better" (points/rating/track history), sky-scale for the
+    # salary spend. Matplotlib-free (manual color ramps, same pattern as
+    # style_heatmap) so it runs on the slim cloud deps.
+    _GREEN_COLS = {"Rating", "TH_Avg DK", "TH_Best DK", "TH_Avg FD",
+                   "TH_Best FD", "DK Pts", "FD Pts", "Laps Led"}
+    _BLUE_COLS = {"DK Salary", "FD Salary"}
+
+    def _scale_col(col):
+        name = col.name[1] if isinstance(col.name, tuple) else col.name
+        if name not in _GREEN_COLS and name not in _BLUE_COLS:
+            return [""] * len(col)
+        vals = pd.to_numeric(col, errors="coerce")
+        vmin, vmax = vals.min(), vals.max()
+        if pd.isna(vmin) or pd.isna(vmax) or vmax <= vmin:
+            return [""] * len(col)
+        out = []
+        for v in vals:
+            if pd.isna(v):
+                out.append("")
+                continue
+            t = (v - vmin) / (vmax - vmin)
+            if name in _BLUE_COLS:
+                out.append(f"background-color: rgba(14,165,233,{0.06 + 0.22 * t:.2f})")
+            else:
+                r = int(239 + (34 - 239) * t)
+                g = int(68 + (197 - 68) * t)
+                b = int(68 + (94 - 68) * t)
+                out.append(f"background-color: rgba({r},{g},{b},0.20)")
+        return out
+
+    def _fmt_cell(v):
+        # Stylers bypass the grid's auto-formatting, so format here: whole
+        # floats render as ints (with thousands separators), others 1-decimal.
+        if isinstance(v, float):
+            if pd.isna(v):
+                return "—"
+            if v == int(v):
+                return f"{int(v):,}"
+            return f"{v:,.1f}"
+        return v
+
+    try:
+        _main_view = (safe_fillna(display_df).style
+                      .apply(_scale_col)
+                      .format(_fmt_cell))
+    except Exception:
+        _main_view = safe_fillna(display_df)
+
     interactive_drill_down_dataframe(
-        safe_fillna(display_df),
+        _main_view,
         key=f"data_main_{series_id}_{race_id}",
         series_id=series_id, track_name=track_name,
         width="stretch", hide_index=True, height=600,
@@ -513,7 +562,8 @@ def _render_charts_view(completed_races, series_id, selected_year,
             # ARP vs Finish scatter — shows wreck luck
             if "Avg Run Pos" in hist_df.columns and "Avg Finish" in hist_df.columns:
                 st.divider()
-                fig = arp_vs_finish_scatter(hist_df, track_name)
+                fig = arp_vs_finish_scatter(hist_df, track_name,
+                                            series_id=series_id)
                 if fig:
                     st.plotly_chart(fig, width="stretch", key="data_arp_vs_finish")
 

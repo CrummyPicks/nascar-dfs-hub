@@ -871,6 +871,96 @@ def query_db_track_history(track_name: str, series_id: int = 1,
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def query_latest_car_numbers(series_id: int) -> dict:
+    """{driver: car_number} from each driver's most recent race in a series.
+
+    Used to label dense charts with car numbers (1-3 chars, collision-proof)
+    instead of full names."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT d.full_name, rr.car_number
+            FROM race_results rr
+            JOIN drivers d ON d.id = rr.driver_id
+            JOIN races r ON r.id = rr.race_id
+            WHERE r.series_id = ? AND rr.car_number IS NOT NULL
+              AND rr.car_number != ''
+            GROUP BY d.id
+            HAVING r.race_date = MAX(r.race_date)
+        ''', (series_id,)).fetchall()
+        conn.close()
+        return {n: str(c).strip() for n, c in rows if c is not None}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def query_car_colors(series_id: int) -> dict:
+    """{car_number: '#rrggbb'} — each car's team color, derived from NASCAR's
+    official car-number badge art (the CDN PNGs used on nascar.com).
+
+    The API exposes no hex colors, but the badge images ARE the palette:
+    we pick each badge's most saturated dominant color and lift it to a
+    dark-background-readable brightness. Results are disk-cached per series
+    so the ~40 image fetches happen once."""
+    import colorsys
+    import json as _json
+    import os
+    cache_dir = os.path.join(os.path.dirname(DB_PATH), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cpath = os.path.join(cache_dir, f"badge_colors_{series_id}.json")
+    try:
+        with open(cpath) as f:
+            cached = _json.load(f)
+    except Exception:
+        cached = {}
+
+    cars = sorted(set(query_latest_car_numbers(series_id).values()))
+    out = dict(cached)
+    changed = False
+    for car in cars:
+        if car in out or not str(car).isdigit():
+            continue
+        color = None
+        try:
+            import requests
+            from PIL import Image
+            from io import BytesIO
+            r = requests.get(
+                f"https://cf.nascar.com/data/images/carbadges/{series_id}/{car}.png",
+                timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                img = Image.open(BytesIO(r.content)).convert("RGBA").resize((28, 28))
+                best, best_score = None, 0.0
+                for count, (pr, pg, pb, pa) in img.getcolors(maxcolors=28 * 28):
+                    if pa < 200:
+                        continue
+                    h, s, v = colorsys.rgb_to_hsv(pr / 255, pg / 255, pb / 255)
+                    score = count * (s ** 1.5) * v   # frequent AND vivid
+                    if score > best_score:
+                        best_score, best = score, (h, s, v)
+                if best:
+                    h, s, v = best
+                    v = max(v, 0.78)                 # readable on dark bg
+                    s = min(s, 0.85)
+                    rr, gg, bb = colorsys.hsv_to_rgb(h, s, v)
+                    color = f"#{int(rr*255):02x}{int(gg*255):02x}{int(bb*255):02x}"
+        except Exception:
+            color = None
+        out[car] = color or "#94a3b8"
+        changed = True
+    if changed:
+        try:
+            with open(cpath, "w") as f:
+                _json.dump(out, f)
+        except Exception:
+            pass
+    return out
+
+
 def _ensure_actual_ownership_table(conn):
     conn.execute('''
         CREATE TABLE IF NOT EXISTS actual_ownership (
