@@ -196,8 +196,11 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     pool["OddsScore"] = pool["Driver"].map(lambda d: odds_scores.get(d, 35))
 
     # ── Use Proj DK / Proj FD from Projections tab when available ────────────
+    # ONLY if the session maps belong to THIS race — a stale map from another
+    # race/series fuzzy-matches crossover driver names and zeroes the rest.
+    _maps_fresh = (st.session_state.get("proj_maps_key") == f"{series_id}_{race_id}")
     _proj_key = "proj_fd_map" if use_fd_points else "proj_dk_map"
-    proj_dk_map = st.session_state.get(_proj_key, {})
+    proj_dk_map = st.session_state.get(_proj_key, {}) if _maps_fresh else {}
     _proj_origin = "engine"
 
     # Fresh session, Optimizer opened before Projections: the session maps
@@ -242,15 +245,18 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
 
     # Merge projected ownership + leverage if projections tab ran. FanDuel
     # builds use the FD-specific maps (5-man rosters, FD salaries/points and
-    # a DNF-risk ownership fade — different chalk than DK).
-    own_map = st.session_state.get(
+    # a DNF-risk ownership fade — different chalk than DK). Same freshness
+    # guard: stale-race maps are worse than no maps.
+    own_map = (st.session_state.get(
         "proj_own_map_fd" if use_fd_points else "proj_own_map", {})
+        if _maps_fresh else {})
     if own_map:
         own_norm = build_norm_lookup(own_map)
         pool["Proj Own %"] = pool["Driver"].map(
             lambda d: fuzzy_get(d, own_map, own_norm) or 0).round(1)
-    lev_map = st.session_state.get(
+    lev_map = (st.session_state.get(
         "proj_leverage_map_fd" if use_fd_points else "proj_leverage_map", {})
+        if _maps_fresh else {})
     if lev_map:
         lev_norm = build_norm_lookup(lev_map)
         pool["Leverage"] = pool["Driver"].map(
@@ -260,7 +266,9 @@ def _get_projection_pool(entry_list_df, qualifying_df, lap_averages_df,
     # the projection engine hasn't populated them, e.g. the composite
     # fallback). FD builds use the FD-scaled floor/ceiling, where DNF risk is
     # modeled explicitly (a DNF zeroes the laps-completed stream).
-    if use_fd_points:
+    if not _maps_fresh:
+        floor_map, ceil_map = {}, {}
+    elif use_fd_points:
         floor_map = st.session_state.get("proj_floor_map_fd", {})
         ceil_map = st.session_state.get("proj_ceiling_map_fd", {})
     else:
@@ -822,7 +830,12 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             track_name=track_name,
             track_type=_track_type_lookup,
         )
-        _proj_detail = st.session_state.get("proj_detail_map", {})
+        # Only trust the detail map if it belongs to THIS race (stale maps
+        # from another race/series produce nonsense dominator counts).
+        _detail_fresh = (st.session_state.get("proj_maps_key")
+                         == f"{series_id}_{race_id}")
+        _proj_detail = (st.session_state.get("proj_detail_map", {})
+                        if _detail_fresh else {})
         _proj_doms = identify_dominators_in_projection(
             _proj_detail, track_type=_track_type_lookup,
         )

@@ -2056,7 +2056,12 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     st.session_state["proj_floor_map_fd"] = dict(zip(proj["Driver"], proj["FD Floor"]))
     st.session_state["proj_ceiling_map_fd"] = dict(zip(proj["Driver"], proj["FD Ceiling"]))
 
-    # Share Proj DK / Proj FD with optimizer tab via session state
+    # Share Proj DK / Proj FD with optimizer tab via session state.
+    # proj_maps_key stamps WHICH race these maps belong to — without it the
+    # optimizer fuzzy-matched a different race's (even a different SERIES')
+    # stale map onto the current field: crossover names like Custer/Hill/
+    # Zilisch matched the Cup map while everyone else projected 0.
+    st.session_state["proj_maps_key"] = f"{series_id}_{race_id}"
     st.session_state["proj_dk_map"] = dict(zip(proj["Driver"], proj["Proj DK"]))
     st.session_state["proj_fd_map"] = dict(zip(proj["Driver"], proj["Proj FD"]))
     # Share per-driver detail so optimizer can identify projected dominators
