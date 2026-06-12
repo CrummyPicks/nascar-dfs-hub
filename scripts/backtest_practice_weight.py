@@ -113,6 +113,9 @@ def main():
         # E: the per-type data says practice's edge lives at intermediates and
         # roads; short/concrete prefer the current mix. Shift only there.
         "E: B at int+road only":    None,  # handled specially below
+        # Z: reconstruct the PRE-2026-06-11 defaults (prac -5 / ttype +5 at
+        # int+road) so old-vs-shipped can be compared under both gradings.
+        "Z: old defaults":          "revert",
     }
     races = backtestable_races_with_api()
     print(f"backtestable races: {len(races)}")
@@ -145,11 +148,20 @@ def main():
             prac = remapped
         if prac:
             n_prac += 1
+        status = race.get("status", {})
+
+        def _running(d):
+            s = status.get(d, "").lower()
+            return s in ("running", "finished", "")
+
         for label, fn in schemes.items():
             base = TRACK_TYPE_WEIGHT_DEFAULTS.get(
                 race["parent"], TRACK_TYPE_WEIGHT_DEFAULTS["intermediate"])
             if fn is None:  # scheme E: shift only at intermediate/road
                 raw = (shifted(base, +5, -5)
+                       if race["parent"] in ("intermediate", "road") else dict(base))
+            elif fn == "revert":  # scheme Z: undo the shipped int/road shift
+                raw = (shifted(base, -5, +5)
                        if race["parent"] in ("intermediate", "road") else dict(base))
             else:
                 raw = fn(base)
@@ -157,22 +169,28 @@ def main():
             overall = [(proj[d], race["actual_dk"][d]) for d in race["drivers"] if d in proj]
             deep = [(proj[d], race["actual_dk"][d]) for d in race["drivers"]
                     if d in proj and race["start_pos"][d] >= 20]
+            # Clean grading: running finishers only — measures pace-prediction
+            # quality without wreck noise (a lap-3 dump scores ~5 DK no matter
+            # how good the projection was).
+            clean = [(proj[d], race["actual_dk"][d]) for d in race["drivers"]
+                     if d in proj and _running(d)]
             results[label].append((spearman(overall), spearman(deep),
-                                   bool(prac), race["parent"]))
+                                   bool(prac), race["parent"], spearman(clean)))
     conn.close()
 
     print(f"races with usable practice data: {n_prac}")
     print()
-    print(f"{'scheme':<26}{'n':>5}{'rho_all':>9}{'rho_deep':>10}"
-          f"{'  | prac races':>14}{'rho_all':>9}{'rho_deep':>10}")
+    print(f"{'scheme':<26}{'n':>5}{'rho_all':>9}{'rho_deep':>10}{'rho_clean':>10}"
+          f"{'  | prac races':>14}{'rho_all':>9}{'rho_clean':>10}")
     for label, rows in results.items():
+        f = lambda v: sum(v)/len(v) if v else float('nan')
         ao = [r[0] for r in rows if r[0] is not None]
         ad = [r[1] for r in rows if r[1] is not None]
+        ac = [r[4] for r in rows if r[4] is not None]
         po = [r[0] for r in rows if r[0] is not None and r[2]]
-        pd_ = [r[1] for r in rows if r[1] is not None and r[2]]
-        f = lambda v: sum(v)/len(v) if v else float('nan')
-        print(f"{label:<26}{len(ao):>5}{f(ao):>9.4f}{f(ad):>10.4f}"
-              f"{len(po):>14}{f(po):>9.4f}{f(pd_):>10.4f}")
+        pc = [r[4] for r in rows if r[4] is not None and r[2]]
+        print(f"{label:<26}{len(ao):>5}{f(ao):>9.4f}{f(ad):>10.4f}{f(ac):>10.4f}"
+              f"{len(po):>14}{f(po):>9.4f}{f(pc):>10.4f}")
 
     # Per-track-type breakdown on practice races only (where schemes differ)
     print()

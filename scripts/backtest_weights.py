@@ -57,17 +57,18 @@ def load_race(conn, race_id, series_id, track_name, race_date):
 
     res = conn.execute('''
         SELECT d.full_name, rr.start_pos, rr.finish_pos, rr.laps_led,
-               rr.fastest_laps, rr.team
+               rr.fastest_laps, rr.team, rr.status
         FROM race_results rr JOIN drivers d ON d.id = rr.driver_id
         WHERE rr.race_id = ? AND rr.finish_pos IS NOT NULL
     ''', (race_id,)).fetchall()
-    drivers, actual_dk, start_pos, team_map = [], {}, {}, {}
-    for name, st, fin, ll, fl, team in res:
+    drivers, actual_dk, start_pos, team_map, status_map = [], {}, {}, {}, {}
+    for name, st, fin, ll, fl, team, status in res:
         if st is None:
             st = fin
         drivers.append(name)
         actual_dk[name] = calc_dk_points(fin, st, ll or 0, fl or 0)
         start_pos[name] = st
+        status_map[name] = (status or "").strip()
         if team:
             team_map[name] = team
     field_size = len(drivers)
@@ -134,7 +135,7 @@ def load_race(conn, race_id, series_id, track_name, race_date):
                 qual_pos=start_pos, odds_finish=odds_finish, odds_display=odds_display,
                 th_data=th_data, tt_data=tt_data, team_signal=team_signal,
                 team_adj=team_adj, calibration=calibration,
-                actual_dk=actual_dk, start_pos=start_pos)
+                actual_dk=actual_dk, start_pos=start_pos, status=status_map)
 
 
 def normalize_weights(raw, has_odds=True, has_prac=False):
