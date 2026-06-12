@@ -23,8 +23,13 @@ DARK_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(15,23,42,0.95)",
     font=dict(color="#e2e8f0", family="system-ui, -apple-system, sans-serif"),
-    colorway=["#0ea5e9", "#38bdf8", "#7dd3fc", "#22d3ee", "#2dd4bf",
-              "#4ade80", "#a78bfa", "#f472b6", "#fb923c", "#facc15"],
+    # Multi-line charts (lap times, season trends) need DISTINCT hues — the
+    # old all-blue ramp made every driver's line look identical. This cycles
+    # through visually separated hues tuned for the dark background.
+    colorway=["#38bdf8", "#f472b6", "#4ade80", "#fb923c", "#a78bfa",
+              "#facc15", "#f87171", "#2dd4bf", "#c084fc", "#a3e635",
+              "#60a5fa", "#fb7185", "#34d399", "#fbbf24", "#e879f9",
+              "#94a3b8", "#22d3ee", "#fde047", "#f9a8d4", "#86efac"],
 )
 
 _GRID_STYLE = dict(gridcolor="#1e293b", zerolinecolor="#334155")
@@ -35,6 +40,29 @@ def apply_dark_theme(fig):
     fig.update_xaxes(**_GRID_STYLE)
     fig.update_yaxes(**_GRID_STYLE)
     return fig
+
+
+def _selective_labels(df, name_col, notable_idx, short=True):
+    """Text labels for only the NOTABLE rows; everyone else hover-only.
+
+    Labeling all ~38 drivers turns dense scatters into unreadable word soup —
+    the fix every readable chart uses: label the interesting points, let
+    hover cover the rest. Returns (text_series, position_list) where label
+    positions alternate top/bottom to halve collisions among neighbors.
+    """
+    labels = []
+    positions = []
+    n_labeled = 0
+    for idx, row in df.iterrows():
+        if idx in notable_idx:
+            nm = str(row[name_col])
+            labels.append(_last_name(nm) if short else nm)
+            positions.append("top center" if n_labeled % 2 == 0 else "bottom center")
+            n_labeled += 1
+        else:
+            labels.append("")
+            positions.append("top center")
+    return labels, positions
 
 
 def dfs_histogram(results_df: pd.DataFrame, height: int = 400,
@@ -380,13 +408,22 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
     # Color by how much ARP differs from finish (luck factor)
     clean["Luck"] = clean["Avg Run Pos"] - clean["Avg Finish"]
 
+    # Label only the story-tellers: best finishers + the luck outliers in
+    # both directions. The mid-pack cluster stays hover-only.
+    clean = clean.reset_index(drop=True)
+    notable = set(clean.nsmallest(8, "Avg Finish").index)
+    notable |= set(clean.nlargest(5, "Luck").index)    # unlucky (ran >> finished)
+    notable |= set(clean.nsmallest(5, "Luck").index)   # lucky
+    labels, positions = _selective_labels(clean, "Driver", notable)
+
     fig = go.Figure(go.Scatter(
         x=clean["Avg Finish"],
         y=clean["Avg Run Pos"],
         mode="markers+text",
-        text=clean["Driver"],
-        textposition="top center",
-        textfont=dict(size=9, color="#94a3b8"),
+        text=labels,
+        textposition=positions,
+        textfont=dict(size=10, color="#cbd5e1"),
+        customdata=clean[["Driver"]].values,
         marker=dict(
             size=14,
             color=clean["Luck"],
@@ -396,7 +433,7 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
             colorbar=dict(title="Luck<br>(ARP-Finish)"),
             line=dict(width=1, color="#334155"),
         ),
-        hovertemplate="%{text}<br>Avg Finish: %{x:.1f}<br>Avg Run Pos: %{y:.1f}"
+        hovertemplate="%{customdata[0]}<br>Avg Finish: %{x:.1f}<br>Avg Run Pos: %{y:.1f}"
                       "<br>Luck: %{marker.color:.1f}<extra></extra>",
     ))
 
@@ -454,15 +491,23 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
         line=dict(dash="dash", color="#475569", width=1),
     )
 
-    # Driver dots
+    # Driver dots — label the best values + the top-salary names everyone
+    # compares against; mid-pack hover-only so the chart stays readable.
+    clean = clean.reset_index(drop=True)
     value_col = clean["Value"] if "Value" in clean.columns else clean["Proj Score"]
+    _val_series = value_col if hasattr(value_col, "nlargest") else clean["Proj Score"]
+    notable = set(pd.Series(_val_series).nlargest(10).index)
+    notable |= set(clean["DK Salary"].nlargest(6).index)
+    notable |= set(clean["Proj Score"].nlargest(6).index)
+    labels, positions = _selective_labels(clean, "Driver", notable)
     fig.add_trace(go.Scatter(
         x=clean["DK Salary"], y=clean["Proj Score"],
         mode="markers+text",
         name="",
-        text=clean["Driver"].apply(_last_name),
-        textposition="top center",
-        textfont=dict(size=8, color="#94a3b8"),
+        text=labels,
+        textposition=positions,
+        textfont=dict(size=10, color="#cbd5e1"),
+        customdata=clean[["Driver"]].values,
         marker=dict(
             size=12,
             color=value_col,
@@ -471,7 +516,7 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
             colorbar=dict(title="Value"),
             line=dict(width=1, color="#334155"),
         ),
-        hovertemplate="%{text}<br>Salary: $%{x:,}<br>Proj: %{y:.1f}<extra></extra>",
+        hovertemplate="%{customdata[0]}<br>Salary: $%{x:,}<br>Proj: %{y:.1f}<extra></extra>",
     ))
 
     fig.update_layout(
@@ -594,12 +639,18 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
 
     df = pd.DataFrame(records)
 
+    # Label top scorers + best ARP runners; mid-pack hover-only.
+    df = df.reset_index(drop=True)
+    notable = set(df.nlargest(10, pts_col).index)
+    notable |= set(df.nsmallest(5, "Avg Run Pos").index)
+    labels, positions = _selective_labels(df, "Driver", notable)
+
     fig = go.Figure(go.Scatter(
         x=df["Avg Run Pos"], y=df[pts_col],
         mode="markers+text",
-        text=df["Driver"].apply(_last_name),
-        textposition="top center",
-        textfont=dict(size=9, color="#94a3b8"),
+        text=labels,
+        textposition=positions,
+        textfont=dict(size=10, color="#cbd5e1"),
         marker=dict(
             size=df["Races"].clip(upper=12) + 6,
             color=df[pts_col],
@@ -730,6 +781,123 @@ def season_trend_line(series_id: int = 1, season: int = None,
     fig.update_layout(**DARK_LAYOUT, height=height,
                       xaxis_title="", yaxis_title=f"{_tag} Points",
                       legend=dict(font=dict(size=9)))
+    return apply_dark_theme(fig)
+
+
+def floor_ceiling_range(proj_df: pd.DataFrame, pts_col: str = "Proj DK",
+                        floor_col: str = "Floor", ceil_col: str = "Ceiling",
+                        top_n: int = 25, height: int = 620) -> go.Figure:
+    """Floor → Ceiling range per driver (dumbbell chart) with the median dot.
+
+    The cash-vs-GPP picture in one chart: long bars = volatile (GPP darts),
+    short bars sitting high = safe (cash anchors). Platform-aware via the
+    column names (Proj FD / FD Floor / FD Ceiling for FanDuel).
+    """
+    need = {"Driver", pts_col, floor_col, ceil_col}
+    if not need.issubset(set(proj_df.columns)):
+        return None
+    df = proj_df.dropna(subset=[pts_col, floor_col, ceil_col]).copy()
+    if df.empty:
+        return None
+    df = df.nlargest(top_n, pts_col).sort_values(pts_col)  # top of chart = best
+    short = short_name_series(df["Driver"].tolist())
+    _tag = "FD" if "FD" in pts_col else "DK"
+
+    fig = go.Figure()
+    # Range segments (floor -> ceiling), drawn as one trace with None breaks
+    xs, ys = [], []
+    for nm, f, c in zip(short, df[floor_col], df[ceil_col]):
+        xs += [f, c, None]
+        ys += [nm, nm, None]
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
+                             line=dict(color="#334155", width=5),
+                             hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(
+        x=df[floor_col], y=short, mode="markers", name="Floor",
+        marker=dict(color="#f87171", size=9),
+        hovertemplate="%{customdata[0]}<br>Floor: %{x:.1f}<extra></extra>",
+        customdata=df[["Driver"]].values,
+    ))
+    fig.add_trace(go.Scatter(
+        x=df[ceil_col], y=short, mode="markers", name="Ceiling",
+        marker=dict(color="#4ade80", size=9),
+        hovertemplate="%{customdata[0]}<br>Ceiling: %{x:.1f}<extra></extra>",
+        customdata=df[["Driver"]].values,
+    ))
+    fig.add_trace(go.Scatter(
+        x=df[pts_col], y=short, mode="markers", name="Median",
+        marker=dict(color="#38bdf8", size=11, symbol="diamond",
+                    line=dict(width=1, color="#0f172a")),
+        hovertemplate="%{customdata[0]}<br>Proj: %{x:.1f}<br>"
+                      "Floor: %{customdata[1]:.1f} · Ceiling: %{customdata[2]:.1f}"
+                      "<extra></extra>",
+        customdata=df[["Driver", floor_col, ceil_col]].values,
+    ))
+    fig.update_layout(
+        **DARK_LAYOUT,
+        height=max(height, len(df) * 24),
+        title=f"Floor → Ceiling Range ({_tag}) — long bar = volatile, short+high = cash-safe",
+        xaxis_title=f"{_tag} Points",
+        yaxis_title="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    return apply_dark_theme(fig)
+
+
+def ownership_leverage_scatter(proj_df: pd.DataFrame, pts_col: str = "Proj DK",
+                               own_col: str = "GPP Own%",
+                               height: int = 480) -> go.Figure:
+    """Projected ownership vs projected points — the GPP leverage map.
+
+    Top-left quadrant (high points, low ownership) is where tournaments are
+    won. Color = points per ownership point (leverage).
+    """
+    need = {"Driver", pts_col, own_col}
+    if not need.issubset(set(proj_df.columns)):
+        return None
+    df = proj_df.dropna(subset=[pts_col, own_col]).copy()
+    df = df[df[own_col] > 0]
+    if len(df) < 5:
+        return None
+    df = df.reset_index(drop=True)
+    df["Leverage"] = (df[pts_col] / df[own_col]).round(2)
+    _tag = "FD" if "FD" in pts_col else "DK"
+
+    # Label the leverage plays + the heaviest chalk; mid-pack hover-only
+    notable = set(df.nlargest(8, "Leverage").index)
+    notable |= set(df.nlargest(6, own_col).index)
+    notable |= set(df.nlargest(5, pts_col).index)
+    labels, positions = _selective_labels(df, "Driver", notable)
+
+    fig = go.Figure(go.Scatter(
+        x=df[own_col], y=df[pts_col],
+        mode="markers+text",
+        text=labels, textposition=positions,
+        textfont=dict(size=10, color="#cbd5e1"),
+        marker=dict(size=12, color=df["Leverage"], colorscale="RdYlGn",
+                    showscale=True, colorbar=dict(title="Leverage"),
+                    line=dict(width=1, color="#334155")),
+        hovertemplate="%{customdata[0]}<br>Own: %{x:.1f}%<br>"
+                      f"Proj {_tag}: " + "%{y:.1f}<br>Leverage: %{marker.color:.2f}"
+                      "<extra></extra>",
+        customdata=df[["Driver"]].values,
+    ))
+    fig.add_vline(x=df[own_col].median(), line_dash="dash",
+                  line_color="#334155", line_width=1)
+    fig.add_hline(y=df[pts_col].median(), line_dash="dash",
+                  line_color="#334155", line_width=1)
+    fig.update_layout(
+        **DARK_LAYOUT, height=height,
+        title=f"GPP Leverage Map ({_tag}) — top-left = high points, low ownership",
+        xaxis_title="Projected GPP Ownership %",
+        yaxis_title=f"Projected {_tag} Points",
+    )
+    fig.add_annotation(
+        x=0.02, y=0.98, xref="paper", yref="paper",
+        text="◤ Leverage zone: rostered by few, projects like chalk",
+        showarrow=False, font=dict(size=10, color="#4ade80"), align="left",
+    )
     return apply_dark_theme(fig)
 
 

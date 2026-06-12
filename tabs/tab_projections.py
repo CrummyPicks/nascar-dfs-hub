@@ -2342,3 +2342,26 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     )
     apply_dark_theme(fig)
     st.plotly_chart(fig, width="stretch")
+
+    # ── Floor → Ceiling range (cash vs GPP volatility at a glance) ──
+    from src.charts import floor_ceiling_range, ownership_leverage_scatter
+    if _chart_fd:
+        fc_fig = floor_ceiling_range(proj, pts_col="Proj FD",
+                                     floor_col="FD Floor", ceil_col="FD Ceiling")
+    else:
+        fc_fig = floor_ceiling_range(proj, pts_col="Proj DK",
+                                     floor_col="Floor", ceil_col="Ceiling")
+    if fc_fig:
+        st.divider()
+        st.plotly_chart(fc_fig, width="stretch", key="proj_fc_range")
+
+    # ── GPP leverage map (ownership vs points) ──
+    if _chart_fd and "FD GPP Own%" in proj.columns:
+        lev_fig = ownership_leverage_scatter(proj, pts_col="Proj FD",
+                                             own_col="FD GPP Own%")
+    else:
+        lev_fig = ownership_leverage_scatter(proj, pts_col="Proj DK",
+                                             own_col="GPP Own%")
+    if lev_fig:
+        st.divider()
+        st.plotly_chart(lev_fig, width="stretch", key="proj_leverage_map")
