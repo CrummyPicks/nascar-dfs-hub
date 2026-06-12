@@ -1534,6 +1534,23 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
                 track_type=track_type,
             )
 
+    # ── 2c-bis. ROOKIE TEAM-FALLBACK: no personal history at this track ->
+    # inherit the team's record here as a soft prior (races=2 -> partial
+    # trust). Backtest-validated: affected-driver finish MAE 7.36 -> 6.49.
+    try:
+        from src.data import apply_team_track_fallback
+        _tf_map = {}
+        if not entry_df.empty and "Team" in entry_df.columns:
+            for _, _tr in entry_df.iterrows():
+                if pd.notna(_tr.get("Driver")) and pd.notna(_tr.get("Team")):
+                    _tf_map[_tr["Driver"]] = _tr["Team"]
+        if _tf_map:
+            th_data = apply_team_track_fallback(
+                th_data, drivers, _tf_map, track_name, series_id,
+                before_date=race_date if not is_prerace else None)
+    except Exception:
+        pass
+
     # ── 2d. Manufacturer Adjustment (track-type specific) ────────────────────
     mfr_adjustment = {}  # {driver: position adjustment (+/- 1.5 max)}
     mfr_stats = query_manufacturer_stats(

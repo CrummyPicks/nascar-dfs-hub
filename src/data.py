@@ -2976,6 +2976,74 @@ def query_driver_track_history_by_team(track_name: str, series_id: int,
     return dict(result)
 
 
+def query_team_track_aggregates(track_name: str, series_id: int,
+                                before_date: str = None) -> dict:
+    """{team: {avg_finish, avg_arp, races}} at one track (>=2 team races).
+
+    Powers the rookie TEAM-FALLBACK: a driver with no personal history at a
+    track inherits their team's record there (at reduced trust). Validated
+    2026-06 over 417 races / 1,772 filled driver-races: affected-driver
+    finish MAE 7.36 -> 6.49, pooled pts rho +.008
+    (scripts/backtest_rookie_dominator.py)."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where_extra = ""
+        params = [track_name, series_id]
+        if before_date:
+            where_extra = " AND r.race_date < ?"
+            params.append(before_date)
+        rows = conn.execute(f'''
+            SELECT rr.team, AVG(rr.finish_pos),
+                   AVG(NULLIF(rr.avg_running_position, 99)), COUNT(*)
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name = ? AND r.series_id = ?
+              AND rr.team IS NOT NULL AND rr.team != ''
+              AND rr.finish_pos IS NOT NULL
+              {where_extra}
+            GROUP BY rr.team HAVING COUNT(*) >= 2
+        ''', params).fetchall()
+        conn.close()
+        return {t: {"avg_finish": af, "avg_arp": arp, "races": n}
+                for t, af, arp, n in rows if af is not None}
+    except Exception:
+        return {}
+
+
+def apply_team_track_fallback(th_data: dict, drivers: list, team_map: dict,
+                              track_name: str, series_id: int,
+                              before_date: str = None) -> dict:
+    """Fill missing per-driver track history with the driver's TEAM average
+    at this track. races=2 in the synthetic entry, so the engine's own
+    races/MIN trust ramp keeps it a soft prior, not a full-strength signal.
+    Returns a NEW dict; never overwrites real personal history."""
+    missing = [d for d in drivers if d not in th_data and team_map.get(d)]
+    if not missing:
+        return th_data
+    aggs = query_team_track_aggregates(track_name, series_id, before_date)
+    if not aggs:
+        return th_data
+    from src.utils import fuzzy_match_name
+    agg_names = list(aggs.keys())
+    out = dict(th_data)
+    for d in missing:
+        team = team_map.get(d)
+        agg = aggs.get(team)
+        if not agg and team:
+            m = fuzzy_match_name(team, agg_names)
+            agg = aggs.get(m) if m else None
+        if not agg:
+            continue
+        out[d] = {"avg_finish": agg["avg_finish"], "avg_start": 20,
+                  "avg_running_pos": agg["avg_arp"], "th_rating": None,
+                  "laps_led": 0, "fastest_laps": 0, "races": 2,
+                  "laps_led_per_race": 0, "fastest_laps_per_race": 0}
+    return out
+
+
 def compute_team_adjusted_track_history(track_name: str, series_id: int,
                                          driver_team_map: dict,
                                          before_date: str = None,

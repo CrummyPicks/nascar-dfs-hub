@@ -62,13 +62,15 @@ def load_race(conn, race_id, series_id, track_name, race_date):
         WHERE rr.race_id = ? AND rr.finish_pos IS NOT NULL
     ''', (race_id,)).fetchall()
     drivers, actual_dk, start_pos, team_map, status_map = [], {}, {}, {}, {}
-    actual_finish = {}
+    actual_finish, actual_ll, actual_fl = {}, {}, {}
     for name, st, fin, ll, fl, team, status in res:
         if st is None:
             st = fin
         drivers.append(name)
         actual_dk[name] = calc_dk_points(fin, st, ll or 0, fl or 0)
         actual_finish[name] = fin
+        actual_ll[name] = ll or 0
+        actual_fl[name] = fl or 0
         start_pos[name] = st
         status_map[name] = (status or "").strip()
         if team:
@@ -116,6 +118,13 @@ def load_race(conn, race_id, series_id, track_name, race_date):
                               "avg_running_pos": arp, "th_rating": rating, "laps_led": r.get("Laps Led", 0) or 0,
                               "fastest_laps": r.get("Fastest Laps", 0) or 0, "races": int(races),
                               "laps_led_per_race": (r.get("Laps Led", 0) or 0)/races, "fastest_laps_per_race": 0}
+    # Production parity (2026-06): rookie team-fallback — no personal track
+    # history -> inherit team average at the track as a soft prior.
+    from src.data import apply_team_track_fallback
+    th_data = apply_team_track_fallback(th_data, drivers, team_map,
+                                        track_name, series_id,
+                                        before_date=race_date)
+
     tt_data = {d: tt_raw[d] for d in drivers if d in tt_raw}
 
     ts = query_team_stats(series_id, track_type=track_type, before_date=race_date)
@@ -138,7 +147,8 @@ def load_race(conn, race_id, series_id, track_name, race_date):
                 th_data=th_data, tt_data=tt_data, team_signal=team_signal,
                 team_adj=team_adj, calibration=calibration,
                 actual_dk=actual_dk, actual_finish=actual_finish,
-                start_pos=start_pos, status=status_map)
+                actual_ll=actual_ll, actual_fl=actual_fl,
+                start_pos=start_pos, status=status_map, team_map=team_map)
 
 
 def normalize_weights(raw, has_odds=True, has_prac=False):
