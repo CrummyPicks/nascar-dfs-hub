@@ -593,18 +593,26 @@ DEFAULT_PROJECTION_WEIGHTS = {
 # road = practice + qual (specialists); intermediate = balanced, history-leaning.
 # (Team has a per-driver 0.30x-1.30x scale applied later, so a base of 10
 # becomes ~3% for a veteran and ~13% for a rookie.)
-# Practice weight bumped +5 (track type -5) at INTERMEDIATE and ROAD only —
-# backtested 2026-06 over 28 odds+results races (22 with recoverable practice
-# data, scripts/backtest_practice_weight.py): the shift improved Spearman rho
-# at intermediates (.481->.487) and roads (.472->.490) but HURT short tracks
-# (.471->.448) and did nothing at concrete, so it's applied only where the
-# data supports it. A +10 shift overshoots everywhere (pooled .43->.425).
+# Weights are BACKTEST-TUNED (scripts/backtest_practice_weight.py and
+# scripts/backtest_grid_search.py — dual grading: clean rho primary,
+# DNF-included sanity, split-half stability required).
+#
+# 2026-06 practice test (28 races, 22 w/ practice): prac +5 / ttype -5 helped
+# intermediates and roads, hurt short tracks; +10 overshoots everywhere.
+#
+# 2026-06 grid search (445 combos, 15 intermediate races): the old trk=25 was
+# consistently too high — 7 of the top 8 combos used trk 15, redistributing
+# to team/track-type. Shipped the top ROBUST combo (beats old on both date
+# halves AND DNF-included grading; clean rho .544 -> .559): trk 25->15,
+# ttype 15->20, team 10->15. Practice 15 confirmed optimal (the top combos
+# do NOT push it higher). Road/short/concrete/superspeedway have <8
+# backtestable races — too few to tune; rerun the grid as odds accumulate.
 TRACK_TYPE_WEIGHT_DEFAULTS = {
     "superspeedway":  {"odds": 25, "track": 20, "ttype": 30, "prac": 5,  "team": 15, "qual": 5},
     "short":          {"odds": 20, "track": 25, "ttype": 10, "prac": 10, "team": 10, "qual": 25},
     "short_concrete": {"odds": 20, "track": 30, "ttype": 5,  "prac": 10, "team": 10, "qual": 25},
     "road":           {"odds": 20, "track": 20, "ttype": 15, "prac": 20, "team": 10, "qual": 15},
-    "intermediate":   {"odds": 20, "track": 25, "ttype": 15, "prac": 15, "team": 10, "qual": 15},
+    "intermediate":   {"odds": 20, "track": 15, "ttype": 20, "prac": 15, "team": 15, "qual": 15},
 }
 
 # ----------------------------
