@@ -203,18 +203,29 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
         master = master.merge(th_dedup, on="_th_key", how="left")
         master = master.drop(columns=["_th_key"])
 
-    # Historical DK points at this track
-    dk_hist = query_driver_dk_points_at_track(track_name, series_id, min_season=2022)
-    if dk_hist:
-        dk_hist_names = list(dk_hist.keys())
-        for col, key in [("TH_Avg DK", "avg_dk"), ("TH_Best DK", "best_dk"), ("TH_Worst DK", "worst_dk")]:
-            def _get_dk(d, _key=key):
-                h = dk_hist.get(d)
+    # Historical fantasy points at this track — platform-aware: DK columns in
+    # DK/Both mode, FD columns (FD-scored history) in FD/Both mode.
+    def _merge_pts_hist(hist, prefix):
+        if not hist:
+            return
+        names = list(hist.keys())
+        for col, key in [(f"TH_Avg {prefix}", "avg_dk"),
+                         (f"TH_Best {prefix}", "best_dk"),
+                         (f"TH_Worst {prefix}", "worst_dk")]:
+            def _get(d, _key=key):
+                h = hist.get(d)
                 if not h:
-                    m = fuzzy_match_name(d, dk_hist_names)
-                    h = dk_hist.get(m) if m else None
+                    m = fuzzy_match_name(d, names)
+                    h = hist.get(m) if m else None
                 return h[_key] if h else None
-            master[col] = master["Driver"].map(_get_dk)
+            master[col] = master["Driver"].map(_get)
+
+    if platform in ("DraftKings", "Both"):
+        _merge_pts_hist(query_driver_dk_points_at_track(
+            track_name, series_id, min_season=2022), "DK")
+    if platform in ("FanDuel", "Both"):
+        _merge_pts_hist(query_driver_dk_points_at_track(
+            track_name, series_id, min_season=2022, platform="FanDuel"), "FD")
 
     # Search
     search = st.text_input("Search driver / team / make...", "", placeholder="Type to filter...",
@@ -253,6 +264,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
 
     track_history = []
     for c in ["TH_Races", "TH_Rating", "TH_Avg DK", "TH_Best DK", "TH_Worst DK",
+              "TH_Avg FD", "TH_Best FD", "TH_Worst FD",
               "TH_Avg Finish", "TH_Avg Start", "TH_Avg Run Pos",
               "TH_Wins", "TH_T5", "TH_T10", "TH_Laps Led", "TH_DNF"]:
         if c in master.columns:

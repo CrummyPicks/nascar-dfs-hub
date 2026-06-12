@@ -871,13 +871,85 @@ def query_db_track_history(track_name: str, series_id: int = 1,
         return pd.DataFrame()
 
 
+def _ensure_actual_ownership_table(conn):
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS actual_ownership (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            contest_type TEXT NOT NULL,
+            driver TEXT NOT NULL,
+            own_pct REAL,
+            saved_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(race_id, platform, contest_type, driver)
+        )
+    ''')
+
+
+def save_actual_ownership(api_race_id: int, series_id: int, platform: str,
+                          contest_type: str, own_data: dict) -> int:
+    """Store ACTUAL contest ownership pasted post-race, so the Accuracy page
+    can grade our projected ownership. own_data: {driver: own_pct}."""
+    if not own_data or not DB_PATH.exists():
+        return 0
+    db_race_id = _resolve_db_race_id_with_fallback(api_race_id, series_id)
+    if not db_race_id:
+        return 0
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        _ensure_actual_ownership_table(conn)
+        n = 0
+        for driver, pct in own_data.items():
+            try:
+                conn.execute('''
+                    INSERT OR REPLACE INTO actual_ownership
+                    (race_id, platform, contest_type, driver, own_pct)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (db_race_id, platform, contest_type,
+                      _clean_api_name(driver), float(pct)))
+                n += 1
+            except (ValueError, TypeError):
+                continue
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def load_actual_ownership(api_race_id: int, series_id: int = None) -> dict:
+    """{(platform, contest_type): {driver: own_pct}} for one race."""
+    if not DB_PATH.exists():
+        return {}
+    db_race_id = _resolve_db_race_id(api_race_id, series_id)
+    if not db_race_id:
+        return {}
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        _ensure_actual_ownership_table(conn)
+        rows = conn.execute('''
+            SELECT platform, contest_type, driver, own_pct
+            FROM actual_ownership WHERE race_id = ?
+        ''', (db_race_id,)).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+    out = {}
+    for plat, ct, driver, pct in rows:
+        out.setdefault((plat, ct), {})[driver] = pct
+    return out
+
+
 def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
                                      min_season: int = 2022,
-                                     before_date: str = None) -> dict:
-    """Compute per-driver avg/best/worst DK points at a track from race_results.
+                                     before_date: str = None,
+                                     platform: str = "DraftKings") -> dict:
+    """Compute per-driver avg/best/worst fantasy points at a track.
 
-    Returns {driver_name: {"avg_dk": X, "best_dk": Y, "worst_dk": Z, "races": N}}.
-    DK points computed from finish, start, laps_led, fastest_laps.
+    Returns {driver_name: {"avg_dk": X, "best_dk": Y, "worst_dk": Z, "races": N}}
+    (keys stay "avg_dk"-named regardless of platform — callers relabel).
+    platform="FanDuel" scores with FD math (finish curve, 0.5x diff,
+    0.1x led, 0.1x laps completed) instead of DK.
     """
     if not DB_PATH.exists():
         return {}
@@ -891,7 +963,7 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
 
         rows = conn.execute(f'''
             SELECT d.full_name, rr.finish_pos, rr.start_pos,
-                   rr.laps_led, rr.fastest_laps
+                   rr.laps_led, rr.fastest_laps, rr.laps_completed
             FROM race_results rr
             JOIN drivers d ON d.id = rr.driver_id
             JOIN races r ON r.id = rr.race_id
@@ -903,13 +975,17 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         ''', params).fetchall()
         conn.close()
 
-        from src.utils import calc_dk_points
+        from src.utils import calc_dk_points, calc_fd_points
+        is_fd = platform == "FanDuel"
         driver_scores = {}
-        for name, finish, start, ll, fl in rows:
+        for name, finish, start, ll, fl, laps in rows:
             if finish is None or start is None:
                 continue
-            dk = calc_dk_points(finish, start, ll or 0, fl or 0)
-            driver_scores.setdefault(name, []).append(dk)
+            if is_fd:
+                pts = calc_fd_points(finish, start, ll or 0, laps or 0)
+            else:
+                pts = calc_dk_points(finish, start, ll or 0, fl or 0)
+            driver_scores.setdefault(name, []).append(pts)
 
         result = {}
         for name, scores in driver_scores.items():

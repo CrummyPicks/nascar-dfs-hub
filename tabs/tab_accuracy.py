@@ -77,22 +77,26 @@ def _metric_cards(metrics):
 # Elite / Good / Needs-Work bands for every metric we surface — single source of
 # truth so the same thresholds drive both the card COLORS (_metric_color calls)
 # and the "Target Ranges" reference table shown beside each metric block.
+# Recalibrated 2026-06 to REALISTIC ceilings: with 36+ car fields and wreck
+# variance, world-class finish MAE is ~7.5-8.5 (the old "< 5" was effectively
+# unattainable and read red forever), and elite public projections average
+# ~0.55-0.65 per-race rank correlation (0.70+ only happens on clean races).
 _TARGET_RANGES = {
     # MAE family (lower is better)
     "DK Pts MAE":     "< 15 | 15 - 25 | > 25",
     "DK MAE":         "< 15 | 15 - 25 | > 25",
     "Overall DK MAE": "< 15 | 15 - 25 | > 25",
-    "DK Finish MAE":  "< 5 | 5 - 10 | > 10",
-    "Finish MAE":     "< 5 | 5 - 10 | > 10",
+    "DK Finish MAE":  "< 7.5 | 7.5 - 10 | > 10",
+    "Finish MAE":     "< 7.5 | 7.5 - 10 | > 10",
     "LL MAE":         "< 10 | 10 - 25 | > 25",
     "FL MAE":         "< 5 | 5 - 12 | > 12",
     # Correlation family (higher is better)
-    "DK Pts Correlation": "> 0.70 | 0.45 - 0.70 | < 0.45",
-    "DK Correlation":     "> 0.70 | 0.45 - 0.70 | < 0.45",
-    "Finish Correlation": "> 0.55 | 0.30 - 0.55 | < 0.30",
-    "DK Finish Rank Corr": "> 0.70 | 0.45 - 0.70 | < 0.45",
-    "Rank Corr":      "> 0.70 | 0.45 - 0.70 | < 0.45",
-    "Avg Rank Corr":  "> 0.70 | 0.45 - 0.70 | < 0.45",
+    "DK Pts Correlation": "> 0.60 | 0.40 - 0.60 | < 0.40",
+    "DK Correlation":     "> 0.60 | 0.40 - 0.60 | < 0.40",
+    "Finish Correlation": "> 0.50 | 0.30 - 0.50 | < 0.30",
+    "DK Finish Rank Corr": "> 0.60 | 0.40 - 0.60 | < 0.40",
+    "Rank Corr":      "> 0.60 | 0.40 - 0.60 | < 0.40",
+    "Avg Rank Corr":  "> 0.60 | 0.40 - 0.60 | < 0.40",
     # Bias (closer to 0 is better)
     "Avg Bias":       "|bias| < 3 | 3 - 8 | > 8",
     "Avg Error":      "|err| < 3 | 3 - 8 | > 8",
@@ -185,6 +189,19 @@ def _ensure_saved_projections_table():
         )
     except Exception:
         pass
+    # Idempotent column migrations (2026-06): FanDuel projections + salaries
+    # and projected ownership, so FD accuracy and ownership accuracy can be
+    # graded once history accumulates. ALTER fails silently when the column
+    # already exists.
+    for col, typ in [("proj_fd", "REAL"), ("fd_salary", "INTEGER"),
+                     ("proj_own_gpp", "REAL"), ("proj_own_cash", "REAL"),
+                     ("proj_own_gpp_fd", "REAL"), ("proj_own_cash_fd", "REAL"),
+                     ("proj_floor", "REAL"), ("proj_ceiling", "REAL"),
+                     ("fd_floor", "REAL"), ("fd_ceiling", "REAL")]:
+        try:
+            conn.execute(f"ALTER TABLE saved_projections ADD COLUMN {col} {typ}")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -197,6 +214,15 @@ def save_projections_to_db(proj_df, race_id, race_name, track_name,
         return 0
 
     conn = sqlite3.connect(PROJ_DB)
+
+    def _num(v):
+        try:
+            if v is None or pd.isna(v):
+                return None
+            return float(v)
+        except Exception:
+            return None
+
     count = 0
     for _, row in proj_df.iterrows():
         try:
@@ -205,8 +231,12 @@ def save_projections_to_db(proj_df, race_id, race_name, track_name,
                 (race_id, race_name, track_name, series_id, season,
                  driver, proj_dk, proj_finish, proj_laps_led, proj_fast_laps,
                  proj_diff_pts, qual_pos, dk_salary,
-                 w_odds, w_track, w_practice, w_qualifying, w_track_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 w_odds, w_track, w_practice, w_qualifying, w_track_type,
+                 proj_fd, fd_salary, proj_own_gpp, proj_own_cash,
+                 proj_own_gpp_fd, proj_own_cash_fd,
+                 proj_floor, proj_ceiling, fd_floor, fd_ceiling)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 race_id, race_name, track_name, series_id, season,
                 row.get("Driver", ""),
@@ -222,6 +252,16 @@ def save_projections_to_db(proj_df, race_id, race_name, track_name,
                 weights.get("practice", 0),
                 weights.get("qual", 0),
                 weights.get("track_type", 0),
+                _num(row.get("Proj FD")),
+                _num(row.get("FD Salary")),
+                _num(row.get("GPP Own%")),
+                _num(row.get("Cash Own%")),
+                _num(row.get("FD GPP Own%")),
+                _num(row.get("FD Cash Own%")),
+                _num(row.get("Floor")),
+                _num(row.get("Ceiling")),
+                _num(row.get("FD Floor")),
+                _num(row.get("FD Ceiling")),
             ))
             count += 1
         except Exception:
@@ -837,7 +877,8 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
     ctl = st.columns([3, 2])
     with ctl[0]:
         mode = st.radio("Mode",
-                        ["Race Comparison", "Accuracy Dashboard", "Weight Optimizer"],
+                        ["Race Comparison", "Accuracy Dashboard",
+                         "Weight Optimizer", "Profit Sim"],
                         horizontal=True, label_visibility="collapsed",
                         key="acc_mode")
     with ctl[1]:
@@ -857,9 +898,171 @@ def render(*, completed_races, series_id, selected_year, series_name="Cup"):
         _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dnf)
     elif mode == "Weight Optimizer":
         _render_weight_optimizer(completed_races, series_id, selected_year, series_name, exclude_dnf)
+    elif mode == "Profit Sim":
+        _render_profit_sim(series_id, series_name)
+
+
+# ── Profit Sim ───────────────────────────────────────────────────────────────
+
+def _render_profit_sim(series_id, series_name):
+    """Replay past races: build lineups pre-race-faithfully, score on actuals,
+    compare to a Monte-Carlo field proxy. The money answer."""
+    from src.profit_sim import sim_eligible_races, simulate_race, GPP_LINEUPS
+
+    st.markdown("**Profit Simulator**")
+    st.caption(
+        "Replays each past race exactly as pre-race (date-filtered history, "
+        "archived practice, saved odds + salaries), builds one CASH lineup "
+        "(max projection) and "
+        f"{GPP_LINEUPS} GPP lineups (jittered re-optimization), scores them "
+        "on ACTUAL points (DNFs included — contests settle on actuals), and "
+        "grades against a simulated public field. **Cash line = median field "
+        "lineup; GPP min-cash = 80th percentile** — proxies, not real contest "
+        "lines (real cash lines run a few points hotter than a random-legal "
+        "field, so judge by margins, not just win/loss)."
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        sim_platform = st.selectbox("Site", ["DraftKings", "FanDuel"],
+                                    key="sim_platform")
+    with c2:
+        sim_n = st.slider("Races", 3, 20, 10, 1, key="sim_n")
+    with c3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        run = st.button("Run Simulation", type="primary", key="sim_run")
+
+    races = sim_eligible_races(series_id, sim_platform, limit=sim_n)
+    if not races:
+        st.info(f"No {series_name} races with saved odds + results + "
+                f"{sim_platform} salaries yet. Salaries/odds save weekly via "
+                "the importer — the sample grows every race.")
+        return
+    st.caption(f"{len(races)} eligible race(s) — needs saved odds, results "
+               f"AND {sim_platform} salaries.")
+
+    _cache_key = f"profit_sim_{series_id}_{sim_platform}_{sim_n}"
+    if run:
+        results = []
+        prog = st.progress(0.0, text="Simulating...")
+        for i, (db_id, api_id, season, rdate, track, rname) in enumerate(races):
+            prog.progress((i + 1) / len(races),
+                          text=f"Simulating {track} ({rdate[:10]})...")
+            try:
+                r = simulate_race(db_id, api_id, season, rdate, track, rname,
+                                  series_id, platform=sim_platform)
+            except Exception:
+                r = None
+            if r:
+                results.append(r)
+        prog.empty()
+        st.session_state[_cache_key] = results
+
+    results = st.session_state.get(_cache_key)
+    if not results:
+        st.info("Press **Run Simulation** (takes ~5-10s per race on first run).")
+        return
+
+    n = len(results)
+    beat = sum(1 for r in results if r["beat_cash"])
+    avg_margin = sum(r["cash_margin"] for r in results) / n
+    avg_gpp_cash = sum(r["gpp_cashed_pct"] for r in results) / n
+    best_pct = sum(r["gpp_best_pctile"] for r in results) / n
+
+    _metric_cards([
+        ("Cash Beat Rate", f"{beat}/{n} ({100*beat/n:.0f}%)",
+         _metric_color(beat / n, 0.60, 0.50, False)),
+        ("Avg Cash Margin", f"{avg_margin:+.1f} pts",
+         _metric_color(avg_margin, 5, 0, False)),
+        ("GPP Lineups Cashing", f"{avg_gpp_cash:.0f}%",
+         _metric_color(avg_gpp_cash / 100, 0.30, 0.20, False)),
+        ("Best Lineup Percentile", f"{best_pct:.0f}",
+         _metric_color(best_pct / 100, 0.97, 0.90, False)),
+    ])
+    st.caption(
+        "Reading it: a cash lineup that beats the median field >55-60% of "
+        "weeks with a positive average margin is profitable after rake in "
+        "50/50s. GPP: cashing ~25-30% of lineups treads water; profit comes "
+        "from the best lineup's percentile pushing 99+ on your best weeks."
+    )
+
+    rows = [{
+        "Date": r["date"][:10], "Track": r["track"],
+        "Cash Score": r["cash_score"], "Cash Line": r["cash_line"],
+        "Margin": r["cash_margin"], "Beat": "Y" if r["beat_cash"] else "N",
+        "Cash %ile": r["cash_pctile"],
+        "GPP Cashed %": r["gpp_cashed_pct"],
+        "GPP Best": r["gpp_best"], "Best %ile": r["gpp_best_pctile"],
+    } for r in results]
+    df = pd.DataFrame(rows)
+    st.dataframe(df, width="stretch", hide_index=True,
+                 height=min(560, 60 + len(df) * 35))
 
 
 # ── Race Comparison ──────────────────────────────────────────────────────────
+
+def _render_ownership_grading(race_id, series_id):
+    """Grade our PROJECTED ownership against pasted ACTUAL contest ownership.
+
+    Needs both sides: projected ownership auto-saved with pre-race
+    projections (saved_projections.proj_own_*) and actuals pasted on the
+    Data & Settings page post-race (actual_ownership table). Silent when
+    either side is missing."""
+    from src.data import load_actual_ownership
+    actual = load_actual_ownership(race_id, series_id)
+    if not actual:
+        return
+    saved = load_saved_projections(race_id=race_id, series_id=series_id)
+    if saved.empty:
+        return
+    col_for = {("DraftKings", "gpp"): "proj_own_gpp",
+               ("DraftKings", "cash"): "proj_own_cash",
+               ("FanDuel", "gpp"): "proj_own_gpp_fd",
+               ("FanDuel", "cash"): "proj_own_cash_fd"}
+    from src.utils import normalize_driver_name
+    with st.expander("Ownership Accuracy (projected vs actual contest ownership)",
+                     expanded=True):
+        shown = False
+        for (plat, ct), own_map in sorted(actual.items()):
+            col = col_for.get((plat, ct))
+            if not col or col not in saved.columns or saved[col].isna().all():
+                st.caption(f"{plat} {ct.upper()}: actuals saved, but no projected "
+                           "ownership was stored pre-race for this race.")
+                continue
+            norm_actual = {normalize_driver_name(k): v for k, v in own_map.items()}
+            rows = []
+            for _, r in saved.iterrows():
+                pv = r.get(col)
+                if pv is None or pd.isna(pv):
+                    continue
+                av = norm_actual.get(normalize_driver_name(str(r["driver"])))
+                if av is None:
+                    continue
+                rows.append({"Driver": r["driver"], "Projected %": round(float(pv), 1),
+                             "Actual %": round(float(av), 1),
+                             "Error": round(float(pv) - float(av), 1)})
+            if len(rows) < 5:
+                st.caption(f"{plat} {ct.upper()}: fewer than 5 drivers matched.")
+                continue
+            odf = pd.DataFrame(rows).sort_values("Actual %", ascending=False)
+            mae = odf["Error"].abs().mean()
+            corr = odf["Projected %"].corr(odf["Actual %"])
+            _metric_cards([
+                (f"{plat} {ct.upper()} Own MAE", f"{mae:.1f}",
+                 _metric_color(mae, 5, 10, True)),
+                ("Own Correlation", f"{corr:.3f}",
+                 _metric_color(corr, 0.75, 0.50, False)),
+                ("Drivers Matched", f"{len(odf)}", "#38bdf8"),
+            ])
+            st.dataframe(odf, width="stretch", hide_index=True,
+                         height=min(380, 60 + len(odf) * 35))
+            shown = True
+        if shown:
+            st.caption("Ownership MAE < 5 pts is strong; correlation > 0.75 means "
+                       "the chalk ordering was right even if levels were off. "
+                       "Paste more races (Data & Settings → Actual Ownership) to "
+                       "build the validation sample.")
+
 
 def _render_race_comparison(completed_races, series_id, selected_year, exclude_dnf=True):
     """Compare projections vs actuals for a single race.
@@ -1015,11 +1218,11 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
 
     _metric_cards([
         ("DK Pts MAE", f"{mae_dk:.1f}", _metric_color(mae_dk, 15, 25, True)),
-        ("DK Finish MAE", f"{mae_dk_finish:.1f}", _metric_color(mae_dk_finish, 5, 10, True)),
-        ("Finish MAE", f"{mae_finish:.1f}", _metric_color(mae_finish, 5, 10, True)),
-        ("DK Pts Correlation", f"{corr_dk:.3f}", _metric_color(corr_dk, 0.70, 0.45, False)),
-        ("Finish Correlation", f"{corr_finish:.3f}", _metric_color(corr_finish, 0.55, 0.30, False)),
-        ("DK Finish Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.70, 0.45, False)),
+        ("DK Finish MAE", f"{mae_dk_finish:.1f}", _metric_color(mae_dk_finish, 7.5, 10, True)),
+        ("Finish MAE", f"{mae_finish:.1f}", _metric_color(mae_finish, 7.5, 10, True)),
+        ("DK Pts Correlation", f"{corr_dk:.3f}", _metric_color(corr_dk, 0.60, 0.40, False)),
+        ("Finish Correlation", f"{corr_finish:.3f}", _metric_color(corr_finish, 0.50, 0.30, False)),
+        ("DK Finish Rank Corr", f"{rank_corr:.3f}", _metric_color(rank_corr, 0.60, 0.40, False)),
     ])
 
     _scope = (f"running finishers only — {n_dnf} DNF{'s' if n_dnf != 1 else ''} excluded"
@@ -1032,6 +1235,8 @@ def _render_race_comparison(completed_races, series_id, selected_year, exclude_d
         "**Rank Correlation** = Spearman rank correlation of projected vs actual DK points"
     )
     st.caption(f"Weights: {weights_str}")
+
+    _render_ownership_grading(race_id, series_id)
 
     _target_ranges_expander([
         "DK Pts MAE", "DK Finish MAE", "Finish MAE",
@@ -1152,7 +1357,7 @@ def _render_season_trend(metrics_df, season_rank_corr, season_mae):
 
     # ── Rank-correlation trend ──
     rc = pd.to_numeric(df["Rank Corr"], errors="coerce")
-    bar_colors = [_metric_color(v, 0.70, 0.45, False) for v in rc]
+    bar_colors = [_metric_color(v, 0.60, 0.40, False) for v in rc]
     roll = rc.rolling(3, min_periods=1).mean()
 
     fig = go.Figure()
@@ -1347,8 +1552,8 @@ def _render_accuracy_dashboard(series_id, selected_year, series_name, exclude_dn
 
     _metric_cards([
         ("Overall DK MAE", f"{overall_mae:.1f}", _metric_color(overall_mae, 15, 25, True)),
-        ("DK Correlation", f"{overall_corr:.3f}", _metric_color(overall_corr, 0.70, 0.45, False)),
-        ("Avg Rank Corr", f"{overall_rank_corr:.3f}", _metric_color(overall_rank_corr, 0.70, 0.45, False)),
+        ("DK Correlation", f"{overall_corr:.3f}", _metric_color(overall_corr, 0.60, 0.40, False)),
+        ("Avg Rank Corr", f"{overall_rank_corr:.3f}", _metric_color(overall_rank_corr, 0.60, 0.40, False)),
         ("Avg Bias", f"{overall_bias:+.1f}", _metric_color(abs(overall_bias), 3, 8, True)),
     ])
     _scope = ("running finishers only (DNFs excluded)" if exclude_dnf

@@ -252,3 +252,61 @@ def render(race_id: int, series_id: int, race_name: str, is_prerace: bool):
         if st.button("Clear manual practice", key=f"clear_prac_{series_id}_{race_id}"):
             del st.session_state[_prac_key]
             st.rerun()
+
+    st.divider()
+    _render_actual_ownership_section(race_id, series_id)
+
+
+def _render_actual_ownership_section(race_id: int, series_id: int):
+    """Post-race paste of ACTUAL contest ownership — feeds the Accuracy
+    page's ownership-projection grading. Without ground truth, the GPP
+    leverage model is unvalidated guesswork."""
+    from src.data import save_actual_ownership, load_actual_ownership
+
+    st.markdown("##### 4 · Actual Contest Ownership (post-race)")
+    st.caption(
+        "After a contest settles, paste the field's actual ownership from "
+        "your DK/FD results page. The Accuracy page grades our projected "
+        "ownership against it — that's what validates the GPP leverage model."
+    )
+    existing = load_actual_ownership(race_id, series_id)
+    if existing:
+        st.success("Saved: " + " · ".join(
+            f"{p}/{c}: {len(d)} drivers" for (p, c), d in sorted(existing.items())))
+
+    o_cols = st.columns([1, 1, 3])
+    with o_cols[0]:
+        own_platform = st.selectbox("Site", ["DraftKings", "FanDuel"],
+                                    key=f"own_plat_{race_id}")
+    with o_cols[1]:
+        own_contest = st.selectbox("Contest", ["gpp", "cash"],
+                                   format_func=lambda c: c.upper(),
+                                   key=f"own_ct_{race_id}")
+    with o_cols[2]:
+        own_text = st.text_area(
+            "Ownership", height=110, label_visibility="collapsed",
+            placeholder="Kyle Larson, 42.3\nDenny Hamlin 38%\nRyan Preece, 6.1",
+            key=f"own_paste_{own_platform}_{own_contest}_{race_id}",
+            help="One driver per line: 'Name, 42.3' or 'Name 42.3%'",
+        )
+    own_data = {}
+    if own_text and own_text.strip():
+        import re as _re
+        for line in own_text.strip().split("\n"):
+            m = _re.match(r'^(.+?)[,\s]+([\d.]+)\s*%?\s*$', line.strip())
+            if m:
+                try:
+                    own_data[m.group(1).strip()] = float(m.group(2))
+                except ValueError:
+                    pass
+    if own_data:
+        st.caption(f"Parsed {len(own_data)} drivers")
+        if st.button(f"Save {own_platform} {own_contest.upper()} ownership",
+                     type="primary", key=f"own_save_{race_id}"):
+            n = save_actual_ownership(race_id, series_id, own_platform,
+                                      own_contest, own_data)
+            if n:
+                st.success(f"Saved actual ownership for {n} drivers")
+                st.rerun()
+            else:
+                st.error("Could not save — race not resolvable in DB")
