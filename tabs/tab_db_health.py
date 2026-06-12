@@ -335,6 +335,33 @@ def quick_health_check() -> dict:
                 "severity": "warn",
             })
 
+        # Unmapped tracks — the #1 silent year-over-year failure. A new
+        # venue absent from TRACK_TYPE_MAP defaults to "intermediate"
+        # everywhere (wrong weights, wrong dominator profile, wrong
+        # similar-track groups) without any visible error. Surface it loudly
+        # so schedule changes each season get a one-line config fix.
+        try:
+            from src.config import TRACK_TYPE_MAP
+            from datetime import datetime as _dt
+            _season = _dt.now().year
+            tr_rows = conn.execute('''
+                SELECT DISTINCT t.name FROM races r
+                JOIN tracks t ON t.id = r.track_id
+                WHERE r.season >= ?
+            ''', (_season - 1,)).fetchall()
+            unmapped = sorted(t for (t,) in tr_rows
+                              if t and t not in TRACK_TYPE_MAP)
+            if unmapped:
+                result["anomalies"].append({
+                    "kind": ("Tracks missing from TRACK_TYPE_MAP "
+                             f"({', '.join(unmapped[:4])}"
+                             f"{'…' if len(unmapped) > 4 else ''})"),
+                    "count": len(unmapped),
+                    "severity": "warn",
+                })
+        except Exception:
+            pass
+
         conn.close()
     except Exception as e:
         result["ok"] = False

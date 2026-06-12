@@ -911,7 +911,11 @@ def query_car_colors(series_id: int) -> dict:
     import os
     cache_dir = os.path.join(os.path.dirname(DB_PATH), "cache")
     os.makedirs(cache_dir, exist_ok=True)
-    cpath = os.path.join(cache_dir, f"badge_colors_{series_id}.json")
+    # Season-keyed: NASCAR refreshes badge art yearly at the same URLs, so a
+    # season-less cache would serve last year's colors forever.
+    from datetime import datetime as _dt
+    cpath = os.path.join(cache_dir,
+                         f"badge_colors_{series_id}_{_dt.now().year}.json")
     try:
         with open(cpath) as f:
             cached = _json.load(f)
@@ -2819,6 +2823,20 @@ def _recency_weight_sql(rank_col: str = "rn") -> str:
     return f"MAX(0.0, 1.0 - ({rank_col} - 1) * {PROJECTION_RECENCY_DECAY_STEP})"
 
 
+def _team_canon_sql(col: str = "rr.team") -> str:
+    """SQL CASE expression mapping historical team names to their current
+    org (TEAM_LINEAGE) so renamed teams keep their history. Names come from
+    a fixed config dict — safe to inline (escaped) in SQL."""
+    from src.config import TEAM_LINEAGE, canonical_team
+    if not TEAM_LINEAGE:
+        return col
+    whens = " ".join(
+        "WHEN '{}' THEN '{}'".format(old.replace("'", "''"),
+                                     canonical_team(old).replace("'", "''"))
+        for old in TEAM_LINEAGE)
+    return f"(CASE {col} {whens} ELSE {col} END)"
+
+
 def query_team_stats(series_id: int, track_type: str = None,
                      min_season: int = 2022, before_date: str = None) -> dict:
     """Query team performance stats from race_results.
@@ -2852,10 +2870,11 @@ def query_team_stats(series_id: int, track_type: str = None,
         params.append(before_date)
 
     w = _recency_weight_sql("rn")
+    _ct = _team_canon_sql()
     query = f'''
         WITH ranked AS (
-            SELECT rr.team, rr.finish_pos, rr.avg_running_position AS arp,
-                   ROW_NUMBER() OVER (PARTITION BY rr.team
+            SELECT {_ct} AS team, rr.finish_pos, rr.avg_running_position AS arp,
+                   ROW_NUMBER() OVER (PARTITION BY {_ct}
                                       ORDER BY r.race_date DESC, r.id DESC) AS rn
             FROM race_results rr
             JOIN races r ON r.id = rr.race_id
@@ -2903,10 +2922,11 @@ def query_team_quality_lookup(series_id: int, min_season: int = 2022,
         params.append(before_date)
 
     w = _recency_weight_sql("rn")
+    _ct = _team_canon_sql()
     query = f'''
         WITH ranked AS (
-            SELECT rr.team, rr.finish_pos,
-                   ROW_NUMBER() OVER (PARTITION BY rr.team
+            SELECT {_ct} AS team, rr.finish_pos,
+                   ROW_NUMBER() OVER (PARTITION BY {_ct}
                                       ORDER BY r.race_date DESC, r.id DESC) AS rn
             FROM race_results rr
             JOIN races r ON r.id = rr.race_id
@@ -2994,8 +3014,9 @@ def query_team_track_aggregates(track_name: str, series_id: int,
         if before_date:
             where_extra = " AND r.race_date < ?"
             params.append(before_date)
+        _ct = _team_canon_sql()
         rows = conn.execute(f'''
-            SELECT rr.team, AVG(rr.finish_pos),
+            SELECT {_ct} AS team, AVG(rr.finish_pos),
                    AVG(NULLIF(rr.avg_running_position, 99)), COUNT(*)
             FROM race_results rr
             JOIN races r ON r.id = rr.race_id
@@ -3004,7 +3025,7 @@ def query_team_track_aggregates(track_name: str, series_id: int,
               AND rr.team IS NOT NULL AND rr.team != ''
               AND rr.finish_pos IS NOT NULL
               {where_extra}
-            GROUP BY rr.team HAVING COUNT(*) >= 2
+            GROUP BY team HAVING COUNT(*) >= 2
         ''', params).fetchall()
         conn.close()
         return {t: {"avg_finish": af, "avg_arp": arp, "races": n}
@@ -3027,10 +3048,11 @@ def apply_team_track_fallback(th_data: dict, drivers: list, team_map: dict,
     if not aggs:
         return th_data
     from src.utils import fuzzy_match_name
+    from src.config import canonical_team
     agg_names = list(aggs.keys())
     out = dict(th_data)
     for d in missing:
-        team = team_map.get(d)
+        team = canonical_team(team_map.get(d))
         agg = aggs.get(team)
         if not agg and team:
             m = fuzzy_match_name(team, agg_names)
@@ -3119,10 +3141,13 @@ def compute_team_adjusted_track_history(track_name: str, series_id: int,
             continue
 
         # Compute weighted average of historical team qualities
-        # Weight recent races more heavily
+        # Weight recent races more heavily. Historical names go through the
+        # TEAM_LINEAGE canonicalizer so a renamed org (SHR -> Haas Factory)
+        # resolves to its current quality entry instead of falling to fuzzy.
+        from src.config import canonical_team
         hist_team_quals = []
         for entry in hist:
-            h_team = entry["team"]
+            h_team = canonical_team(entry["team"])
             matched_h = h_team if h_team in team_quality else \
                 fuzzy_match_name(h_team, team_names) if team_names else None
             if matched_h:

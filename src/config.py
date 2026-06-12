@@ -616,6 +616,33 @@ TRACK_TYPE_WEIGHT_DEFAULTS = {
 }
 
 # ----------------------------
+# TEAM LINEAGE (year-over-year continuity)
+# ----------------------------
+# NASCAR orgs rename/rebrand across seasons (charters move, sponsors buy in).
+# Our team signals group by the raw team STRING from the feed, so without
+# this map a renamed org's history orphans — the "new" team starts from zero
+# even though it's the same shop, people and equipment.
+#
+# Maintenance: when an org renames, add  "Old Name": "New Name"  here. The
+# DB keeps raw names; canonicalization happens at query time, so the map is
+# retroactive and reversible. Chains are supported (A->B, B->C) but flatten
+# them when convenient.
+TEAM_LINEAGE = {
+    "Stewart-Haas Racing": "Haas Factory Team",     # 2025 rebrand
+    "Petty GMS Motorsports": "Legacy Motor Club",   # 2023 rebrand
+}
+
+
+def canonical_team(name: str) -> str:
+    """Resolve a historical team name to its current org name (chain-safe)."""
+    seen = set()
+    while name in TEAM_LINEAGE and name not in seen:
+        seen.add(name)
+        name = TEAM_LINEAGE[name]
+    return name
+
+
+# ----------------------------
 # CROSS-SERIES HIERARCHY
 # ----------------------------
 # Cross-series track history: supplement current-series data with other series.
