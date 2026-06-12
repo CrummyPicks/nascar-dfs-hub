@@ -62,11 +62,13 @@ def load_race(conn, race_id, series_id, track_name, race_date):
         WHERE rr.race_id = ? AND rr.finish_pos IS NOT NULL
     ''', (race_id,)).fetchall()
     drivers, actual_dk, start_pos, team_map, status_map = [], {}, {}, {}, {}
+    actual_finish = {}
     for name, st, fin, ll, fl, team, status in res:
         if st is None:
             st = fin
         drivers.append(name)
         actual_dk[name] = calc_dk_points(fin, st, ll or 0, fl or 0)
+        actual_finish[name] = fin
         start_pos[name] = st
         status_map[name] = (status or "").strip()
         if team:
@@ -135,7 +137,8 @@ def load_race(conn, race_id, series_id, track_name, race_date):
                 qual_pos=start_pos, odds_finish=odds_finish, odds_display=odds_display,
                 th_data=th_data, tt_data=tt_data, team_signal=team_signal,
                 team_adj=team_adj, calibration=calibration,
-                actual_dk=actual_dk, start_pos=start_pos, status=status_map)
+                actual_dk=actual_dk, actual_finish=actual_finish,
+                start_pos=start_pos, status=status_map)
 
 
 def normalize_weights(raw, has_odds=True, has_prac=False):
