@@ -3,4 +3,13 @@ primaryColor = "#0ea5e9"
 backgroundColor = "#0a0e1a"
 secondaryBackgroundColor = "#111827"
 textColor = "#e2e8f0"
-font = "sans serif"
+# Inter for body/UI/data — neutral screen-first grotesque that pairs with the
+# Rajdhani display face used for headers/nav (set via CSS in the app shell).
+# Declared as a theme font (not just CSS) so Streamlit's CANVAS-rendered
+# dataframes pick it up too.
+font = "Inter, sans-serif"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2"
+weight = "100 900"

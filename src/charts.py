@@ -22,7 +22,7 @@ DARK_LAYOUT = dict(
     margin=dict(l=30, r=20, t=40, b=30),
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(15,23,42,0.95)",
-    font=dict(color="#e2e8f0", family="system-ui, -apple-system, sans-serif"),
+    font=dict(color="#e2e8f0", family="Inter, system-ui, -apple-system, sans-serif"),
     # Multi-line charts (lap times, season trends) need DISTINCT hues — the
     # old all-blue ramp made every driver's line look identical. This cycles
     # through visually separated hues tuned for the dark background.
