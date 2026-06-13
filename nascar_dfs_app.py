@@ -486,10 +486,13 @@ if races:
     race_date_raw = (selected_race.get("race_date") or "")[:10]  # YYYY-MM-DD
 else:
     # Distinguish "API down" from "no data": a valid season always has races,
-    # so an empty list here means the NASCAR API was unreachable.
-    st.error("Couldn't reach the NASCAR API — the race list is unavailable. "
-             "The app will show the Daytona 500 as a fallback; refresh in a "
-             "minute to try again.")
+    # so an empty list here means the NASCAR API was unreachable. Failures
+    # are NOT cached, so any rerun retries — keep the notice small and calm.
+    st.markdown(
+        '<div style="color:#fbbf24;font-size:0.8rem;margin:0.1rem 0 0.3rem;">'
+        '⚠ NASCAR API unreachable — showing a fallback race. It retries '
+        'automatically on the next interaction or refresh.</div>',
+        unsafe_allow_html=True)
     race_id, race_name = 5596, "Daytona 500"
     track_name = "Daytona International Speedway"
     track_type = "superspeedway"
@@ -510,9 +513,11 @@ with st.spinner("Loading data..."):
 is_prerace = detect_prerace(feed)
 
 if races and not feed:
-    st.warning("The NASCAR API didn't return weekend data for this race — "
-               "entry list, qualifying, and results pages may be empty. "
-               "This is usually temporary; refresh in a minute.")
+    st.markdown(
+        '<div style="color:#fbbf24;font-size:0.8rem;margin:0.1rem 0 0.3rem;">'
+        '⚠ Weekend data not returned for this race yet — entry list / '
+        'qualifying / results pages may be empty. Retries automatically.</div>',
+        unsafe_allow_html=True)
 
 # ============================================================
 # SALARIES (from DB — uploads happen on the Data & Settings page)
