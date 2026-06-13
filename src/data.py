@@ -942,6 +942,35 @@ def query_db_track_history(track_name: str, series_id: int = 1,
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def resolve_db_driver_name(name: str) -> str:
+    """Map a driver name to the canonical spelling stored in the DB.
+
+    NASCAR's feeds disagree with each other (the lap-averages feed has
+    'Carson Kvapili'; the entry list and DB have 'Carson Kvapil'). A name
+    clicked from one feed must resolve to the DB's spelling or its history
+    lookup returns nothing. Tries exact, then normalized, then fuzzy match
+    against the drivers table. Returns the input unchanged if no match."""
+    if not name or not DB_PATH.exists():
+        return name
+    try:
+        from src.utils import normalize_driver_name, fuzzy_match_name
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = [r[0] for r in conn.execute(
+            "SELECT full_name FROM drivers WHERE full_name IS NOT NULL").fetchall()]
+        conn.close()
+        if name in rows:
+            return name
+        norm = {normalize_driver_name(r): r for r in rows}
+        nk = normalize_driver_name(name)
+        if nk in norm:
+            return norm[nk]
+        m = fuzzy_match_name(name, rows, threshold=0.82)
+        return m or name
+    except Exception:
+        return name
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def query_latest_car_numbers(series_id: int) -> dict:
     """{driver: car_number} from each driver's most recent race in a series.
 

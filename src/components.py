@@ -802,7 +802,13 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     The first tab is whichever scope the caller considered primary.
     """
     from src.config import TRACK_TYPE_MAP, is_concrete_track
-    from src.data import query_driver_tracks_raced
+    from src.data import query_driver_tracks_raced, resolve_db_driver_name
+
+    # Resolve the clicked name to the DB's canonical spelling — feeds disagree
+    # (lap-averages: "Carson Kvapili" vs entry list / DB: "Carson Kvapil"), and
+    # every history query below keys on this name. Without this, a one-letter
+    # feed discrepancy makes the whole dialog show "no races on record".
+    driver_name = resolve_db_driver_name(driver_name)
 
     # Derive missing context
     if track_name and not track_type:

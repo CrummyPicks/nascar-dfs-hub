@@ -22,6 +22,30 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         st.info("Practice data not yet available for this race.")
         return
 
+    # NASCAR's lap-averages feed sometimes misspells names vs the entry list
+    # (e.g. "Carson Kvapili" vs "Carson Kvapil"). Remap practice driver names
+    # to the entry-list spelling so the heatmap reads right AND the drill-down
+    # dialog resolves their history. Mirrors the projection-path remap.
+    if feed:
+        from src.data import extract_entry_list
+        from src.utils import normalize_driver_name, fuzzy_match_name
+        _entry = extract_entry_list(feed)
+        _entry_drivers = (_entry["Driver"].dropna().tolist()
+                          if _entry is not None and not _entry.empty else [])
+        if _entry_drivers and "Driver" in lap_averages_df.columns:
+            _norm_entry = {normalize_driver_name(d): d for d in _entry_drivers}
+
+            def _canon(d):
+                if d in _entry_drivers:
+                    return d
+                nk = normalize_driver_name(str(d))
+                if nk in _norm_entry:
+                    return _norm_entry[nk]
+                m = fuzzy_match_name(str(d), _entry_drivers, threshold=0.82)
+                return m or d
+            lap_averages_df = lap_averages_df.copy()
+            lap_averages_df["Driver"] = lap_averages_df["Driver"].map(_canon)
+
     # Fetch all practice sessions for group filtering
     all_sessions = fetch_all_practice_sessions(series_id, race_id, selected_year)
 
