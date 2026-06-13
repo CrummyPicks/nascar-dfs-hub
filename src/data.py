@@ -98,15 +98,55 @@ def _fetch_race_list_cached(series_id: int, year: int) -> list:
     return data
 
 
+def _race_list_from_db(series_id: int, year: int) -> list:
+    """Season schedule from the LOCAL DB, shaped like the API race list.
+
+    The races table carries the full schedule (the daily refresh syncs it),
+    so an API outage shouldn't blank the race picker — the app can run
+    entirely off stored data."""
+    if not DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute('''
+            SELECT r.api_race_id, r.race_name, r.race_date,
+                   COALESCE(r.laps, 0), t.name
+            FROM races r JOIN tracks t ON t.id = r.track_id
+            WHERE r.series_id = ? AND r.season = ?
+              AND r.api_race_id IS NOT NULL
+            ORDER BY r.race_date
+        ''', (series_id, year)).fetchall()
+        conn.close()
+        return [{"race_id": rid, "race_name": nm or "Unknown",
+                 "race_date": dt or "", "scheduled_laps": laps,
+                 "track_name": tn or ""}
+                for rid, nm, dt, laps, tn in rows]
+    except Exception as e:
+        logger.warning("_race_list_from_db failed: %s", e)
+        return []
+
+
 def fetch_race_list(series_id: int, year: int = None) -> list:
-    """Fetch race list from NASCAR API ([] on failure, failure NOT cached)."""
+    """Race list: live API first; LOCAL DB schedule when the API is down
+    ([] only if both fail). Failures are never cached."""
     if year is None:
         year = _default_active_year()
     try:
-        return _fetch_race_list_cached(series_id, year)
+        races = _fetch_race_list_cached(series_id, year)
+        try:
+            st.session_state["race_list_source"] = "api"
+        except Exception:
+            pass
+        return races
     except Exception as e:
-        logger.warning("fetch_race_list failed (year=%s series=%s): %s", year, series_id, e)
-        return []
+        logger.warning("fetch_race_list failed (year=%s series=%s): %s — "
+                       "falling back to DB schedule", year, series_id, e)
+        db_races = _race_list_from_db(series_id, year)
+        try:
+            st.session_state["race_list_source"] = "db" if db_races else "none"
+        except Exception:
+            pass
+        return db_races
 
 
 def sync_race_schedule_from_api(series_id: int, year: int, verbose: bool = False) -> dict:

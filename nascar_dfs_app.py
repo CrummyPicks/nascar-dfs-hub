@@ -485,13 +485,19 @@ if races:
     scheduled_laps = selected_race.get("scheduled_laps", 0) or 0
     race_date_raw = (selected_race.get("race_date") or "")[:10]  # YYYY-MM-DD
 else:
-    # Distinguish "API down" from "no data": a valid season always has races,
-    # so an empty list here means the NASCAR API was unreachable. Failures
-    # are NOT cached, so any rerun retries — keep the notice small and calm.
+    # Both the API AND the local DB schedule came up empty — genuinely rare
+    # (fresh DB + API outage). Failures are never cached, so reruns retry.
     st.markdown(
         '<div style="color:#fbbf24;font-size:0.8rem;margin:0.1rem 0 0.3rem;">'
-        '⚠ NASCAR API unreachable — showing a fallback race. It retries '
-        'automatically on the next interaction or refresh.</div>',
+        '⚠ No schedule available (NASCAR API unreachable and no stored '
+        'schedule for this season). Retries automatically.</div>',
+        unsafe_allow_html=True)
+
+if races and st.session_state.get("race_list_source") == "db":
+    st.markdown(
+        '<div style="color:#94a3b8;font-size:0.74rem;margin:0.1rem 0 0.2rem;">'
+        'Schedule loaded from the local database (NASCAR API unreachable — '
+        'retries automatically).</div>',
         unsafe_allow_html=True)
     race_id, race_name = 5596, "Daytona 500"
     track_name = "Daytona International Speedway"
