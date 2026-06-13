@@ -606,9 +606,10 @@ def compute_projections(
         tt = tt_data.get(d)
         # Dominator / fast-lap scoring keys off the ACTUAL race-day grid: a driver
         # sent to the rear (unapproved adjustments, backup car, failed inspection)
-        # won't lead early laps or run up front, no matter where he qualified. The
-        # qualifying position still drives the FINISH qual signal (pace proxy) and
-        # place differential below — DK scores PD off the qualified grid.
+        # won't lead early laps or run up front, no matter where he qualified.
+        # NOTE: the FINISH qual signal (pace proxy) still uses qual_pos — a
+        # penalized car's SPEED is what it qualified, even if it starts deep;
+        # only the laps-led gate and place differential use the rear grid.
         qp = (grid_start.get(d) if grid_start else None) or qual_pos.get(d)
         pr = practice_data.get(d) if practice_data else None
         od = odds_finish.get(d)
@@ -804,15 +805,19 @@ def compute_projections(
         if odds_finish.get(d):
             return round(odds_finish[d])
         return round(field_size * 0.5)
-    # pd_start = qualifying position (drives place differential + the displayed
-    # start — DK scores PD off the qualified grid). start_for_alloc = the ACTUAL
-    # race-day grid (rear for penalty drivers) so the laps-led gate damps a car
-    # sent to the back. They're identical for everyone NOT moved to the rear.
-    pd_start = {d: _resolve_start(d) for d in drivers}
-    start_for_alloc = {
-        d: ((grid_start.get(d) if grid_start else None) or pd_start[d])
+    # Both place differential AND the laps-led gate key off the ACTUAL
+    # green-flag grid (rear for penalty drivers), because that's what DK/FD
+    # score: PD = starting position − finish, where "starting position" is
+    # where the car takes the green flag, INCLUDING penalties. A fast car
+    # sent to the rear banks every position it gains — the premium DFS play.
+    # (Older logic scored PD off the qualified grid, which silently erased
+    # the rear-penalty value for a well-qualified driver moved to the back.)
+    # grid_start falls back to qualifying for everyone NOT penalized.
+    pd_start = {
+        d: ((grid_start.get(d) if grid_start else None) or _resolve_start(d))
         for d in drivers
     }
+    start_for_alloc = pd_start
 
     # ── Allocate laps led and fastest laps ──
     allocated_ll = _allocate_laps_led(
@@ -839,9 +844,9 @@ def compute_projections(
         proj_laps_led = allocated_ll.get(d, 0)
         proj_fastest = allocated_fl.get(d, 0)
 
-        # Displayed start + place differential use the QUALIFYING position (DK
-        # scores PD off the qualified grid, not the penalty box). The rear grid
-        # start only drives laps-led / fast-laps scoring above.
+        # Displayed start + place differential use the ACTUAL green-flag grid
+        # (penalty position for rear-flagged drivers) — matching how DK/FD
+        # actually score place differential.
         start_pos = pd_start[d]
 
         # Finish points + place differential are the EXPECTED value over the
