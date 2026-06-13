@@ -41,7 +41,7 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     if view_mode == "Charts":
         _render_charts_view(completed_races, series_id, selected_year, results_df,
                             lap_data, fl_counts, is_prerace, track_name,
-                            platform=platform)
+                            platform=platform, entry_list_df=entry_list_df)
         return
 
     # --- Determine base driver list ---
@@ -505,13 +505,26 @@ def _render_track_type_history(master_df, track_type, series_id, track_name=""):
 
 def _render_charts_view(completed_races, series_id, selected_year,
                         results_df, lap_data, fl_counts, is_prerace,
-                        track_name="", platform="DraftKings"):
+                        track_name="", platform="DraftKings",
+                        entry_list_df=None):
     """Render the Charts view. Charts plot ONE site's scoring at a time —
     with "Both" selected they default to DraftKings (noted in a caption)."""
     eff_platform = "FanDuel" if platform == "FanDuel" else "DraftKings"
     if platform == "Both":
         st.caption("Charts show **DraftKings** scoring — switch the platform "
                    "picker to FanDuel for FD-scored charts.")
+
+    # Active-drivers filter — same default as Track History: history charts
+    # show only drivers entered in THIS race unless the user opts into the
+    # full database (retired / part-timers).
+    active_set = None
+    if entry_list_df is not None and not entry_list_df.empty:
+        if st.checkbox("Active drivers only", value=True,
+                       key="data_charts_active_only",
+                       help="Limit history charts to drivers entered in the "
+                            "current race (untick for retired/part-timers)"):
+            active_set = set(entry_list_df["Driver"].dropna().astype(str)
+                             .str.strip().tolist())
 
     # If postrace, show DFS histogram and start vs finish (full width, stacked)
     if not is_prerace and not results_df.empty:
@@ -536,7 +549,8 @@ def _render_charts_view(completed_races, series_id, selected_year,
         st.plotly_chart(fig, width="stretch")
 
     # Season trend line
-    trend_fig = season_trend_line(series_id, selected_year, platform=eff_platform)
+    trend_fig = season_trend_line(series_id, selected_year, platform=eff_platform,
+                                  active_drivers=active_set)
     if trend_fig:
         st.divider()
         st.plotly_chart(trend_fig, width="stretch")
@@ -562,20 +576,28 @@ def _render_charts_view(completed_races, series_id, selected_year,
             # ARP vs Finish scatter — shows wreck luck
             if "Avg Run Pos" in hist_df.columns and "Avg Finish" in hist_df.columns:
                 st.divider()
-                fig = arp_vs_finish_scatter(hist_df, track_name,
+                _hist_for_chart = hist_df
+                if active_set and "Driver" in hist_df.columns:
+                    from src.charts import _active_name_set, _is_active
+                    _ns = _active_name_set(active_set)
+                    _hist_for_chart = hist_df[hist_df["Driver"].map(
+                        lambda d: _is_active(d, _ns))]
+                fig = arp_vs_finish_scatter(_hist_for_chart, track_name,
                                             series_id=series_id)
                 if fig:
                     st.plotly_chart(fig, width="stretch", key="data_arp_vs_finish")
 
         # Avg Fantasy Points vs Avg Running Position
         st.divider()
-        fig = fantasy_vs_arp_scatter(track_name, series_id, platform=eff_platform)
+        fig = fantasy_vs_arp_scatter(track_name, series_id, platform=eff_platform,
+                                     active_drivers=active_set)
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_fantasy_vs_arp")
 
         # Finish distribution box plot
         st.divider()
-        fig = finish_distribution_box(track_name, series_id)
+        fig = finish_distribution_box(track_name, series_id,
+                                      active_drivers=active_set)
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_finish_dist")
 

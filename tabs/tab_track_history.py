@@ -161,18 +161,23 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
                 active_drivers=active_drivers if highlight_active else set(),
             )
 
-            fig = track_history_bar(hist_df, track_name)
+            # Charts respect the same Active-drivers toggle as the table —
+            # they used to chart the raw (unfiltered) history regardless.
+            chart_df = display_df if show_active_only else hist_df
+            fig = track_history_bar(chart_df, track_name)
             if fig:
                 st.plotly_chart(fig, width="stretch")
 
             # ARP vs Avg Finish scatter — shows wreck luck
-            arp_fig = arp_vs_finish_scatter(hist_df, track_name,
+            arp_fig = arp_vs_finish_scatter(chart_df, track_name,
                                             series_id=series_id)
             if arp_fig:
                 st.plotly_chart(arp_fig, width="stretch")
 
             # Finish distribution box plot — shows consistency vs boom/bust
-            box_fig = finish_distribution_box(track_name, series_id)
+            box_fig = finish_distribution_box(
+                track_name, series_id,
+                active_drivers=active_drivers if show_active_only else None)
             if box_fig:
                 st.plotly_chart(box_fig, width="stretch")
         else:

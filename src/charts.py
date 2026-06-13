@@ -42,6 +42,21 @@ def apply_dark_theme(fig):
     return fig
 
 
+def _active_name_set(active_drivers):
+    """Normalized name set for active-driver filtering (None -> no filter)."""
+    if not active_drivers:
+        return None
+    from src.utils import normalize_driver_name
+    return {normalize_driver_name(str(d)) for d in active_drivers}
+
+
+def _is_active(name, norm_set):
+    if norm_set is None:
+        return True
+    from src.utils import normalize_driver_name
+    return normalize_driver_name(str(name)) in norm_set
+
+
 def _selective_labels(df, name_col, notable_idx, short=True):
     """Text labels for only the NOTABLE rows; everyone else hover-only.
 
@@ -559,8 +574,12 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
 
 
 def finish_distribution_box(track_name: str, series_id: int = 1,
-                             top_n: int = 20, height: int = 400) -> go.Figure:
-    """Box plot of finish positions at a track — shows consistency vs boom/bust."""
+                             top_n: int = 20, height: int = 400,
+                             active_drivers=None) -> go.Figure:
+    """Box plot of finish positions at a track — shows consistency vs boom/bust.
+
+    active_drivers: optional iterable of current-race drivers — when given,
+    retired/part-time drivers are filtered out."""
     import sqlite3
     from src.config import DB_PATH
     if not DB_PATH.exists():
@@ -578,6 +597,10 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
         conn.close()
     except Exception:
         return None
+
+    norm_set = _active_name_set(active_drivers)
+    if norm_set is not None and not df.empty:
+        df = df[df["Driver"].map(lambda d: _is_active(d, norm_set))]
 
     if df.empty or len(df) < 5:
         return None
@@ -605,10 +628,13 @@ def finish_distribution_box(track_name: str, series_id: int = 1,
 
 def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
                             height: int = 450,
-                            platform: str = "DraftKings") -> go.Figure:
+                            platform: str = "DraftKings",
+                            active_drivers=None) -> go.Figure:
     """Avg fantasy points vs Avg Running Position at a track — shows value.
 
-    platform: "DraftKings" or "FanDuel" — switches the per-race scoring."""
+    platform: "DraftKings" or "FanDuel" — switches the per-race scoring.
+    active_drivers: optional current-race entry list — filters out
+    retired/part-time drivers when provided."""
     import sqlite3
     from src.config import DB_PATH
     from src.utils import calc_dk_points, calc_fd_points
@@ -650,8 +676,11 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
             driver_arp[name].append(arp)
 
     pts_col = f"Avg {tag} Pts"
+    norm_set = _active_name_set(active_drivers)
     records = []
     for name in driver_pts:
+        if not _is_active(name, norm_set):
+            continue
         if len(driver_pts[name]) >= 2 and driver_arp.get(name):
             records.append({
                 "Driver": name,
@@ -727,9 +756,12 @@ def season_trend_line(series_id: int = 1, season: int = None,
                        drivers: list = None, top_n: int = 10,
                        last_n_races: int = 5,
                        height: int = 400,
-                       platform: str = "DraftKings") -> go.Figure:
+                       platform: str = "DraftKings",
+                       active_drivers=None) -> go.Figure:
     """Line chart of fantasy points across the most recent N races — form trends.
     `platform` selects which site's stored scores to plot (dfs_points has both).
+    `active_drivers` (optional) restricts the pool to current-race entrants
+    BEFORE the top-N selection (unlike `drivers`, which bypasses top-N).
 
     Uses a categorical x-axis with "Track Name (Date)" labels so the chart
     renders correctly regardless of how the race_date column is stored
@@ -802,7 +834,13 @@ def season_trend_line(series_id: int = 1, season: int = None,
     label_map = dict(zip(recent_races["RaceId"], recent_races["Label"]))
     df = df.assign(Label=df["RaceId"].map(label_map))
 
-    # Pick top drivers by avg DK pts (over the recent window) if none specified.
+    # Restrict to current-race entrants first (when provided), THEN pick the
+    # top drivers by avg pts over the recent window.
+    norm_set = _active_name_set(active_drivers)
+    if norm_set is not None:
+        df = df[df["Driver"].map(lambda d: _is_active(d, norm_set))]
+        if df.empty:
+            return None
     if not drivers:
         avg_pts = df.groupby("Driver")["DK_Pts"].mean().sort_values(ascending=False)
         drivers = avg_pts.head(top_n).index.tolist()
