@@ -527,7 +527,8 @@ def _render_similar_tracks_scope(driver_name, series_id, track_name,
         combined = combined.sort_values("Date", ascending=False)
     st.markdown("**All similar-track races**")
     show_cols = ["Tier", "Date", "Race", "Track", "Start", "Finish",
-                 "Laps Led", "Fast Laps", "Avg Run", "Rating", "DK Pts", "Status"]
+                 "Laps Led", "Fast Laps", "Avg Run", "Rating", "DK Pts", "Status",
+                 "Incident"]
     if show_series_col and "Series" in combined.columns:
         show_cols.insert(4, "Series")
     show_cols = [c for c in show_cols if c in combined.columns]
@@ -680,7 +681,8 @@ def _render_driver_history_scope(driver_name, series_id, *, track_name=None,
     if show_series_col:
         show_cols.append("Series")
     show_cols.extend(["Car", "Team", "Start", "Finish", "Laps Led",
-                      "Fast Laps", "Avg Run", "Rating", "DK Pts", "Status"])
+                      "Fast Laps", "Avg Run", "Rating", "DK Pts", "Status",
+                      "Incident"])
     show_cols = [c for c in show_cols if c in df.columns]
     disp = df[show_cols].copy()
     for c in ["Start", "Finish", "Laps Led", "Fast Laps"]:

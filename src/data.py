@@ -1415,6 +1415,21 @@ def query_driver_race_log(
             t15_pct = round(100.0 * t15 / laps_comp, 0)
         # Trim ISO time off the date for display
         date_str = (str(rdate) or "")[:10]
+        # Incident flag — context for a bad finish: was it a wreck/mechanical,
+        # or did the driver get collected (ran well, finished poorly)? Derived
+        # from stored data only (status + ARP-vs-finish), no per-race feed
+        # fetch. So a scan of the log shows which bad results to discount.
+        _st = (status or "").strip().lower()
+        incident = ""
+        if _st in ("accident", "crash", "damage"):
+            incident = "🔴 Wreck"
+        elif _st and _st not in ("running", "finished", ""):
+            incident = f"🔧 DNF: {status}"
+        elif (arp is not None and finish is not None
+              and (finish - arp) >= 10):
+            # Ran ~10+ spots better than they finished → likely collected /
+            # late trouble despite classified Running.
+            incident = "🟠 Collected"
         out.append({
             "RaceId": rid,
             "Date": date_str,
@@ -1435,6 +1450,7 @@ def query_driver_race_log(
             "Top15 %": t15_pct,
             "DK Pts": round(dk, 2) if dk is not None else None,
             "Status": status,
+            "Incident": incident,
         })
     return out
 

@@ -59,6 +59,23 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                 lambda d: lap_counts.get(d) or lap_counts.get(
                     fuzzy_match_name(d, list(lap_counts.keys())) or "", None))
 
+    # Per-driver GROUP label — only deducible when NASCAR actually splits
+    # practice into separate group sessions (each driver then appears in
+    # exactly one session block). With a single combined session there's no
+    # group membership in the feed to deduce.
+    group_of = {}
+    if len(all_sessions) > 1:
+        from src.utils import normalize_driver_name
+        for label, sdf in all_sessions:
+            if "Driver" in sdf.columns:
+                for d in sdf["Driver"].dropna():
+                    group_of[normalize_driver_name(str(d))] = label
+    if group_of:
+        from src.utils import normalize_driver_name
+        lap_averages_df = lap_averages_df.copy()
+        lap_averages_df["Group"] = lap_averages_df["Driver"].map(
+            lambda d: group_of.get(normalize_driver_name(str(d)), ""))
+
     # Session/group filter
     active_df = lap_averages_df
     if len(all_sessions) > 1:
