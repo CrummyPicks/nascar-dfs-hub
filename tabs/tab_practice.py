@@ -13,6 +13,63 @@ from src.data import (
 from src.utils import format_display_df, safe_fillna
 
 
+def _render_composite(active_df, series_id, track_name):
+    """Composite practice grade — Peak / Consistency / Fade / Shape /
+    Confidence blended from NASCAR's consecutive-lap-average windows."""
+    from src.utils import compute_practice_composite
+    from src.components import interactive_drill_down_dataframe
+
+    st.caption(
+        "**Composite** blends five reads from NASCAR's best-N-consecutive-lap "
+        "averages (no lap-by-lap data exists): **Peak** (top-end speed), "
+        "**Consistency** (repeatable short run), **Fade** (tire falloff over a "
+        "long run), **Shape** (sustained race pace), **Confidence** (how much "
+        "usable run). 0–100, higher = better. Fade/Shape need a long run — "
+        "neutral 50 when a driver only turned short bursts."
+    )
+    with st.expander("Composite weights", expanded=False):
+        wc = st.columns(5)
+        weights = {
+            "peak": wc[0].slider("Peak", 0.0, 1.0, 0.30, 0.02, key="pc_peak"),
+            "consistency": wc[1].slider("Consistency", 0.0, 1.0, 0.22, 0.02, key="pc_cons"),
+            "fade": wc[2].slider("Fade", 0.0, 1.0, 0.18, 0.02, key="pc_fade"),
+            "shape": wc[3].slider("Shape", 0.0, 1.0, 0.18, 0.02, key="pc_shape"),
+            "confidence": wc[4].slider("Confidence", 0.0, 1.0, 0.12, 0.02, key="pc_conf"),
+        }
+    comp = compute_practice_composite(active_df, weights=weights)
+    if comp.empty:
+        st.info("Not enough practice data to grade.")
+        return
+
+    # Heatmap the sub-scores green(best)→red so strengths/weaknesses pop
+    score_cols = ["Composite", "Peak", "Consistency", "Fade", "Shape", "Confidence"]
+
+    def _color(col):
+        if col.name not in score_cols:
+            return ["" for _ in col]
+        out = []
+        for v in col:
+            try:
+                t = max(0.0, min(1.0, float(v) / 100.0))
+            except (TypeError, ValueError):
+                out.append(""); continue
+            r = int(239 + (34 - 239) * t); g = int(68 + (197 - 68) * t)
+            b = int(68 + (94 - 68) * t)
+            out.append(f"background-color: rgba({r},{g},{b},0.18)")
+        return out
+
+    styled = comp.style.apply(_color).format(
+        {c: "{:.1f}" for c in score_cols}, na_rep="—")
+    if track_name:
+        st.caption("Click any driver row for race-by-race history at this track")
+        interactive_drill_down_dataframe(
+            styled, key=f"prac_composite_{series_id}_{track_name}",
+            series_id=series_id, track_name=track_name,
+            width="stretch", hide_index=True, height=600)
+    else:
+        st.dataframe(styled, width="stretch", hide_index=True, height=600)
+
+
 def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_year,
            track_name=None):
     """Render the Practice tab."""
@@ -99,14 +156,17 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
 
     # Check if practice lap-by-lap data exists before offering Lap Chart option
     practice_laps = extract_practice_laps(feed) if feed else []
-    display_options = ["Rankings (Heatmap)", "Lap Times"]
+    display_options = ["Rankings (Heatmap)", "Composite Score", "Lap Times"]
     if practice_laps:
         display_options.append("Lap Chart")
 
     prac_mode = st.radio("Display", display_options,
                          horizontal=True, label_visibility="collapsed", key="prac_display")
 
-    if prac_mode == "Rankings (Heatmap)":
+    if prac_mode == "Composite Score":
+        _render_composite(active_df, series_id, track_name)
+
+    elif prac_mode == "Rankings (Heatmap)":
         show_heatmap = st.checkbox("Show heatmap colors", value=True, key="heatmap_toggle")
         if track_name:
             st.caption("Click any driver row for race-by-race history at this track")

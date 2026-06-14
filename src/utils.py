@@ -9,6 +9,121 @@ import numpy as np
 from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES
 
 
+def compute_practice_composite(
+        lap_avg_df: pd.DataFrame,
+        weights: dict = None) -> pd.DataFrame:
+    """Composite practice scores from NASCAR's consecutive-lap-average windows.
+
+    NASCAR doesn't publish lap-by-lap practice, but its lap-averages feed gives
+    per driver: BestLapTime + best-N-consecutive-lap averages (5/10/15/20/25/30,
+    999 = didn't run that long). That's enough to grade the same dimensions the
+    public tools show — no secret data required:
+
+      Peak        — top-end speed (best lap + 5-lap burst), field-relative.
+      Consistency — how tightly the short run holds vs the single best lap
+                    (small Con5−Best gap = repeatable).
+      Fade        — tire falloff over a sustained run (longest window − Con5);
+                    less falloff scores higher. Neutral when no long run exists.
+      Shape       — sustained green-flag pace (the longest window's speed),
+                    field-relative — "race pace", not one hot lap.
+      Confidence  — how much usable run the driver actually put down (how many
+                    windows are populated / longest run length).
+
+    Composite = weighted blend (defaults mirror the common public weighting:
+    peak .30 / consistency .22 / fade .18 / shape .18 / confidence .12).
+    Each sub-score is 0–100 (higher = better). Returns a DataFrame with
+    Driver, the five sub-scores, Composite, and a Profile Tag. Empty in →
+    empty out.
+    """
+    W = {"peak": 0.30, "consistency": 0.22, "fade": 0.18,
+         "shape": 0.18, "confidence": 0.12}
+    if weights:
+        W.update({k: weights[k] for k in W if k in weights})
+    if lap_avg_df is None or lap_avg_df.empty or "Driver" not in lap_avg_df.columns:
+        return pd.DataFrame()
+
+    windows = [("5 Lap", 5), ("10 Lap", 10), ("15 Lap", 15),
+               ("20 Lap", 20), ("25 Lap", 25), ("30 Lap", 30)]
+
+    def _num(v):
+        try:
+            f = float(v)
+            return f if 0 < f < 900 else None   # 999/None sentinel → missing
+        except (TypeError, ValueError):
+            return None
+
+    recs = []
+    for _, row in lap_avg_df.iterrows():
+        best = _num(row.get("Best Lap"))
+        con = {n: _num(row.get(col)) for col, n in windows}
+        con5 = con.get(5)
+        present = [(n, t) for n, t in con.items() if t is not None]
+        longest_n, longest_t = (max(present, key=lambda x: x[0])
+                                if present else (0, None))
+        recs.append({
+            "Driver": row["Driver"], "best": best, "con5": con5,
+            "longest_n": longest_n, "longest_t": longest_t,
+            "fade_raw": (longest_t - con5) if (longest_t is not None
+                        and con5 is not None and longest_n >= 15) else None,
+            "consist_raw": (con5 - best) if (con5 is not None
+                           and best is not None) else None,
+        })
+    if not recs:
+        return pd.DataFrame()
+    df = pd.DataFrame(recs)
+
+    def _pct(series, lower_better=True):
+        """0–100 percentile score within the field (NaN-safe)."""
+        s = pd.to_numeric(series, errors="coerce")
+        valid = s.dropna()
+        if valid.empty:
+            return pd.Series([np.nan] * len(s), index=s.index)
+        ranks = s.rank(pct=True, ascending=not lower_better)
+        return (ranks * 100).round(1)
+
+    df["Peak"] = _pct(df["best"], lower_better=True)
+    df["Shape"] = _pct(df["longest_t"], lower_better=True)
+    # Consistency: smaller best→5lap gap = better; absent → mid (50)
+    df["Consistency"] = _pct(df["consist_raw"], lower_better=True).fillna(50.0)
+    # Fade: smaller falloff = better; no long run → neutral 50 (can't judge)
+    df["Fade"] = _pct(df["fade_raw"], lower_better=True).fillna(50.0)
+    # Confidence: longest run length, scaled (30 laps = 100, 5 = ~30)
+    df["Confidence"] = (df["longest_n"].clip(0, 30) / 30 * 100).round(1)
+
+    df["Composite"] = (
+        df["Peak"].fillna(40) * W["peak"]
+        + df["Consistency"] * W["consistency"]
+        + df["Fade"] * W["fade"]
+        + df["Shape"].fillna(40) * W["shape"]
+        + df["Confidence"] * W["confidence"]
+    ).round(1)
+
+    def _tag(r):
+        peak, fade, cons = r["Peak"], r["Fade"], r["Consistency"]
+        if pd.isna(peak):
+            return "Limited Data"
+        fast = peak >= 70
+        volatile = (cons < 45) or (fade < 40)
+        fades = fade < 45
+        if fast and volatile:
+            return "Fast but Volatile"
+        if fast and fades:
+            return "Fast with Some Fade"
+        if fast:
+            return "Fast & Clean"
+        if peak < 35 and fade >= 60:
+            return "Slow but Steady"
+        if r["Confidence"] < 35:
+            return "Short Sample"
+        return "Balanced"
+
+    df["Profile Tag"] = df.apply(_tag, axis=1)
+    df["Run"] = df["longest_n"].map(lambda n: f"{int(n)}L" if n else "—")
+    out = df[["Driver", "Run", "Composite", "Peak", "Consistency",
+              "Fade", "Shape", "Confidence", "Profile Tag"]].copy()
+    return out.sort_values("Composite", ascending=False).reset_index(drop=True)
+
+
 def compute_practice_rank_signal(rank_row, field_size: int = None) -> Optional[float]:
     """Practice-rank signal: simple mean of the lap-window ranks the driver
     actually ran.
