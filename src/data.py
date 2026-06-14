@@ -395,46 +395,59 @@ def sync_all_schedules(years: list = None, verbose: bool = False) -> dict:
     return totals
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# Two failure modes need different handling for per-race feeds:
+#   • 403/404  = data NOT POSTED YET (e.g. lap-times before a race runs —
+#     legitimately absent for HOURS). Return None and CACHE it briefly so we
+#     don't refetch + log on every rerun (race-morning hammering / log spam).
+#   • 5xx / timeout / network = TRANSIENT blip. RAISE so st.cache_data does
+#     NOT cache it and the next rerun retries (fast recovery).
+# Short TTL (5 min) also keeps LIVE-race data fresher than the old 1-hour cache.
+_FEED_TTL = 300
+
+
+@st.cache_data(ttl=_FEED_TTL, show_spinner=False)
 def _fetch_weekend_feed_cached(series_id: int, race_id: int, year: int) -> dict:
-    """RAISES on failure so transient blips aren't cached for an hour."""
     r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/weekend-feed.json",
                      timeout=15)
-    if r.status_code != 200:
-        raise RuntimeError(f"weekend-feed HTTP {r.status_code}")
-    return r.json()
+    if r.status_code == 200:
+        return r.json()
+    if r.status_code in (403, 404):
+        return None                      # not posted yet — quietly cache the miss
+    raise RuntimeError(f"weekend-feed HTTP {r.status_code}")   # transient
 
 
 def fetch_weekend_feed(series_id: int, race_id: int, year: int = None) -> Optional[dict]:
     """Fetch weekend feed (entry list, qualifying, practice, results).
-    None on failure; failures are NOT cached."""
+    None when absent/failed; transient failures retry, 403/404 cached briefly."""
     if year is None:
         year = _default_active_year()
     try:
         return _fetch_weekend_feed_cached(series_id, race_id, year)
     except Exception as e:
-        logger.warning("fetch_weekend_feed failed (race=%s): %s", race_id, e)
+        logger.warning("fetch_weekend_feed transient failure (race=%s): %s", race_id, e)
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=_FEED_TTL, show_spinner=False)
 def _fetch_lap_times_cached(series_id: int, race_id: int, year: int) -> dict:
-    """RAISES on failure so transient blips aren't cached for an hour."""
     r = requests.get(f"{NASCAR_API_BASE}/{year}/{series_id}/{race_id}/lap-times.json",
                      timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"lap-times HTTP {r.status_code}")
-    return r.json()
+    if r.status_code == 200:
+        return r.json()
+    if r.status_code in (403, 404):
+        return None                      # not posted yet (pre-race) — cache the miss
+    raise RuntimeError(f"lap-times HTTP {r.status_code}")      # transient
 
 
 def fetch_lap_times(series_id: int, race_id: int, year: int = None) -> Optional[dict]:
-    """Fetch lap-by-lap timing data. None on failure; failures NOT cached."""
+    """Fetch lap-by-lap timing data. None when absent/failed. 403/404 (pre-race,
+    data not posted) is a quiet briefly-cached miss; transient blips retry."""
     if year is None:
         year = _default_active_year()
     try:
         return _fetch_lap_times_cached(series_id, race_id, year)
     except Exception as e:
-        logger.warning("fetch_lap_times failed (race=%s): %s", race_id, e)
+        logger.warning("fetch_lap_times transient failure (race=%s): %s", race_id, e)
         return None
 
 
