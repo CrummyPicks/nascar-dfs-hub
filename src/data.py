@@ -1273,6 +1273,21 @@ def query_car_colors(series_id: int) -> dict:
     return out
 
 
+def car_badge_url(car, series_id):
+    """URL of NASCAR's official car-number badge art (the styled number PNG
+    shown on nascar.com), or None for a car number with no badge.
+
+    Same CDN the team-color derivation reads, so it loads reliably in the
+    browser. Used to render the styled number in tables (ImageColumn)."""
+    if car is None:
+        return None
+    c = str(car).strip()
+    # Badges exist for plain numeric cars (incl. leading-zero like "00").
+    if not c or not c.isdigit():
+        return None
+    return f"https://cf.nascar.com/data/images/carbadges/{series_id}/{c}.png"
+
+
 def _ensure_actual_ownership_table(conn):
     conn.execute('''
         CREATE TABLE IF NOT EXISTS actual_ownership (

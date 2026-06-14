@@ -182,6 +182,10 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         avail = [c for c in time_cols if c in active_df.columns]
         disp = active_df[avail].copy()
         disp = format_display_df(disp)
+        from src.components import apply_car_badges, CAR_BADGE_ROW_HEIGHT
+        disp, _badge_cfg = apply_car_badges(disp, series_id)
+        _badge_kw = ({"column_config": {"Car": _badge_cfg},
+                      "row_height": CAR_BADGE_ROW_HEIGHT} if _badge_cfg else {})
         if track_name:
             from src.components import interactive_drill_down_dataframe
             st.caption("Click any driver row for race-by-race history at this track")
@@ -190,9 +194,11 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                 key=f"prac_laps_{series_id}_{race_id}",
                 series_id=series_id, track_name=track_name,
                 width="stretch", hide_index=True, height=560,
+                **_badge_kw,
             )
         else:
-            st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
+            st.dataframe(safe_fillna(disp), width="stretch", hide_index=True,
+                         height=560, **_badge_kw)
 
     elif prac_mode == "Lap Chart":
         _render_lap_chart_with_data(practice_laps, active_df)

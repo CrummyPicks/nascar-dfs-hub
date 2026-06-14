@@ -85,6 +85,40 @@ def build_projection_column_config(df, max_proj_dk=None):
     return config
 
 
+# Row height (px) for tables showing car-badge images — keeps the badge from
+# bloating the row past the text height. Pair with st.dataframe(row_height=...).
+CAR_BADGE_ROW_HEIGHT = 34
+
+
+def apply_car_badges(df, series_id, car_col="Car"):
+    """Swap a text 'Car' column for NASCAR's styled-number badge images.
+
+    Returns ``(display_df, column_config_entry)``. The badge PNG *is* the
+    team-colored number art, so an ImageColumn over the URLs shows the styled
+    number instead of plain text. Falls back to ``(df, None)`` when there's no
+    Car column or we couldn't build URLs for most rows (e.g. all non-numeric),
+    so callers can splat the entry into their column_config unconditionally::
+
+        disp, badge_cfg = apply_car_badges(disp, series_id)
+        col_config = {**col_config, **({car_col: badge_cfg} if badge_cfg else {})}
+
+    Operate on a DISPLAY copy only — it overwrites the Car cell values with
+    URLs, which would break any numeric logic that still reads the column.
+    """
+    from src.data import car_badge_url
+    if car_col not in df.columns:
+        return df, None
+    urls = df[car_col].map(lambda c: car_badge_url(c, series_id))
+    if urls.notna().mean() < 0.5:        # mostly non-numeric — leave as text
+        return df, None
+    out = df.copy()
+    # Blank (not broken-image) for the rare car without a badge.
+    out[car_col] = urls.where(urls.notna(), None)
+    cfg = st.column_config.ImageColumn(car_col, width="small",
+                                       help="Car number")
+    return out, cfg
+
+
 def build_optimizer_column_config(df):
     """Build st.column_config for optimizer pool/lineup tables."""
     config = {}
@@ -835,17 +869,17 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     except Exception:
         pass
     _glow = _accent + "44"   # 8-digit hex alpha for the shadow
-    # NASCAR portraits are FULL-BODY firesuit shots, so a plain circle crop
-    # leaves the face tiny. Wrap in a clipped circle and scale the image up,
-    # anchored to the top, so the head/shoulders fill the frame — bigger,
-    # clearer face. High-res source (~1080px) keeps it crisp when zoomed.
+    # NASCAR portraits are tall firesuit shots, so use a SQUARE frame and let
+    # object-fit:cover fill it — horizontally centered (50%), biased toward the
+    # top so the head/shoulders sit in frame. Cleaner than a circle + scale
+    # hack, which left the face visibly off-center.
     _shot_html = (
-        f'<div style="height:104px;width:104px;border-radius:50%;'
-        f'overflow:hidden;border:3px solid {_accent};margin-right:16px;'
+        f'<div style="height:96px;width:96px;border-radius:12px;'
+        f'overflow:hidden;border:2px solid {_accent};margin-right:16px;'
         f'background:#0f172a;box-shadow:0 2px 16px {_glow};flex:none;">'
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
-        f'style="width:100%;height:auto;transform:scale(1.5);'
-        f'transform-origin:57% 12%;display:block;" '
+        f'style="width:100%;height:100%;object-fit:cover;'
+        f'object-position:50% 14%;display:block;" '
         f'onerror="this.parentElement.style.display=\'none\'" /></div>'
         if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)

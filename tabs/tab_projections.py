@@ -2248,9 +2248,17 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             else:
                 st.warning("Could not save projections")
 
-    from src.components import build_projection_column_config, interactive_drill_down_dataframe
+    from src.components import (build_projection_column_config,
+                                interactive_drill_down_dataframe, apply_car_badges,
+                                CAR_BADGE_ROW_HEIGHT)
     disp = proj[avail].copy()
     col_config = build_projection_column_config(disp)
+    # Show the styled car-number badge art instead of the plain text number.
+    disp, _badge_cfg = apply_car_badges(disp, series_id)
+    _row_h = {}
+    if _badge_cfg is not None:
+        col_config["Car"] = _badge_cfg
+        _row_h["row_height"] = CAR_BADGE_ROW_HEIGHT
     cap = "Click any driver row for race-by-race history at this track"
     if rear_drivers:
         cap += "  ·  🟠 amber = starting at the rear (dominator upside removed, PD still off qualifying)"
@@ -2270,7 +2278,7 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
         key=f"proj_main_{series_id}_{race_id}",
         series_id=series_id, track_name=track_name,
         width="stretch", hide_index=False, height=550,
-        column_config=col_config,
+        column_config=col_config, **_row_h,
     )
 
     # Chart — all drivers, stacked bar with component breakdown on hover.
