@@ -1087,6 +1087,56 @@ def query_track_profile(track_name: str, series_id: int = 1,
     }
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _driver_image_map() -> dict:
+    """{normalized_name: headshot_url} from NASCAR's drivers feed.
+
+    The images live on www.nascar.com/wp-content, which 403s server-side
+    requests but loads fine in a browser <img> (referer-gated). So we DON'T
+    HEAD-check — we just hand the URL to the browser. Firesuit portrait
+    preferred, helmet shot as fallback. Cached for a day."""
+    try:
+        import requests
+        from src.utils import normalize_driver_name
+        data = requests.get("https://cf.nascar.com/cacher/drivers.json",
+                            timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        if data.status_code != 200:
+            return {}
+        out = {}
+        for d in data.json().get("response", []):
+            name = d.get("Full_Name")
+            if not name:
+                continue
+            url = (d.get("Firesuit_Image") or d.get("Image_Transparent")
+                   or d.get("Image") or "").strip()
+            if url:
+                out[normalize_driver_name(name)] = url
+        return out
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def resolve_driver_image(driver_name: str) -> str:
+    """Headshot URL for a driver, or '' — exact then normalized then fuzzy."""
+    if not driver_name:
+        return ""
+    try:
+        from src.utils import normalize_driver_name, fuzzy_match_name
+        m = _driver_image_map()
+        if not m:
+            return ""
+        nk = normalize_driver_name(driver_name)
+        if nk in m:
+            return m[nk]
+        # The normalized map already folds accents/suffixes/aliases, so an
+        # exact miss is rare; fuzzy on the normalized key is the safety net.
+        match = fuzzy_match_name(nk, list(m.keys()), threshold=0.85)
+        return m.get(match, "") if match else ""
+    except Exception:
+        return ""
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def resolve_db_driver_name(name: str) -> str:
     """Map a driver name to the canonical spelling stored in the DB.

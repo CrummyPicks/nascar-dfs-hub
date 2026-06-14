@@ -820,15 +820,24 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         _t = _dt.now()
         season = _t.year + 1 if _t.month >= 10 else _t.year
 
-    # Header — official car-number badge (when the CDN has it) + driver name
+    # Header — driver HEADSHOT (NASCAR portrait) + car-number badge + name.
+    from src.data import resolve_driver_image
+    _shot_url = resolve_driver_image(driver_name)
+    _shot_html = (
+        f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
+        f'style="height:56px;width:56px;object-fit:cover;object-position:top;'
+        f'border-radius:50%;border:2px solid #0ea5e9;margin-right:12px;'
+        f'background:#0f172a;" '
+        f'onerror="this.style.display=\'none\'" />'
+        if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)
-    _badge_html = (f'<img src="{_badge_url}" style="height:40px;'
+    _badge_html = (f'<img src="{_badge_url}" style="height:34px;'
                    f'vertical-align:middle;margin-right:10px;" />'
                    if _badge_url else "")
     st.markdown(
         f'<div style="margin:-0.4rem 0 0.4rem 0;display:flex;align-items:center;">'
-        f'{_badge_html}'
-        f'<span><span style="color:#e2e8f0;font-size:1.15rem;font-weight:700;'
+        f'{_shot_html}{_badge_html}'
+        f'<span><span style="color:#e2e8f0;font-size:1.25rem;font-weight:700;'
         f'font-family:\'Rajdhani\',\'Segoe UI\',sans-serif;letter-spacing:1px;">'
         f'{driver_name}</span>'
         f' &nbsp;<span style="color:#64748b;font-size:0.82rem;">— race history</span>'
