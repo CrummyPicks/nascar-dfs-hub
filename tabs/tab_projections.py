@@ -861,15 +861,49 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         display_avg_fl = min(avg_fl_leader, race_laps)
         display_max_fl = min(hist_max_fl, race_laps)
 
-        info_cols = st.columns(4)
-        info_cols[0].metric("Race Laps", f"{race_laps}")
-        info_cols[1].metric("Max Laps Led Pts", f"{race_laps * 0.25:.1f}")
-        info_cols[2].metric("Max Fastest Lap Pts", f"{race_laps * 0.45:.1f}")
-        info_cols[3].metric("Dominator Ceiling", f"{dom_ceiling:.1f}")
+        # Scoring summary cards + caption follow the platform picker. FanDuel
+        # scores differently (0.1/lap led, 0.1/lap COMPLETED, NO fastest-lap
+        # points, 0.5/pos) so the DK numbers would be flat wrong in FD mode.
+        _show_dk_score = platform in ("DraftKings", "Both")
+        _show_fd_score = platform in ("FanDuel", "Both")
+        # Dominator ceiling per site: DK = avg-leader laps\u00d70.25 + max FL\u00d70.45;
+        # FD = avg-leader laps\u00d70.1 (FD has no fastest-lap points).
+        dom_ceiling_fd = display_avg_top * 0.10
+
+        if platform == "FanDuel":
+            info_cols = st.columns(4)
+            info_cols[0].metric("Race Laps", f"{race_laps}")
+            info_cols[1].metric("Max Laps Led Pts", f"{race_laps * 0.10:.1f}")
+            info_cols[2].metric("Max Laps-Completed Pts", f"{race_laps * 0.10:.1f}")
+            info_cols[3].metric("Dominator Ceiling (FD)", f"{dom_ceiling_fd:.1f}")
+        elif platform == "Both":
+            info_cols = st.columns(5)
+            info_cols[0].metric("Race Laps", f"{race_laps}")
+            info_cols[1].metric("DK Max Led Pts", f"{race_laps * 0.25:.1f}")
+            info_cols[2].metric("DK Max Fast Pts", f"{race_laps * 0.45:.1f}")
+            info_cols[3].metric("DK Dom Ceiling", f"{dom_ceiling:.1f}")
+            info_cols[4].metric("FD Dom Ceiling", f"{dom_ceiling_fd:.1f}")
+        else:  # DraftKings
+            info_cols = st.columns(4)
+            info_cols[0].metric("Race Laps", f"{race_laps}")
+            info_cols[1].metric("Max Laps Led Pts", f"{race_laps * 0.25:.1f}")
+            info_cols[2].metric("Max Fastest Lap Pts", f"{race_laps * 0.45:.1f}")
+            info_cols[3].metric("Dominator Ceiling", f"{dom_ceiling:.1f}")
+
+        _score_lines = []
+        if _show_dk_score:
+            _score_lines.append(
+                "<b>DK</b>: laps led 0.25/lap &nbsp;|&nbsp; fastest laps "
+                "0.45/lap &nbsp;|&nbsp; place diff \u00b11.0/pos")
+        if _show_fd_score:
+            _score_lines.append(
+                "<b>FD</b>: laps led 0.1/lap &nbsp;|&nbsp; laps completed "
+                "0.1/lap &nbsp;|&nbsp; place diff \u00b10.5/pos &nbsp;|&nbsp; "
+                "<i>no fastest-lap points</i>")
+        _score_lines.append(f"{race_laps} total laps")
         st.markdown(
-            f'<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
-            f"Laps led = 0.25 pts/lap | Fastest laps = 0.45 pts/lap | "
-            f"Place diff = \u00b11.0 pts/pos | {race_laps} total laps</p>",
+            '<p style="color:#94a3b8;font-size:0.82rem;font-weight:600;margin:0.3rem 0;">'
+            + "<br>".join(_score_lines) + "</p>",
             unsafe_allow_html=True,
         )
         st.markdown(
