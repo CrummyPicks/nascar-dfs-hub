@@ -835,12 +835,18 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     except Exception:
         pass
     _glow = _accent + "44"   # 8-digit hex alpha for the shadow
+    # NASCAR portraits are FULL-BODY firesuit shots, so a plain circle crop
+    # leaves the face tiny. Wrap in a clipped circle and scale the image up,
+    # anchored to the top, so the head/shoulders fill the frame — bigger,
+    # clearer face. High-res source (~1080px) keeps it crisp when zoomed.
     _shot_html = (
+        f'<div style="height:104px;width:104px;border-radius:50%;'
+        f'overflow:hidden;border:3px solid {_accent};margin-right:16px;'
+        f'background:#0f172a;box-shadow:0 2px 16px {_glow};flex:none;">'
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
-        f'style="height:90px;width:90px;object-fit:cover;object-position:top;'
-        f'border-radius:50%;border:3px solid {_accent};margin-right:16px;'
-        f'background:#0f172a;box-shadow:0 2px 14px {_glow};" '
-        f'onerror="this.style.display=\'none\'" />'
+        f'style="width:100%;height:auto;transform:scale(1.5);'
+        f'transform-origin:50% 12%;display:block;" '
+        f'onerror="this.parentElement.style.display=\'none\'" /></div>'
         if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)
     _badge_html = (f'<img src="{_badge_url}" style="height:58px;'

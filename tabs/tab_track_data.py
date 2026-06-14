@@ -163,5 +163,9 @@ def render(*, series_id, series_name, track_name=None, selected_year=None):
     if comps:
         st.divider()
         st.caption(f"**Similar tracks** (for cross-track reads): {', '.join(comps)}")
-    st.caption("Physical specs (banking, length) aren't in our data — these are "
-               "the DFS-relevant behavioral metrics computed from 2022+ results.")
+    _spec_note = ("Physical specs are a hand-maintained reference; the behavioral "
+                  "+ scoring metrics are computed from 2022+ results."
+                  if specs else
+                  "Physical specs not on file for this track yet — the behavioral "
+                  "+ scoring metrics are computed from 2022+ results.")
+    st.caption(_spec_note)
