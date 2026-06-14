@@ -436,18 +436,18 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
         color_map = query_car_colors(series_id) or {}
 
     if car_map:
-        # Timing-pylon style: the CAR NUMBER *is* the marker, tinted in the
-        # team's color (derived from NASCAR's official badge art). No dots —
-        # the cleanest possible dense scatter. Luck stays encoded by position
-        # vs the diagonal (and in the hover).
+        # Timing-pylon style: the CAR NUMBER *is* the marker, in the team's
+        # color (from the official badge art) and the badge's slanted, bold
+        # racing look (italic Rajdhani). Cleanest dense scatter; luck stays
+        # encoded by position vs the diagonal and in the hover.
         cars = [car_map.get(d, "•") for d in clean["Driver"]]
         colors = [color_map.get(c, "#94a3b8") for c in cars]
         fig = go.Figure(go.Scatter(
             x=clean["Avg Finish"],
             y=clean["Avg Run Pos"],
             mode="text",
-            text=cars,
-            textfont=dict(size=15, color=colors,
+            text=[f"<b><i>{c}</i></b>" for c in cars],
+            textfont=dict(size=17, color=colors,
                           family="Rajdhani, Segoe UI, sans-serif"),
             customdata=clean[["Driver", "Luck"]].values,
             hovertemplate="%{customdata[0]}<br>Avg Finish: %{x:.1f}"
@@ -694,8 +694,7 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
 
     df = pd.DataFrame(records)
 
-    # Timing-pylon style: car numbers in team colors ARE the markers (full
-    # name + races in hover). Falls back to selective names if colors fail.
+    # Timing-pylon style: team-colored, italic-bold car numbers as markers.
     df = df.reset_index(drop=True)
     from src.data import query_latest_car_numbers, query_car_colors
     car_map = query_latest_car_numbers(series_id) or {}
@@ -706,8 +705,8 @@ def fantasy_vs_arp_scatter(track_name: str, series_id: int = 1,
         fig = go.Figure(go.Scatter(
             x=df["Avg Run Pos"], y=df[pts_col],
             mode="text",
-            text=cars,
-            textfont=dict(size=15, color=colors,
+            text=[f"<b><i>{c}</i></b>" for c in cars],
+            textfont=dict(size=17, color=colors,
                           family="Rajdhani, Segoe UI, sans-serif"),
             hovertemplate="%{customdata[0]}<br>Avg Run Pos: %{x:.1f}<br>"
                           f"Avg {tag} Pts: " + "%{y:.1f}<br>Races: %{customdata[1]}<extra></extra>",

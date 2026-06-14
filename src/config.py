@@ -616,6 +616,85 @@ TRACK_TYPE_WEIGHT_DEFAULTS = {
 }
 
 # ----------------------------
+# PHYSICAL TRACK SPECS (static reference)
+# ----------------------------
+# NASCAR's API exposes no physical specs, so this is a hand-maintained table
+# of public facts: length (miles), banking (turn degrees), surface, and shape.
+# Used by the Track Data page to characterize a venue beyond its behavioral
+# metrics. Keyed by DB track name; matched accent/case-insensitively via
+# track_specs(). Add a row when a new venue joins the schedule (DB Health
+# flags unmapped tracks).
+TRACK_SPECS = {
+    # ── Superspeedways ──
+    "Daytona International Speedway":  {"length": 2.5,  "banking": "31°", "surface": "Asphalt", "shape": "Tri-oval"},
+    "Talladega Superspeedway":        {"length": 2.66, "banking": "33°", "surface": "Asphalt", "shape": "Tri-oval"},
+    "Atlanta Motor Speedway":         {"length": 1.54, "banking": "28°", "surface": "Asphalt", "shape": "Quad-oval"},
+    # ── Intermediates ──
+    "Las Vegas Motor Speedway":       {"length": 1.5,  "banking": "20°", "surface": "Asphalt", "shape": "Tri-oval"},
+    "Kansas Speedway":                {"length": 1.5,  "banking": "17–20°", "surface": "Asphalt", "shape": "Tri-oval"},
+    "Charlotte Motor Speedway":       {"length": 1.5,  "banking": "24°", "surface": "Asphalt", "shape": "Quad-oval"},
+    "Texas Motor Speedway":           {"length": 1.5,  "banking": "20°", "surface": "Asphalt", "shape": "Quad-oval"},
+    "Homestead-Miami Speedway":       {"length": 1.5,  "banking": "18–20° (progressive)", "surface": "Asphalt", "shape": "Oval"},
+    "Chicagoland Speedway":           {"length": 1.5,  "banking": "18°", "surface": "Asphalt", "shape": "Tri-oval"},
+    "Michigan International Speedway": {"length": 2.0,  "banking": "18°", "surface": "Asphalt", "shape": "D-shaped oval"},
+    "Auto Club Speedway":             {"length": 2.0,  "banking": "14°", "surface": "Asphalt", "shape": "D-shaped oval"},
+    "Pocono Raceway":                 {"length": 2.5,  "banking": "14°/8°/6°", "surface": "Asphalt", "shape": "Triangle"},
+    "Darlington Raceway":             {"length": 1.366,"banking": "23–25°", "surface": "Asphalt", "shape": "Egg-shaped oval"},
+    "Nashville Superspeedway":        {"length": 1.33, "banking": "14°", "surface": "Concrete", "shape": "Oval"},
+    "Rockingham Speedway":            {"length": 1.017,"banking": "22–25°", "surface": "Asphalt", "shape": "Oval"},
+    "World Wide Technology Raceway":  {"length": 1.25, "banking": "11°/9°", "surface": "Asphalt", "shape": "Egg-shaped oval"},
+    # ── Short tracks ──
+    "Bristol Motor Speedway":         {"length": 0.533,"banking": "24–30°", "surface": "Concrete", "shape": "Bullring oval"},
+    "Martinsville Speedway":          {"length": 0.526,"banking": "12°", "surface": "Asphalt/Concrete", "shape": "Paperclip"},
+    "Richmond Raceway":               {"length": 0.75, "banking": "14°", "surface": "Asphalt", "shape": "D-shaped oval"},
+    "Phoenix Raceway":                {"length": 1.0,  "banking": "8–11°", "surface": "Asphalt", "shape": "Dogleg oval"},
+    "New Hampshire Motor Speedway":   {"length": 1.058,"banking": "7°", "surface": "Asphalt", "shape": "Oval (flat)"},
+    "Dover Motor Speedway":           {"length": 1.0,  "banking": "24°", "surface": "Concrete", "shape": "Oval"},
+    "Iowa Speedway":                  {"length": 0.875,"banking": "12–14°", "surface": "Asphalt", "shape": "Oval"},
+    "North Wilkesboro Speedway":      {"length": 0.625,"banking": "14°", "surface": "Asphalt", "shape": "Oval"},
+    "Milwaukee Mile Speedway":        {"length": 1.0,  "banking": "9°", "surface": "Asphalt", "shape": "Oval (flat)"},
+    "The Milwaukee Mile":             {"length": 1.0,  "banking": "9°", "surface": "Asphalt", "shape": "Oval (flat)"},
+    "Bowman Gray Stadium":            {"length": 0.25, "banking": "Flat", "surface": "Asphalt", "shape": "Short oval"},
+    "Lucas Oil Indianapolis Raceway Park": {"length": 0.686, "banking": "9°", "surface": "Asphalt", "shape": "Oval"},
+    "Indianapolis Motor Speedway":    {"length": 2.5,  "banking": "9°", "surface": "Asphalt", "shape": "Rectangular oval (flat)"},
+    # ── Road / street courses ──
+    "Circuit of The Americas":        {"length": 3.41, "banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Watkins Glen International":      {"length": 2.45, "banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Sonoma Raceway":                 {"length": 1.99, "banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Road America":                   {"length": 4.048,"banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Charlotte Motor Speedway Road Course": {"length": 2.28, "banking": "Road", "surface": "Asphalt", "shape": "Roval"},
+    "Indianapolis Motor Speedway Road Course": {"length": 2.439, "banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Mid-Ohio Sports Car Course":     {"length": 2.258,"banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Portland International Raceway":  {"length": 1.964,"banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Lime Rock Park":                 {"length": 1.5,  "banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    "Chicago Street Race":            {"length": 2.2,  "banking": "Street", "surface": "Asphalt", "shape": "Street course"},
+    "Grand Prix of St. Petersburg":   {"length": 1.8,  "banking": "Street", "surface": "Asphalt/Concrete", "shape": "Street course"},
+    "San Diego Street Course":        {"length": 2.0,  "banking": "Street", "surface": "Asphalt", "shape": "Street course"},
+    "Autódromo Hermanos Rodríguez":   {"length": 2.674,"banking": "Road", "surface": "Asphalt", "shape": "Road course"},
+    # ── Dirt ──
+    "Bristol Motor Speedway Dirt":    {"length": 0.533,"banking": "19°", "surface": "Dirt", "shape": "Oval"},
+    "Knoxville Raceway":              {"length": 0.5,  "banking": "12°", "surface": "Dirt", "shape": "Oval"},
+}
+
+
+def track_specs(track_name: str) -> dict:
+    """Physical specs for a track (accent/case-insensitive), or {}."""
+    if not track_name:
+        return {}
+    if track_name in TRACK_SPECS:
+        return TRACK_SPECS[track_name]
+    import unicodedata
+    def _norm(s):
+        return "".join(c for c in unicodedata.normalize("NFKD", s)
+                       if not unicodedata.combining(c)).lower().strip()
+    nk = _norm(track_name)
+    for k, v in TRACK_SPECS.items():
+        if _norm(k) == nk:
+            return v
+    return {}
+
+
+# ----------------------------
 # TEAM LINEAGE (year-over-year continuity)
 # ----------------------------
 # NASCAR orgs rename/rebrand across seasons (charters move, sponsors buy in).

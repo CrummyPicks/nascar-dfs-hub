@@ -825,22 +825,22 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     _shot_url = resolve_driver_image(driver_name)
     _shot_html = (
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
-        f'style="height:56px;width:56px;object-fit:cover;object-position:top;'
-        f'border-radius:50%;border:2px solid #0ea5e9;margin-right:12px;'
-        f'background:#0f172a;" '
+        f'style="height:90px;width:90px;object-fit:cover;object-position:top;'
+        f'border-radius:50%;border:3px solid #0ea5e9;margin-right:16px;'
+        f'background:#0f172a;box-shadow:0 2px 12px rgba(14,165,233,0.25);" '
         f'onerror="this.style.display=\'none\'" />'
         if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)
-    _badge_html = (f'<img src="{_badge_url}" style="height:34px;'
-                   f'vertical-align:middle;margin-right:10px;" />'
+    _badge_html = (f'<img src="{_badge_url}" style="height:58px;'
+                   f'vertical-align:middle;margin-right:14px;" />'
                    if _badge_url else "")
     st.markdown(
-        f'<div style="margin:-0.4rem 0 0.4rem 0;display:flex;align-items:center;">'
+        f'<div style="margin:-0.4rem 0 0.5rem 0;display:flex;align-items:center;">'
         f'{_shot_html}{_badge_html}'
-        f'<span><span style="color:#e2e8f0;font-size:1.25rem;font-weight:700;'
+        f'<span><span style="color:#e2e8f0;font-size:1.6rem;font-weight:700;'
         f'font-family:\'Rajdhani\',\'Segoe UI\',sans-serif;letter-spacing:1px;">'
         f'{driver_name}</span>'
-        f' &nbsp;<span style="color:#64748b;font-size:0.82rem;">— race history</span>'
+        f' &nbsp;<span style="color:#64748b;font-size:0.9rem;">— race history</span>'
         f'</span></div>', unsafe_allow_html=True)
 
     # Series selector — defaults to the SERIES OF THE RACE THE USER CLICKED

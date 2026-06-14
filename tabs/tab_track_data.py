@@ -10,7 +10,7 @@ import streamlit as st
 
 from src.components import section_header
 from src.config import (TRACK_TYPE_MAP, TRACK_TYPE_DISPLAY, TRACK_TYPE_COLORS,
-                        similar_tracks_for)
+                        similar_tracks_for, track_specs)
 from src.data import query_track_profile
 
 
@@ -80,11 +80,15 @@ def render(*, series_id, series_name, track_name=None, selected_year=None):
     best_comp = _primary[0] if _primary else (comps[0] if comps else "—")
     _profile_note = _sim.get("profile", "")
 
+    specs = track_specs(pick)
+
     # ── Headline cards ──
+    _tt_sub = " · ".join(filter(None, [
+        "Concrete" if prof["concrete"] else "",
+        f"{specs['length']:g} mi" if specs.get("length") else "",
+        f"{prof['races']} races"]))
     st.markdown(_row([
-        _card("Track Type", tt_label,
-              ("Concrete" if prof["concrete"] else "") + f" · {prof['races']} races",
-              tt_color),
+        _card("Track Type", tt_label, _tt_sub, tt_color),
         _card("Position Dependency", _fmt(prof["pos_dependency"]),
               "start↔finish corr", "#a78bfa"),
         _card("Chaos Score", _fmt(prof["chaos"]),
@@ -97,6 +101,23 @@ def render(*, series_id, series_name, track_name=None, selected_year=None):
     ]), unsafe_allow_html=True)
 
     st.divider()
+
+    # ── Physical specs (static reference) ──
+    if specs:
+        st.markdown("**Track Profile** (physical specs)")
+        spec_rows = [
+            ("Length", f"{specs['length']:g} mi" if specs.get("length") else "—"),
+            ("Banking", specs.get("banking", "—")),
+            ("Surface", specs.get("surface", "—")),
+            ("Shape", specs.get("shape", "—")),
+            ("Size Group", tt_label),
+        ]
+        st.dataframe(pd.DataFrame(spec_rows, columns=["Spec", "Value"]),
+                     width="stretch", hide_index=True)
+    else:
+        st.caption("Physical specs not on file for this track — add it to "
+                   "TRACK_SPECS in config.")
+
     col_a, col_b = st.columns(2)
 
     with col_a:
