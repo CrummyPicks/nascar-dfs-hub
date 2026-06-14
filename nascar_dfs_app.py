@@ -810,6 +810,7 @@ from tabs import tab_accuracy as tacc
 from tabs import tab_standings as tstand
 from tabs import tab_db_health as tdbh
 from tabs import tab_settings as tset
+from tabs import tab_track_data as ttd
 
 
 def _page_projections():
@@ -863,6 +864,13 @@ def _page_track_history():
     tth.render(
         track_name=track_name, track_type=track_type, series_id=series_id,
         entry_list_df=entry_list_df,
+    )
+
+
+def _page_track_data():
+    ttd.render(
+        series_id=series_id, series_name=series_name,
+        track_name=track_name, selected_year=selected_year,
     )
 
 
@@ -933,6 +941,7 @@ _research_pages = [
             default=True),
     st.Page(_page_practice, title="Practice", icon="⏱️", url_path="practice"),
     st.Page(_page_track_history, title="Track History", icon="🏟️", url_path="track-history"),
+    st.Page(_page_track_data, title="Track Data", icon="🗺️", url_path="track-data"),
     st.Page(_page_race_analyzer, title="Race Analyzer", icon="🔬", url_path="race-analyzer"),
     st.Page(_page_race_lab, title="Race Lab", icon="🧪", url_path="race-lab"),
 ]

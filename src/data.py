@@ -941,6 +941,152 @@ def query_db_track_history(track_name: str, series_id: int = 1,
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def query_track_profile(track_name: str, series_id: int = 1,
+                        seasons: tuple = None) -> dict:
+    """Comprehensive DFS-relevant track profile from race_results.
+
+    Computes the behavioral + scoring metrics that actually drive lineup
+    decisions (track-position dependency, dominator concentration, chaos,
+    DK/FD scoring distribution, start-bucket finish rates). Physical specs
+    (banking, length) aren't in our data — this is the DFS analytics layer.
+
+    seasons: optional tuple of seasons to include (None = 2022+).
+    Returns {} when the track has < 2 races.
+    """
+    import statistics as _stats
+    from src.config import TRACK_TYPE_MAP, is_concrete_track
+    from src.utils import calc_dk_points, calc_fd_points
+    if not DB_PATH.exists() or not track_name:
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        where = ["t.name = ?", "r.series_id = ?", "rr.finish_pos IS NOT NULL"]
+        params = [track_name, series_id]
+        if seasons:
+            where.append(f"r.season IN ({','.join('?' for _ in seasons)})")
+            params.extend(seasons)
+        else:
+            where.append("r.season >= 2022")
+        rows = conn.execute(f'''
+            SELECT r.id, rr.start_pos, rr.finish_pos, rr.laps_led,
+                   rr.fastest_laps, rr.avg_running_position, rr.status,
+                   rr.rating, rr.quality_passes, rr.laps_completed
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE {" AND ".join(where)}
+        ''', params).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.warning("query_track_profile failed: %s", e)
+        return {}
+
+    # Group by race
+    by_race = {}
+    for rid, sp, fp, ll, fl, arp, status, rating, qp, lc in rows:
+        by_race.setdefault(rid, []).append({
+            "start": sp, "finish": fp, "ll": ll or 0, "fl": fl or 0,
+            "arp": arp, "status": status, "rating": rating, "qp": qp})
+    races = [r for r in by_race.values() if len(r) >= 10]
+    n_races = len(races)
+    if n_races < 2:
+        return {}
+
+    all_dk, all_fd, all_finish, all_start, abs_pd = [], [], [], [], []
+    dnf_n, total_n = 0, 0
+    winner_from_top5 = 0
+    top5_ll_shares, fl_concentrations = [], []
+    ratings, qps = [], []
+    # start-bucket -> finishes
+    buckets = {"P1-5": [], "P6-10": [], "P11-20": [], "P21+": []}
+    for race in races:
+        laps_total = sum(d["ll"] for d in race) or 1
+        # dominator: top-5 led-drivers' share of laps led
+        led_sorted = sorted((d["ll"] for d in race), reverse=True)
+        top5_ll_shares.append(sum(led_sorted[:5]) / laps_total)
+        fl_total = sum(d["fl"] for d in race) or 1
+        fl_sorted = sorted((d["fl"] for d in race), reverse=True)
+        fl_concentrations.append(sum(fl_sorted[:3]) / fl_total)
+        winner = min(race, key=lambda d: d["finish"] or 99)
+        if winner.get("start") and winner["start"] <= 5:
+            winner_from_top5 += 1
+        for d in race:
+            sp, fp = d["start"], d["finish"]
+            total_n += 1
+            st_ = (d["status"] or "").lower()
+            if st_ not in ("running", "finished", ""):
+                dnf_n += 1
+            dk = calc_dk_points(fp, sp or fp, d["ll"], d["fl"])
+            fd = calc_fd_points(fp, sp or fp, d["ll"], 0)
+            all_dk.append(dk); all_fd.append(fd)
+            all_finish.append(fp)
+            if sp:
+                all_start.append(sp); abs_pd.append(abs(sp - fp))
+                b = ("P1-5" if sp <= 5 else "P6-10" if sp <= 10
+                     else "P11-20" if sp <= 20 else "P21+")
+                buckets[b].append(fp)
+            if d["rating"] is not None:
+                ratings.append(d["rating"])
+            if d["qp"] is not None:
+                qps.append(d["qp"])
+
+    def _corr(xs, ys):
+        if len(xs) < 3:
+            return None
+        try:
+            return _stats.correlation(xs, ys)
+        except Exception:
+            return None
+
+    # Track-position dependency = start↔finish correlation (higher = position
+    # matters more / harder to pass). Chaos = its inverse, normalized.
+    paired = [(s, f) for s, f in zip(all_start, all_finish)]
+    sf_corr = _corr([p[0] for p in paired], [p[1] for p in paired]) or 0.0
+    pos_dep = round(max(0.0, sf_corr), 3)
+    chaos = round(min(1.0, max(0.0, (1 - sf_corr) * 0.5 + (dnf_n / max(total_n, 1)))), 3)
+    field = max((len(r) for r in races), default=38)
+
+    def _stat(v, fn):
+        return round(fn(v), 2) if v else None
+
+    def _bucket_top5(b):
+        fs = buckets[b]
+        return (round(100.0 * sum(1 for f in fs if f <= 5) / len(fs), 1)
+                if fs else None)
+
+    return {
+        "track": track_name,
+        "track_type": TRACK_TYPE_MAP.get(track_name, "intermediate"),
+        "concrete": is_concrete_track(track_name),
+        "races": n_races,
+        "rows": total_n,
+        # behavioral
+        "pos_dependency": pos_dep,
+        "chaos": chaos,
+        "start_finish_corr": round(sf_corr, 3),
+        "dominator_concentration": _stat(top5_ll_shares, _stats.mean),
+        "fast_lap_concentration": _stat(fl_concentrations, _stats.mean),
+        "winner_from_top5_pct": round(100.0 * winner_from_top5 / n_races, 1),
+        "finish_volatility": _stat(all_finish, lambda v: _stats.pstdev(v)),
+        "avg_abs_pd": _stat(abs_pd, _stats.mean),
+        "dnf_rate": round(100.0 * dnf_n / max(total_n, 1), 1),
+        "avg_rating": _stat(ratings, _stats.mean),
+        "avg_quality_passes": _stat(qps, _stats.mean),
+        # DFS scoring
+        "avg_dk": _stat(all_dk, _stats.mean),
+        "median_dk": _stat(all_dk, _stats.median),
+        "dk_std": _stat(all_dk, lambda v: _stats.pstdev(v)),
+        "best_dk": round(max(all_dk), 1) if all_dk else None,
+        "avg_fd": _stat(all_fd, _stats.mean),
+        "median_fd": _stat(all_fd, _stats.median),
+        "fd_std": _stat(all_fd, lambda v: _stats.pstdev(v)),
+        "best_fd": round(max(all_fd), 1) if all_fd else None,
+        # start-bucket top-5 finish rates
+        "bucket_top5": {b: _bucket_top5(b) for b in buckets},
+    }
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def resolve_db_driver_name(name: str) -> str:
     """Map a driver name to the canonical spelling stored in the DB.
