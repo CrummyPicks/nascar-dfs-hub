@@ -821,13 +821,25 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         season = _t.year + 1 if _t.month >= 10 else _t.year
 
     # Header — driver HEADSHOT (NASCAR portrait) + car-number badge + name.
-    from src.data import resolve_driver_image
+    # The headshot ring + glow use the driver's TEAM color (from the badge
+    # art), so the accent is the car's color, not a generic blue.
+    from src.data import (resolve_driver_image, query_latest_car_numbers,
+                          query_car_colors)
     _shot_url = resolve_driver_image(driver_name)
+    _accent = "#0ea5e9"
+    try:
+        _cars = query_latest_car_numbers(series_id) or {}
+        _car = _cars.get(driver_name)
+        if _car:
+            _accent = (query_car_colors(series_id) or {}).get(_car, _accent)
+    except Exception:
+        pass
+    _glow = _accent + "44"   # 8-digit hex alpha for the shadow
     _shot_html = (
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
         f'style="height:90px;width:90px;object-fit:cover;object-position:top;'
-        f'border-radius:50%;border:3px solid #0ea5e9;margin-right:16px;'
-        f'background:#0f172a;box-shadow:0 2px 12px rgba(14,165,233,0.25);" '
+        f'border-radius:50%;border:3px solid {_accent};margin-right:16px;'
+        f'background:#0f172a;box-shadow:0 2px 14px {_glow};" '
         f'onerror="this.style.display=\'none\'" />'
         if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)
