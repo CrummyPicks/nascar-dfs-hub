@@ -87,11 +87,17 @@ _TARGET_RANGES = {
     "DK MAE":         "< 15 | 15 - 25 | > 25",
     "Overall DK MAE": "< 15 | 15 - 25 | > 25",
     "DK Finish MAE":  "< 7.5 | 7.5 - 10 | > 10",
+    "FD Finish MAE":  "< 7.5 | 7.5 - 10 | > 10",
     "Finish MAE":     "< 7.5 | 7.5 - 10 | > 10",
     "LL MAE":         "< 10 | 10 - 25 | > 25",
     "FL MAE":         "< 5 | 5 - 12 | > 12",
+    # FanDuel points sit on a lower scale than DK (no fastest-lap points,
+    # lighter laps-led/place-diff multipliers) — tighter MAE bands.
+    "FD Pts MAE":     "< 12 | 12 - 20 | > 20",
     # Correlation family (higher is better)
     "DK Pts Correlation": "> 0.60 | 0.40 - 0.60 | < 0.40",
+    "FD Pts Correlation": "> 0.60 | 0.40 - 0.60 | < 0.40",
+    "FD Finish Rank Corr": "> 0.60 | 0.40 - 0.60 | < 0.40",
     "DK Correlation":     "> 0.60 | 0.40 - 0.60 | < 0.40",
     "Finish Correlation": "> 0.50 | 0.30 - 0.50 | < 0.30",
     "DK Finish Rank Corr": "> 0.60 | 0.40 - 0.60 | < 0.40",
@@ -1254,6 +1260,19 @@ def _render_race_comparison(completed_races, series_id, selected_year,
         sorted_actual_dk = sorted(actual_dk_pairs, key=lambda x: x[1], reverse=True)
         actual_dk_finish_map = {name: rank + 1 for rank, (name, _) in enumerate(sorted_actual_dk)}
 
+        # FanDuel parallel: projected FD (from the engine meta) + actual FD
+        # (DB, incl. laps completed). Lets the table/ranges/scatter follow the
+        # platform toggle instead of always showing DraftKings.
+        from src.utils import normalize_driver_name as _norm
+        _proj_fd = (meta or {}).get("proj_fd", {}) if meta else {}
+        _actual_fd = (_fd_actuals_for_race(race_id, series_id)
+                      if platform in ("FanDuel", "Both") else {})
+        _norm_afd = {_norm(k): v for k, v in _actual_fd.items()}
+        sorted_proj_fd = sorted(_proj_fd.items(), key=lambda x: x[1], reverse=True)
+        proj_fd_finish_map = {n: i + 1 for i, (n, _) in enumerate(sorted_proj_fd)}
+        sorted_actual_fd = sorted(_actual_fd.items(), key=lambda x: x[1], reverse=True)
+        actual_fd_finish_map = {n: i + 1 for i, (n, _) in enumerate(sorted_actual_fd)}
+
         rows = []
         for _, row in actuals.iterrows():
             d = row["Driver"]
@@ -1270,6 +1289,12 @@ def _render_race_comparison(completed_races, series_id, selected_year,
             status = row.get("Status", "Running")
             is_dnf = bool(status and "running" not in str(status).lower()
                           and str(status).strip() != "")
+            proj_fd = _proj_fd.get(d)
+            actual_fd = _actual_fd.get(d)
+            if actual_fd is None:
+                actual_fd = _norm_afd.get(_norm(d))
+            proj_fd_fin = proj_fd_finish_map.get(d)
+            actual_fd_fin = actual_fd_finish_map.get(d)
             rows.append({
                 "Driver": d,
                 "Start": start_pos,
@@ -1279,6 +1304,15 @@ def _render_race_comparison(completed_races, series_id, selected_year,
                 "Proj DK Finish": proj_dk_fin,
                 "Actual DK Finish": actual_dk_fin,
                 "DK Finish Error": proj_dk_fin - actual_dk_fin,
+                "Proj FD": round(proj_fd, 1) if proj_fd is not None else None,
+                "Actual FD": round(actual_fd, 1) if actual_fd is not None else None,
+                "FD Error": (round(proj_fd - actual_fd, 1)
+                             if proj_fd is not None and actual_fd is not None else None),
+                "Proj FD Finish": proj_fd_fin,
+                "Actual FD Finish": actual_fd_fin,
+                "FD Finish Error": (proj_fd_fin - actual_fd_fin
+                                    if proj_fd_fin is not None and actual_fd_fin is not None
+                                    else None),
                 "Proj Finish": proj_finish,
                 "Actual Finish": actual_finish,
                 "Finish Error": round(proj_finish - actual_finish, 1),
@@ -1304,7 +1338,12 @@ def _render_race_comparison(completed_races, series_id, selected_year,
         if meta and not meta.get("has_odds"):
             st.caption("⚠️ No odds data available for this race — odds signal excluded")
 
-    comp = comp.sort_values("Actual DK", ascending=False).reset_index(drop=True)
+    # Sort the table by the platform the user is viewing (FD when toggled to
+    # FanDuel and we actually have FD actuals; DK otherwise).
+    _fd_view = platform == "FanDuel" and comp["Actual FD"].notna().any()
+    _sort_col = "Actual FD" if _fd_view else "Actual DK"
+    comp = comp.sort_values(_sort_col, ascending=False,
+                            na_position="last").reset_index(drop=True)
     comp.index = comp.index + 1
     comp.index.name = "Rank"
 
@@ -1377,41 +1416,68 @@ def _render_race_comparison(completed_races, series_id, selected_year,
     _scope = (f"running finishers only — {n_dnf} DNF{'s' if n_dnf != 1 else ''} excluded"
               if (exclude_dnf and graded is not comp_filtered)
               else f"all {len(graded)} finishers")
+    _rc_plat = "FD" if _fd_view else "DK"
     st.caption(
         f"Graded on **{_scope}**.  "
         "**MAE** = Mean Absolute Error (lower is better) | "
         "**Correlation** = how well projected order matches actual (1.0 = perfect) | "
-        "**Rank Correlation** = Spearman rank correlation of projected vs actual DK points"
+        f"**Rank Correlation** = Spearman rank correlation of projected vs actual {_rc_plat} points"
     )
     st.caption(f"Weights: {weights_str}")
 
     _render_ownership_grading(race_id, series_id)
 
-    _target_ranges_expander([
-        "DK Pts MAE", "DK Finish MAE", "Finish MAE",
-        "DK Pts Correlation", "Finish Correlation", "DK Finish Rank Corr",
-    ])
+    if _fd_view:
+        _target_ranges_expander([
+            "FD Pts MAE", "FD Finish MAE", "Finish MAE",
+            "FD Pts Correlation", "Finish Correlation", "FD Finish Rank Corr",
+        ])
+    else:
+        _target_ranges_expander([
+            "DK Pts MAE", "DK Finish MAE", "Finish MAE",
+            "DK Pts Correlation", "Finish Correlation", "DK Finish Rank Corr",
+        ])
 
-    st.dataframe(safe_fillna(format_display_df(comp)), width="stretch",
+    # Show the columns for the platform being viewed. FanDuel has no
+    # fastest-lap points, so its detail set drops the FL pair.
+    _common_tail = ["Proj Finish", "Actual Finish", "Finish Error",
+                    "Proj LL", "Actual LL"]
+    if _fd_view:
+        _disp_cols = (["Driver", "Start", "Proj FD", "Actual FD", "FD Error",
+                       "Proj FD Finish", "Actual FD Finish", "FD Finish Error"]
+                      + _common_tail + ["DNF"])
+    else:
+        _disp_cols = (["Driver", "Start", "Proj DK", "Actual DK", "DK Error",
+                       "Proj DK Finish", "Actual DK Finish", "DK Finish Error"]
+                      + _common_tail + ["Proj FL", "Actual FL", "DNF"])
+    _disp_cols = [c for c in _disp_cols if c in comp.columns]
+    st.dataframe(safe_fillna(format_display_df(comp[_disp_cols])), width="stretch",
                  hide_index=False, height=500)
 
-    # Scatter: Projected vs Actual DK Points (uses filtered data)
+    # Scatter: Projected vs Actual points (uses filtered data) — follows the
+    # platform toggle.
     import plotly.graph_objects as go
     from src.charts import DARK_LAYOUT, apply_dark_theme
 
+    _pcol = "Proj FD" if _fd_view else "Proj DK"
+    _acol = "Actual FD" if _fd_view else "Actual DK"
+    _ecol = "FD Error" if _fd_view else "DK Error"
+    _plat_lbl = "FD" if _fd_view else "DK"
+    _scat = comp_filtered.dropna(subset=[_pcol, _acol])
+
     fig = go.Figure()
-    min_val = min(comp_filtered["Proj DK"].min(), comp_filtered["Actual DK"].min()) - 5
-    max_val = max(comp_filtered["Proj DK"].max(), comp_filtered["Actual DK"].max()) + 5
+    min_val = min(_scat[_pcol].min(), _scat[_acol].min()) - 5
+    max_val = max(_scat[_pcol].max(), _scat[_acol].max()) + 5
     fig.add_trace(go.Scatter(
         x=[min_val, max_val], y=[min_val, max_val],
         mode="lines", line=dict(color="#444", dash="dash", width=1),
         showlegend=False,
     ))
-    colors = np.where(comp_filtered["DK Error"] > 0, "#ef4444", "#22c55e")
+    colors = np.where(_scat[_ecol] > 0, "#ef4444", "#22c55e")
     fig.add_trace(go.Scatter(
-        x=comp_filtered["Actual DK"], y=comp_filtered["Proj DK"],
+        x=_scat[_acol], y=_scat[_pcol],
         mode="markers+text",
-        text=short_name_series(comp_filtered["Driver"].tolist()),
+        text=short_name_series(_scat["Driver"].tolist()),
         textposition="top right",
         textfont=dict(size=8, color="#8892a4"),
         marker=dict(size=9, color=colors, opacity=0.8),
@@ -1420,13 +1486,13 @@ def _render_race_comparison(completed_races, series_id, selected_year,
             "Projected: %{y:.1f}<br>Actual: %{x:.1f}<br>"
             "Error: %{customdata[1]:+.1f}<extra></extra>"
         ),
-        customdata=np.column_stack([comp_filtered["Driver"], comp_filtered["DK Error"]]),
+        customdata=np.column_stack([_scat["Driver"], _scat[_ecol]]),
         showlegend=False,
     ))
     fig.update_layout(**DARK_LAYOUT, height=500,
-                      title="Projected vs Actual DK Points",
-                      xaxis_title="Actual DK Points",
-                      yaxis_title="Projected DK Points")
+                      title=f"Projected vs Actual {_plat_lbl} Points",
+                      xaxis_title=f"Actual {_plat_lbl} Points",
+                      yaxis_title=f"Projected {_plat_lbl} Points")
     apply_dark_theme(fig)
     st.plotly_chart(fig, width="stretch", key="acc_scatter_dk")
 

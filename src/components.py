@@ -845,7 +845,7 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
         f'background:#0f172a;box-shadow:0 2px 16px {_glow};flex:none;">'
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
         f'style="width:100%;height:auto;transform:scale(1.5);'
-        f'transform-origin:50% 12%;display:block;" '
+        f'transform-origin:57% 12%;display:block;" '
         f'onerror="this.parentElement.style.display=\'none\'" /></div>'
         if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)
