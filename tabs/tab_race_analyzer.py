@@ -288,7 +288,8 @@ def _render_single_race(completed_races, series_id, years_to_fetch,
 
     # Chart — follows the global platform picker
     fig = race_scatter(results,
-                       pts_col="FD Pts" if platform == "FanDuel" else "DK Pts")
+                       pts_col="FD Pts" if platform == "FanDuel" else "DK Pts",
+                       series_id=series_id)
     if fig:
         st.plotly_chart(fig, width="stretch", key="ra_single_scatter")
 
@@ -601,7 +602,7 @@ def _render_season_summary(completed_races, series_id, year_label, years_to_fetc
                _pts_avg: (_pts_src, "mean")}
         ).round(1).reset_index()
 
-        fig = season_scatter(avg_data, pts_col=_pts_avg)
+        fig = season_scatter(avg_data, pts_col=_pts_avg, series_id=series_id)
         if fig:
             st.plotly_chart(fig, width="stretch")
 
@@ -760,7 +761,8 @@ def _render_by_track_type(completed_races, series_id, year_label, years_to_fetch
             _tt_avg: f"Avg {_tt_tag} Pts",
         })
         from src.charts import season_scatter
-        fig = season_scatter(scatter_data, pts_col=f"Avg {_tt_tag} Pts")
+        fig = season_scatter(scatter_data, pts_col=f"Avg {_tt_tag} Pts",
+                             series_id=series_id)
         if fig:
             fig.update_layout(title=f"Avg Running Pos vs Avg {_tt_tag} — {chosen_type.title()} Tracks")
             st.plotly_chart(fig, width="stretch", key="ra_tt_scatter")

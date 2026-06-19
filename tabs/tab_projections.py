@@ -2422,10 +2422,10 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
     # ── GPP leverage map (ownership vs points) ──
     if _chart_fd and "FD GPP Own%" in proj.columns:
         lev_fig = ownership_leverage_scatter(proj, pts_col="Proj FD",
-                                             own_col="FD GPP Own%")
+                                             own_col="FD GPP Own%", series_id=series_id)
     else:
         lev_fig = ownership_leverage_scatter(proj, pts_col="Proj DK",
-                                             own_col="GPP Own%")
+                                             own_col="GPP Own%", series_id=series_id)
     if lev_fig:
         st.divider()
         st.plotly_chart(lev_fig, width="stretch", key="proj_leverage_map")

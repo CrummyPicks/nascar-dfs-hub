@@ -1147,7 +1147,7 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
             st.rerun()
 
     # Salary vs Projection scatter
-    sal_fig = salary_vs_projection_scatter(pool)
+    sal_fig = salary_vs_projection_scatter(pool, series_id=series_id)
     if sal_fig:
         st.plotly_chart(sal_fig, width="stretch")
 

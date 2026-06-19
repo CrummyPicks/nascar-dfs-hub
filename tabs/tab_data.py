@@ -545,7 +545,7 @@ def _render_charts_view(completed_races, series_id, selected_year,
         fig = dfs_histogram(res, platform=eff_platform)
         st.plotly_chart(fig, width="stretch")
 
-        fig = start_vs_finish_scatter(res)
+        fig = start_vs_finish_scatter(res, series_id=series_id)
         st.plotly_chart(fig, width="stretch")
 
     # Season trend line
@@ -627,7 +627,8 @@ def _render_charts_view(completed_races, series_id, selected_year,
             lambda d: fuzzy_get(d, avg_run_data, _arp_norm))
 
         fig = race_scatter(race_res,
-                           pts_col="FD Pts" if eff_platform == "FanDuel" else "DK Pts")
+                           pts_col="FD Pts" if eff_platform == "FanDuel" else "DK Pts",
+                           series_id=series_id)
         if fig:
             st.plotly_chart(fig, width="stretch", key="data_race_scatter")
 

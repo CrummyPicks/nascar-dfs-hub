@@ -10,12 +10,21 @@ Usage:
 
 import argparse
 import glob
+import logging
 import os
 import re
 import subprocess
 import sys
 import sqlite3
 from datetime import datetime, timedelta
+
+# This is a CLI tool that calls cache-decorated src.data functions in "bare
+# mode" (no `streamlit run`), which makes Streamlit emit noisy but harmless
+# WARNING logs ("No runtime found", "missing ScriptRunContext", "Session
+# state does not function"). Streamlit pins per-logger levels so setLevel
+# doesn't stick — disable WARNING/INFO process-wide so the interactive prompts
+# stay readable. Errors still surface.
+logging.disable(logging.WARNING)
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))

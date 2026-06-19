@@ -698,31 +698,32 @@ def extract_qualifying(feed: dict) -> pd.DataFrame:
 
 
 def extract_practice_lap_counts(feed: dict) -> dict:
-    """Extract total laps completed per driver from the practice run in weekend-feed.
-    Returns {driver_name: laps_completed}.
+    """Total laps completed per driver across ALL practice runs in weekend-feed.
+
+    A weekend can have multiple practice runs (e.g. "Practice 1" + "Final
+    Practice"). Summing across them gives each driver's true practice lap
+    total — and keeps drivers who ran only one of the sessions (returning a
+    single run silently dropped them and undercounted everyone else).
+    Returns {driver_name: total_laps_completed}.
     """
     if not feed:
         return {}
-    for run in reversed((feed.get("weekend_runs") or [])):
+    counts = {}
+    car_map = _build_car_driver_map(feed)
+    for run in (feed.get("weekend_runs") or []):
         rt = run.get("run_type", 0)
         rn = str(run.get("run_name", "")).lower()
         if rt == 1 or "practice" in rn:
-            results = run.get("results") or []
-            if results:
-                counts = {}
-                car_map = _build_car_driver_map(feed)
-                for r in results:
-                    cn = str(r.get("car_number", "")).strip()
-                    driver = r.get("driver_fullname")
-                    if not driver and cn in car_map:
-                        driver = car_map[cn]["driver"]
-                    laps = r.get("laps_completed")
-                    if driver and laps is not None:
-                        driver = _clean_api_name(driver)
-                        counts[driver] = int(laps)
-                if counts:
-                    return counts
-    return {}
+            for r in (run.get("results") or []):
+                cn = str(r.get("car_number", "")).strip()
+                driver = r.get("driver_fullname")
+                if not driver and cn in car_map:
+                    driver = car_map[cn]["driver"]
+                laps = r.get("laps_completed")
+                if driver and laps is not None:
+                    driver = _clean_api_name(driver)
+                    counts[driver] = counts.get(driver, 0) + int(laps)
+    return counts
 
 
 def extract_practice_laps(feed: dict) -> list:

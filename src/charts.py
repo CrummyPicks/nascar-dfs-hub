@@ -80,6 +80,49 @@ def _selective_labels(df, name_col, notable_idx, short=True):
     return labels, positions
 
 
+def car_number_labels(drivers, series_id=None, cars=None):
+    """Timing-pylon point labels: each driver's team-colored, italic-bold car
+    number — the styled-number look used across the app's charts.
+
+    `cars` may be passed directly (e.g. a dataframe 'Car' column) or resolved
+    from `series_id`. Team colors come from the official badge art
+    (query_car_colors). Returns (text_list, color_list) aligned to `drivers`;
+    falls back to the driver's last name in slate when no car number is
+    available, so callers can use the result unconditionally. Pair with
+    ``textfont=dict(color=color_list, family="Rajdhani, Segoe UI, sans-serif")``
+    and keep the existing markers (this swaps the LABEL, not the marker).
+    """
+    names = list(drivers)
+    if cars is None:
+        cmap = {}
+        if series_id:
+            try:
+                from src.data import query_latest_car_numbers
+                cmap = query_latest_car_numbers(series_id) or {}
+            except Exception:
+                cmap = {}
+        cars = [cmap.get(d) for d in names]
+    else:
+        cars = list(cars)
+    color_map = {}
+    if series_id:
+        try:
+            from src.data import query_car_colors
+            color_map = query_car_colors(series_id) or {}
+        except Exception:
+            color_map = {}
+    text, colors = [], []
+    for d, c in zip(names, cars):
+        cs = "" if c is None else str(c).strip()
+        if cs and cs.lower() not in ("nan", "none"):
+            text.append(f"<b><i>{cs}</i></b>")
+            colors.append(color_map.get(cs, "#94a3b8"))
+        else:
+            text.append(_last_name(str(d)))
+            colors.append("#cbd5e1")
+    return text, colors
+
+
 def dfs_histogram(results_df: pd.DataFrame, height: int = 400,
                   platform: str = "DraftKings") -> go.Figure:
     """DFS points bar chart — each driver sorted by points with score breakdown
@@ -152,36 +195,39 @@ def dfs_histogram(results_df: pd.DataFrame, height: int = 400,
     return apply_dark_theme(fig)
 
 
-def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 500) -> go.Figure:
-    """Start vs Finish Position scatter plot with smart labeling."""
+def start_vs_finish_scatter(results_df: pd.DataFrame, height: int = 500,
+                            series_id: int = None) -> go.Figure:
+    """Start vs Finish Position scatter — each point its team-colored car number."""
     df = results_df.copy()
     df = df.dropna(subset=["Start", "Finish Position", "DFS Points"])
     if df.empty:
         return go.Figure()
+    df = df.reset_index(drop=True)
 
-    # Label top 15 and bottom 5 DFS scorers; leave rest as hover-only
-    sorted_by_pts = df.sort_values("DFS Points", ascending=False)
-    labeled_drivers = set(
-        sorted_by_pts.head(15)["Driver"].tolist() +
-        sorted_by_pts.tail(5)["Driver"].tolist()
-    )
-    from src.utils import short_name
-    all_names = df["Driver"].tolist()
-    df["Label"] = df["Driver"].apply(
-        lambda d: short_name(d, all_names) if d in labeled_drivers else ""
-    )
-
-    fig = px.scatter(df, x="Start", y="Finish Position",
-                     text="Label", color="DFS Points",
-                     color_continuous_scale="Viridis",
-                     hover_data={"Driver": True, "DFS Points": ":.1f",
-                                 "Start": True, "Finish Position": True, "Label": False},
-                     title="Start vs Finish Position")
+    _txt, _tcol = car_number_labels(
+        df["Driver"].tolist(), series_id,
+        cars=df["Car"] if "Car" in df.columns else None)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["Start"], y=df["Finish Position"],
+        mode="markers+text",
+        text=_txt, textposition="top center",
+        textfont=dict(size=11, color=_tcol,
+                      family="Rajdhani, Segoe UI, sans-serif"),
+        marker=dict(size=12, color=df["DFS Points"], colorscale="Viridis",
+                    showscale=True, colorbar=dict(title="DFS Pts"),
+                    line=dict(width=1, color="#334155")),
+        customdata=df[["Driver"]].values,
+        hovertemplate="%{customdata[0]}<br>Start: %{x}<br>Finish: %{y}<br>"
+                      "DFS: %{marker.color:.1f}<extra></extra>",
+    ))
     fig.add_trace(go.Scatter(x=[1, 40], y=[1, 40], mode="lines",
-                             line=dict(dash="dash", color="gray"), showlegend=False))
+                             line=dict(dash="dash", color="gray"),
+                             showlegend=False, hoverinfo="skip"))
     fig.update_layout(**DARK_LAYOUT, height=height,
+                      title="Start vs Finish Position",
+                      xaxis_title="Start", yaxis_title="Finish Position",
                       yaxis=dict(autorange="reversed"))
-    fig.update_traces(textposition="top right", textfont_size=10)
     return apply_dark_theme(fig)
 
 
@@ -323,7 +369,7 @@ def practice_lap_chart(practice_laps: list, height: int = 400) -> go.Figure:
 
 
 def season_scatter(season_data: pd.DataFrame, height: int = 500,
-                   pts_col: str = "Avg DK Pts") -> go.Figure:
+                   pts_col: str = "Avg DK Pts", series_id: int = None) -> go.Figure:
     """Avg Running Position vs Avg fantasy points scatter with car numbers.
 
     Expects columns: Driver, Car, Avg Running Pos, and `pts_col`
@@ -344,13 +390,17 @@ def season_scatter(season_data: pd.DataFrame, height: int = 500,
     x_med = season_data["Avg Running Pos"].median()
     y_med = season_data[y_col].median()
 
+    _txt, _tcol = car_number_labels(
+        season_data["Driver"].tolist(), series_id,
+        cars=season_data["Car"] if "Car" in season_data.columns else None)
     fig.add_trace(go.Scatter(
         x=season_data["Avg Running Pos"],
         y=season_data[y_col],
         mode="markers+text",
-        text=season_data["Car"].astype(str),
+        text=_txt,
         textposition="middle center",
-        textfont=dict(size=10, color="white"),
+        textfont=dict(size=12, color=_tcol,
+                      family="Rajdhani, Segoe UI, sans-serif"),
         marker=dict(size=28, color="#1e293b", line=dict(width=1.5, color="#64748b")),
         hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>" + _tag + " Pts: %{y:.1f}<extra></extra>",
         customdata=season_data[["Driver"]].values,
@@ -372,7 +422,7 @@ def season_scatter(season_data: pd.DataFrame, height: int = 500,
 
 
 def race_scatter(results_df: pd.DataFrame, height: int = 350,
-                 pts_col: str = "DK Pts") -> go.Figure:
+                 pts_col: str = "DK Pts", series_id: int = None) -> go.Figure:
     """Avg Running Position vs fantasy points scatter for a single race.
 
     pts_col: which points column to plot ("DK Pts" or "FD Pts")."""
@@ -386,12 +436,16 @@ def race_scatter(results_df: pd.DataFrame, height: int = 350,
     if clean.empty:
         return None
 
+    _txt, _tcol = car_number_labels(
+        clean["Driver"].tolist(), series_id,
+        cars=clean["Car"] if "Car" in clean.columns else None)
     fig = go.Scatter(
         x=clean["Avg Run"], y=clean[pts_col],
         mode="markers+text",
-        text=clean["Car"].astype(str) if "Car" in clean.columns else clean["Driver"],
+        text=_txt,
         textposition="top center",
-        textfont=dict(size=9),
+        textfont=dict(size=11, color=_tcol,
+                      family="Rajdhani, Segoe UI, sans-serif"),
         marker=dict(size=12, color=clean[pts_col], colorscale="Viridis",
                     showscale=True, colorbar=dict(title=f"{_tag} Pts")),
         hovertemplate="%{customdata[0]}<br>Avg Run: %{x:.1f}<br>" + _tag + " Pts: %{y:.1f}<extra></extra>",
@@ -509,7 +563,8 @@ def arp_vs_finish_scatter(hist_df: pd.DataFrame, track_name: str = "",
 
 
 def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
-                                 salary_label: str = "DK Salary") -> go.Figure:
+                                 salary_label: str = "DK Salary",
+                                 series_id: int = None) -> go.Figure:
     """Salary vs Projected Points scatter — highlights value plays.
 
     salary_label: axis/title label only. The data column is always named
@@ -540,14 +595,18 @@ def salary_vs_projection_scatter(pool_df: pd.DataFrame, height: int = 400,
     # (Selective labeling is reserved for charts with dense clusters.)
     clean = clean.reset_index(drop=True)
     value_col = clean["Value"] if "Value" in clean.columns else clean["Proj Score"]
-    labels, positions = _selective_labels(clean, "Driver", set(clean.index))
+    _, positions = _selective_labels(clean, "Driver", set(clean.index))
+    labels, _tcol = car_number_labels(
+        clean["Driver"].tolist(), series_id,
+        cars=clean["Car"] if "Car" in clean.columns else None)
     fig.add_trace(go.Scatter(
         x=clean["DK Salary"], y=clean["Proj Score"],
         mode="markers+text",
         name="",
         text=labels,
         textposition=positions,
-        textfont=dict(size=10, color="#cbd5e1"),
+        textfont=dict(size=11, color=_tcol,
+                      family="Rajdhani, Segoe UI, sans-serif"),
         customdata=clean[["Driver"]].values,
         marker=dict(
             size=12,
@@ -928,7 +987,7 @@ def floor_ceiling_range(proj_df: pd.DataFrame, pts_col: str = "Proj DK",
 
 def ownership_leverage_scatter(proj_df: pd.DataFrame, pts_col: str = "Proj DK",
                                own_col: str = "GPP Own%",
-                               height: int = 480) -> go.Figure:
+                               height: int = 480, series_id: int = None) -> go.Figure:
     """Projected ownership vs projected points — the GPP leverage map.
 
     Top-left quadrant (high points, low ownership) is where tournaments are
@@ -947,13 +1006,17 @@ def ownership_leverage_scatter(proj_df: pd.DataFrame, pts_col: str = "Proj DK",
 
     # Ownership spreads the field along x — label everyone, alternating
     # placement to dodge neighbors.
-    labels, positions = _selective_labels(df, "Driver", set(df.index))
+    _, positions = _selective_labels(df, "Driver", set(df.index))
+    labels, _tcol = car_number_labels(
+        df["Driver"].tolist(), series_id,
+        cars=df["Car"] if "Car" in df.columns else None)
 
     fig = go.Figure(go.Scatter(
         x=df[own_col], y=df[pts_col],
         mode="markers+text",
         text=labels, textposition=positions,
-        textfont=dict(size=10, color="#cbd5e1"),
+        textfont=dict(size=11, color=_tcol,
+                      family="Rajdhani, Segoe UI, sans-serif"),
         marker=dict(size=12, color=df["Leverage"], colorscale="RdYlGn",
                     showscale=True, colorbar=dict(title="Leverage"),
                     line=dict(width=1, color="#334155")),
