@@ -869,17 +869,18 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     except Exception:
         pass
     _glow = _accent + "44"   # 8-digit hex alpha for the shadow
-    # NASCAR portraits are tall firesuit shots, so use a SQUARE frame and let
-    # object-fit:cover fill it — horizontally centered (50%), biased toward the
-    # top so the head/shoulders sit in frame. Cleaner than a circle + scale
-    # hack, which left the face visibly off-center.
+    # Head-and-shoulders portrait in a SQUARE frame. object-fit:cover fills the
+    # box (no pillarbox), horizontally centered; object-position pinned near the
+    # TOP (8%) so the top of the head is never clipped — the prior 14% (and the
+    # full-body firesuit source) cut heads off. The portrait source keeps it
+    # sharp at this size.
     _shot_html = (
         f'<div style="height:96px;width:96px;border-radius:12px;'
         f'overflow:hidden;margin-right:16px;'
         f'background:#0f172a;box-shadow:0 2px 16px {_glow};flex:none;">'
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
         f'style="width:100%;height:100%;object-fit:cover;'
-        f'object-position:50% 14%;display:block;" '
+        f'object-position:50% 8%;display:block;" '
         f'onerror="this.parentElement.style.display=\'none\'" /></div>'
         if _shot_url else "")
     _badge_url = _car_badge_url(series_id, driver_name)

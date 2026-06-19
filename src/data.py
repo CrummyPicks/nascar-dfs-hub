@@ -1135,8 +1135,13 @@ def _driver_image_map() -> dict:
 
     The images live on www.nascar.com/wp-content, which 403s server-side
     requests but loads fine in a browser <img> (referer-gated). So we DON'T
-    HEAD-check — we just hand the URL to the browser. Firesuit portrait
-    preferred, helmet shot as fallback. Cached for a day."""
+    HEAD-check — we just hand the URL to the browser.
+
+    Prefer `Image` — the head-and-shoulders PORTRAIT — over `Firesuit_Image`,
+    which is a tall full-body shot: cropping that to a head badly zooms the
+    head (pixelated) and clips the top. The portrait frames the head cleanly.
+    But for ~34 drivers `Image` is a HELMET shot (no face) — fall back to the
+    firesuit (face visible) for those. Cached for a day."""
     try:
         import requests
         from src.utils import normalize_driver_name
@@ -1149,8 +1154,13 @@ def _driver_image_map() -> dict:
             name = d.get("Full_Name")
             if not name:
                 continue
-            url = (d.get("Firesuit_Image") or d.get("Image_Transparent")
-                   or d.get("Image") or "").strip()
+            image = (d.get("Image") or "").strip()
+            firesuit = (d.get("Firesuit_Image") or "").strip()
+            transparent = (d.get("Image_Transparent") or "").strip()
+            if image and "helmet" not in image.lower():
+                url = image                       # clean portrait — best
+            else:
+                url = firesuit or transparent or image  # face over a helmet shot
             if url:
                 out[normalize_driver_name(name)] = url
         return out
