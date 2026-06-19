@@ -115,14 +115,17 @@ def fetch_and_save_odds(series_id: int, year: int):
     series_name = SERIES_NAMES.get(series_id, f"Series {series_id}")
     print(f"\n  Fetching odds for {series_name}...", end=" ", flush=True)
 
-    # We need streamlit cache disabled for CLI — call the raw function
+    # Action Network only covers Cup. Pass series_id so non-Cup series get an
+    # empty result instead of CUP odds — otherwise we'd save Cup drivers' odds
+    # under the upcoming Xfinity/Truck race (cross-series contamination).
     try:
-        odds = fetch_nascar_odds.__wrapped__()
+        odds = fetch_nascar_odds.__wrapped__(series_id)
     except AttributeError:
-        odds = fetch_nascar_odds()
+        odds = fetch_nascar_odds(series_id)
 
     if not odds:
-        print("No odds available (no upcoming race or Action Network down)")
+        print(f"No odds available for {series_name} "
+              "(Action Network covers Cup only, or no upcoming race)")
         return
 
     print(f"Got odds for {len(odds)} drivers")
@@ -153,7 +156,7 @@ def fetch_and_save_odds(series_id: int, year: int):
     race_id = upcoming.get("race_id")
     race_name = upcoming.get("race_name", "Unknown")
     track = upcoming.get("track_name", "")
-    count = save_odds_to_db(odds, race_id)
+    count = save_odds_to_db(odds, race_id, series_id=series_id)
     print(f"  Saved {count} odds for {race_name} @ {track} (race_id={race_id})")
 
     # Also try to fetch and save DK salaries

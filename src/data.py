@@ -517,9 +517,15 @@ def _parse_lap_avg_session(session: dict) -> pd.DataFrame:
 
 
 def fetch_lap_averages(series_id: int, race_id: int, year: int = None) -> pd.DataFrame:
-    """Fetch practice lap averages (Overall, 5/10/15/20/25/30 lap consecutive averages).
+    """Fetch practice lap averages (Overall, 5/10/15/20/25/30 lap consecutive averages),
+    UNIONED across all practice group sessions.
 
-    Returns data from the last practice session (combined/overall view).
+    NASCAR's lap-averages feed is a list of session blocks; when practice is
+    split into groups, each driver appears in exactly one block with ranks
+    computed WITHIN their group. Returning only the last block (the old
+    behavior) silently dropped every driver who ran only in an earlier group.
+    We union all blocks and re-rank field-wide by the underlying lap TIMES
+    (which ARE comparable across groups) so no driver is lost.
     """
     if year is None:
         year = _default_active_year()
@@ -530,7 +536,29 @@ def fetch_lap_averages(series_id: int, race_id: int, year: int = None) -> pd.Dat
         data = r.json()
         if not data or not isinstance(data, list):
             return pd.DataFrame()
-        return _parse_lap_avg_session(data[-1])
+        if len(data) == 1:
+            return _parse_lap_avg_session(data[0])
+
+        frames = [_parse_lap_avg_session(s) for s in data]
+        frames = [f for f in frames if not f.empty]
+        if not frames:
+            return pd.DataFrame()
+        combined = pd.concat(frames, ignore_index=True)
+        if "Driver" in combined.columns:
+            # One row per driver (guards the rare cross-block duplicate).
+            combined = combined.drop_duplicates("Driver", keep="first").reset_index(drop=True)
+        # Per-group ranks from the feed aren't comparable across blocks — re-rank
+        # the whole field by each underlying time column (lower time = better).
+        for time_col, rank_col in [("Overall Avg", "Overall Rank"), ("Best Lap", "1 Lap Rank"),
+                                   ("5 Lap", "5 Lap Rank"), ("10 Lap", "10 Lap Rank"),
+                                   ("15 Lap", "15 Lap Rank"), ("20 Lap", "20 Lap Rank"),
+                                   ("25 Lap", "25 Lap Rank"), ("30 Lap", "30 Lap Rank")]:
+            if time_col in combined.columns and rank_col in combined.columns:
+                combined[rank_col] = int_col(
+                    combined[time_col].rank(method="min", na_option="keep"))
+        if "Overall Rank" in combined.columns:
+            combined = combined.sort_values("Overall Rank", na_position="last").reset_index(drop=True)
+        return combined
     except Exception as e:
         logger.warning("fetch_lap_averages failed (race=%s): %s", race_id, e)
         return pd.DataFrame()
@@ -4381,6 +4409,18 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
     from src.utils import fuzzy_match_name
 
     conn = sqlite3.connect(str(DB_PATH))
+
+    # Defense-in-depth: Action Network (sources "action_network"/"auto") only
+    # covers Cup. Refuse to write those under a non-Cup race — that's how Cup
+    # drivers' odds end up attached to an Xfinity/Truck field (the exact bug
+    # that put Cup odds on the San Diego Truck race). Explicit imports are
+    # trusted and pass through.
+    if sportsbook in ("action_network", "auto"):
+        race_series = conn.execute(
+            "SELECT series_id FROM races WHERE id = ?", (db_race_id,)).fetchone()
+        if race_series and race_series[0] != 1:
+            conn.close()
+            return 0
 
     # Ensure top3_odds column exists (migration for older DBs)
     try:

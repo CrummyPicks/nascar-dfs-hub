@@ -875,7 +875,7 @@ def render_driver_history_dialog(driver_name: str, series_id: int,
     # hack, which left the face visibly off-center.
     _shot_html = (
         f'<div style="height:96px;width:96px;border-radius:12px;'
-        f'overflow:hidden;border:2px solid {_accent};margin-right:16px;'
+        f'overflow:hidden;margin-right:16px;'
         f'background:#0f172a;box-shadow:0 2px 16px {_glow};flex:none;">'
         f'<img src="{_shot_url}" referrerpolicy="no-referrer" '
         f'style="width:100%;height:100%;object-fit:cover;'
