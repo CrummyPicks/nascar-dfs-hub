@@ -168,7 +168,7 @@ def _model_vs_me(view):
     prog = st.progress(0.0, text="Replaying model lineups...")
     for i, dk in enumerate(day_keys[:n_days]):
         race = lut[dk]
-        ck = f"mvm_{race['db_id']}"
+        ck = f"mvm2_{race['db_id']}"          # v2: results include the field
         if ck not in st.session_state:
             try:
                 st.session_state[ck] = simulate_race(
@@ -176,7 +176,7 @@ def _model_vs_me(view):
                     int(race["season"]), race["date"], race["track"],
                     race["race_name"],
                     {"Cup": 1, "O'Reilly": 2, "Truck": 3}[race["series"]],
-                    platform="DraftKings")
+                    platform="DraftKings", return_field=True)
             except Exception:
                 st.session_state[ck] = None
         sim = st.session_state[ck]
@@ -189,8 +189,9 @@ def _model_vs_me(view):
         row = {
             "Race Day": f"{dk[0]} — {race['track']} ({dk[1]})",
             "My Entries": len(mine),
-            "My Best": my_best,
-            "Model FPTS": None, "Model GPP Best": None,
+            "My Best": my_best, "My %ile": None,
+            "Model FPTS": None, "Model %ile": None,
+            "Model GPP Best": None, "GPP %ile": None,
             "My Net": round(my_win - my_fees, 2),
             "Model Net*": None, "_model_fees": None,
             "Model > Me": None,
@@ -199,6 +200,15 @@ def _model_vs_me(view):
             model_score = sim["cash_score"]
             row["Model FPTS"] = model_score
             row["Model GPP Best"] = sim["gpp_best"]
+            # Field percentiles: everyone ranked against the SAME simulated
+            # 1,000-lineup public field — independent of my entries entirely.
+            row["Model %ile"] = sim.get("cash_pctile")
+            row["GPP %ile"] = sim.get("gpp_best_pctile")
+            _field = sim.get("field") or []
+            if _field and my_best is not None:
+                import bisect
+                row["My %ile"] = round(
+                    100.0 * bisect.bisect_left(_field, my_best) / len(_field), 1)
             # ONE model entry per unique contest — multi-entering the same
             # lineup isn't real play, and scaling by the user's entry count
             # would weight the model's result by the user's bullet count.
@@ -221,7 +231,8 @@ def _model_vs_me(view):
     st.dataframe(_style_money(
         mdf.drop(columns=["_model_fees"]), {"My Net", "Model Net*"}).format(
         {"My Best": "{:.1f}", "Model FPTS": "{:.1f}",
-         "Model GPP Best": "{:.1f}"}, na_rep="—"),
+         "Model GPP Best": "{:.1f}", "My %ile": "{:.1f}",
+         "Model %ile": "{:.1f}", "GPP %ile": "{:.1f}"}, na_rep="—"),
         width="stretch", hide_index=True)
 
     done = mdf.dropna(subset=["Model Net*"])
@@ -237,6 +248,13 @@ def _model_vs_me(view):
         model_fees_total = float(done["_model_fees"].sum()) or 1.0
         my_roi = 100 * my_total / my_fees_total
         model_roi = 100 * model_total / model_fees_total
+        _pct_cards = []
+        _my_p = done["My %ile"].dropna()
+        _mo_p = done["Model %ile"].dropna()
+        if not _my_p.empty and not _mo_p.empty:
+            _pct_cards.append(_card(
+                "Avg Field %ile", f"{_mo_p.mean():.0f} vs {_my_p.mean():.0f}",
+                "model vs my best — same simulated field", "#a78bfa"))
         st.markdown(_row([
             _card("My Net", f"${my_total:+,.2f}",
                   f"{my_roi:+.1f}% ROI on ${my_fees_total:,.0f} "
@@ -246,17 +264,19 @@ def _model_vs_me(view):
                   "· 1 entry per contest", _pl_color(model_total)),
             _card("Model beat my best", f"{beat}/{len(done)}",
                   "days the model outscored me", "#2dd4bf"),
-        ]), unsafe_allow_html=True)
+        ] + _pct_cards), unsafe_allow_html=True)
     st.caption("*Model Net assumes ONE model entry per unique contest you "
                "entered (multi-entering an identical lineup isn't real play), "
                "and is a conservative FLOOR: within each contest your own "
                "entries are the score→payout calibration; the model lineup "
                "only claims a payout it provably beat, and claims $0 when it "
                "outscored none of your entries. Compare the ROI figures — the "
-               "dollar bases differ since you multi-enter. Days showing — "
-               "couldn't be replayed (missing archived salaries/odds). "
-               "Model lineup = the engine's max-projection build from "
-               "pre-race data only.")
+               "dollar bases differ since you multi-enter. **%ile columns** "
+               "rank scores against the same simulated 1,000-lineup public "
+               "field (higher = better), independent of your entries — the "
+               "cleanest my-best vs model read. Days showing — couldn't be "
+               "replayed (missing archived salaries/odds). Model lineup = "
+               "the engine's max-projection build from pre-race data only.")
 
 
 def render(*, series_name="Cup"):

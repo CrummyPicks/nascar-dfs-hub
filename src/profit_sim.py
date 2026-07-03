@@ -110,8 +110,12 @@ def _sample_field_lineup(rng, names, salaries, weights, cap, roster):
 
 
 def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
-                  series_id, platform="DraftKings"):
-    """Run the full sim for one race. Returns a result dict or None."""
+                  series_id, platform="DraftKings", return_field=False):
+    """Run the full sim for one race. Returns a result dict or None.
+
+    return_field=True additionally includes the sorted simulated-field score
+    distribution ("field") so callers can percentile-rank ANY score against
+    the same public-field basis (Model-vs-Me ranks the user's real best)."""
     # Reuse the pre-race-faithful projection assembly from the backtest harness
     from scripts.backtest_weights import load_race, normalize_weights
     from scripts.backtest_practice_weight import fetch_practice
@@ -246,7 +250,7 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
         mincash_line = float(real["gpp_mincash"])
         line_source = "real"
 
-    return {
+    out = {
         "race": race_name, "track": track_name, "date": race_date,
         "platform": platform,
         "cash_score": cash_score, "cash_line": cash_line,
@@ -262,3 +266,6 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
         "n_pool": len(pool),
         "line_source": line_source,
     }
+    if return_field:
+        out["field"] = field          # sorted ascending
+    return out
