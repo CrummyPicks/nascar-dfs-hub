@@ -99,8 +99,150 @@ def _insights(view):
     return notes
 
 
+def _admin_gate() -> bool:
+    """Password gate using the ADMIN_PASSWORD Streamlit secret.
+
+    Personal financial data — locked whenever the secret is configured
+    (locally in .streamlit/secrets.toml, or in the cloud app's secrets).
+    Unlock persists for the browser session. When no secret is configured,
+    access stays open with a setup hint (contests.db is local-only anyway).
+    """
+    try:
+        key = st.secrets.get("ADMIN_PASSWORD", None)
+    except Exception:
+        key = None
+    if not key:
+        st.caption("🔓 No ADMIN_PASSWORD secret configured — page is open. "
+                   "Add one in .streamlit/secrets.toml (and the cloud app's "
+                   "secrets) to lock it down.")
+        return True
+    if st.session_state.get("contests_admin_ok"):
+        return True
+    st.markdown("#### 🔒 Personal results")
+    with st.form("contests_admin_gate"):
+        pw = st.text_input("Admin password", type="password",
+                           label_visibility="collapsed",
+                           placeholder="Admin password...")
+        if st.form_submit_button("Unlock"):
+            if pw == str(key):
+                st.session_state["contests_admin_ok"] = True
+                st.rerun()
+            else:
+                st.error("Wrong password.")
+    return False
+
+
+def _model_vs_me(view):
+    """What the app's optimal lineup would have scored in the user's
+    contests — the model graded against the user's real entries.
+
+    Conservative winnings floor: within each contest the user's own entries
+    are (score -> winnings) calibration points; the model lineup 'wins' the
+    payout of the best user entry it outscores. When it outscores all of
+    them it still only gets the best entry's payout, and when it outscores
+    none it gets $0 — both floors, never optimistic.
+    """
+    from src.contests import race_day_index
+    from src.profit_sim import simulate_race
+
+    st.markdown("**Model vs Me** — the app's max-projection lineup replayed "
+                "into your real contests")
+    idx = race_day_index()
+    if idx.empty:
+        st.info("No race index available.")
+        return
+    v = view.dropna(subset=["Race"]).copy()
+    v["_date"] = v["contest_date"].astype(str).str.slice(0, 10)
+    lut = {(r["date"], r["series"]): r for _, r in idx.iterrows()}
+    day_keys = sorted({(r["_date"], r["series"]) for _, r in v.iterrows()
+                       if (r["_date"], r["series"]) in lut}, reverse=True)
+    if not day_keys:
+        st.info("No linked race days to analyze yet.")
+        return
+
+    n_days = st.slider("Race days to analyze (newest first — each is a full "
+                       "engine replay, so more = slower first run)",
+                       2, min(20, len(day_keys)), min(6, len(day_keys)),
+                       key="mvm_days")
+    rows = []
+    prog = st.progress(0.0, text="Replaying model lineups...")
+    for i, dk in enumerate(day_keys[:n_days]):
+        race = lut[dk]
+        ck = f"mvm_{race['db_id']}"
+        if ck not in st.session_state:
+            try:
+                st.session_state[ck] = simulate_race(
+                    int(race["db_id"]), int(race["api_id"]),
+                    int(race["season"]), race["date"], race["track"],
+                    race["race_name"],
+                    {"Cup": 1, "O'Reilly": 2, "Truck": 3}[race["series"]],
+                    platform="DraftKings")
+            except Exception:
+                st.session_state[ck] = None
+        sim = st.session_state[ck]
+        prog.progress((i + 1) / n_days, text=f"Replaying {race['track']}...")
+
+        mine = v[(v["_date"] == dk[0]) & (v["series"] == dk[1])]
+        my_fees = float(mine["entry_fee"].sum())
+        my_win = float(mine["winnings"].sum())
+        my_best = float(mine["points"].max()) if mine["points"].notna().any() else None
+        row = {
+            "Race Day": f"{dk[0]} — {race['track']} ({dk[1]})",
+            "My Entries": len(mine),
+            "My Best": my_best,
+            "Model FPTS": None, "Model GPP Best": None,
+            "My Net": round(my_win - my_fees, 2), "Model Net*": None,
+            "Model > Me": None,
+        }
+        if sim:
+            model_score = sim["cash_score"]
+            row["Model FPTS"] = model_score
+            row["Model GPP Best"] = sim["gpp_best"]
+            # Conservative payout floor per entry via same-contest calibration
+            est = 0.0
+            for _, grp in mine.groupby("contest_key"):
+                pts = grp.dropna(subset=["points"])
+                beaten = pts[pts["points"] <= model_score]
+                if not beaten.empty:
+                    est += float(beaten["winnings"].max()) * len(grp)
+            row["Model Net*"] = round(est - my_fees, 2)
+            row["Model > Me"] = ("✅" if my_best is not None
+                                 and model_score > my_best else "—")
+        rows.append(row)
+    prog.empty()
+
+    mdf = pd.DataFrame(rows)
+    st.dataframe(_style_money(mdf, {"My Net", "Model Net*"}).format(
+        {"My Best": "{:.1f}", "Model FPTS": "{:.1f}",
+         "Model GPP Best": "{:.1f}"}, na_rep="—"),
+        width="stretch", hide_index=True)
+
+    done = mdf.dropna(subset=["Model Net*"])
+    if not done.empty:
+        my_total = done["My Net"].sum()
+        model_total = done["Model Net*"].sum()
+        beat = (done["Model > Me"] == "✅").sum()
+        st.markdown(_row([
+            _card("My Net", f"${my_total:+,.2f}",
+                  f"{len(done)} race days", _pl_color(my_total)),
+            _card("Model Net (floor)", f"${model_total:+,.2f}",
+                  "same contests, conservative", _pl_color(model_total)),
+            _card("Model beat my best", f"{beat}/{len(done)}",
+                  "days the model outscored me", "#2dd4bf"),
+        ]), unsafe_allow_html=True)
+    st.caption("*Model Net is a conservative FLOOR: within each contest your "
+               "own entries are the score→payout calibration; the model "
+               "lineup only claims a payout it provably beat, and claims $0 "
+               "when it outscored none of your entries. Days showing — "
+               "couldn't be replayed (missing archived salaries/odds). "
+               "Model lineup = the engine's max-projection build from "
+               "pre-race data only.")
+
+
 def render(*, series_name="Cup"):
     section_header("My Contests", "Real-money ROI from DraftKings entry history")
+    if not _admin_gate():
+        return
 
     # ── Import ─────────────────────────────────────────────────────────
     with st.expander("Import entry history", expanded=False):
@@ -287,11 +429,18 @@ def render(*, series_name="Cup"):
     g["Winnings"] = g["Winnings"].round(2)
     g["BestFPTS"] = g["BestFPTS"].round(1)
     g = g.sort_values("Race Day", ascending=False)
-    st.dataframe(_style_money(g, {"Net", "ROI %"}), width="stretch",
-                 hide_index=True, height=350)
+    st.dataframe(_style_money(g, {"Net", "ROI %"}).format(
+        {"BestFPTS": "{:.1f}"}, na_rep="—"), width="stretch",
+        hide_index=True, height=350)
     st.caption("Grade the model's projections for any of these races on the "
                "**Accuracy** page (Race Comparison) — this table is your real-"
                "money result; that page is why it happened.")
+
+    # ── Model vs Me ────────────────────────────────────────────────────
+    st.divider()
+    with st.expander("Model vs Me — replay the app's lineups into my contests",
+                     expanded=False):
+        _model_vs_me(view)
 
     # ── Entry log ──────────────────────────────────────────────────────
     with st.expander(f"Entry log ({len(view):,} entries)", expanded=False):

@@ -300,6 +300,33 @@ def attach_races(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def race_day_index() -> pd.DataFrame:
+    """Every points race with ids, keyed by (date, series label).
+
+    Columns: date (YYYY-MM-DD), series, db_id, api_id, season, race_name,
+    track. Used by Model-vs-Me to run the profit-sim engine against the
+    races the user actually entered contests for.
+    """
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        df = pd.read_sql_query('''
+            SELECT substr(r.race_date, 1, 10) as date, r.series_id,
+                   r.id as db_id, r.api_race_id as api_id, r.season,
+                   r.race_name, t.name as track
+            FROM races r JOIN tracks t ON t.id = r.track_id
+            WHERE COALESCE(r.is_exhibition, 0) = 0
+              AND EXISTS (SELECT 1 FROM race_results rr WHERE rr.race_id = r.id)
+        ''', conn)
+        conn.close()
+    except Exception:
+        return pd.DataFrame()
+    _id_to_series = {v: k for k, v in SERIES_TO_ID.items()}
+    df["series"] = df["series_id"].map(_id_to_series)
+    return df.dropna(subset=["series"])
+
+
 def find_entry_history_csvs() -> list:
     """Candidate DK entry-history CSVs in Downloads/Desktop, newest first."""
     search_dirs = [os.path.expanduser("~/Downloads"),
