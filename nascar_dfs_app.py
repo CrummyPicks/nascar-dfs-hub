@@ -811,6 +811,18 @@ from tabs import tab_standings as tstand
 from tabs import tab_db_health as tdbh
 from tabs import tab_settings as tset
 from tabs import tab_track_data as ttd
+from tabs import tab_race_brief as tbrief
+
+
+def _page_race_brief():
+    tbrief.render(
+        entry_list_df=entry_list_df, qualifying_df=qualifying_df,
+        lap_averages_df=lap_averages_df, practice_data=practice_data,
+        race_name=race_name, race_id=race_id, track_name=track_name,
+        series_id=series_id, dk_df=dk_df, fd_df=fd_df,
+        odds_data=odds_data, scheduled_laps=scheduled_laps,
+        race_date=race_date_raw, platform=platform, is_prerace=is_prerace,
+    )
 
 
 def _page_projections():
@@ -951,12 +963,14 @@ if is_concrete_track(track_name):
 
 _nav = st.navigation(
     {
+        "Research": _research_pages,
         "Build": [
+            st.Page(_page_race_brief, title="Race Brief", icon="📝",
+                    url_path="race-brief"),
             st.Page(_page_projections, title="Projections", icon="📈",
                     url_path="projections"),
             st.Page(_page_optimizer, title="Optimizer", icon="🧮", url_path="optimizer"),
         ],
-        "Research": _research_pages,
         "Review": [
             st.Page(_page_accuracy, title="Accuracy", icon="🎯", url_path="accuracy"),
             st.Page(_page_cautions, title="Cautions", icon="🚧", url_path="cautions"),
