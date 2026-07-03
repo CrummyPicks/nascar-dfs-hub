@@ -973,6 +973,7 @@ def query_db_track_history(track_name: str, series_id: int = 1,
             WHERE t.name = ?
               AND r.series_id = ?
               AND r.season >= ?
+              AND COALESCE(r.is_exhibition, 0) = 0
             GROUP BY d.id
             HAVING COUNT(*) >= 1
             ORDER BY "Avg Finish" ASC
@@ -1018,6 +1019,7 @@ def query_track_profile(track_name: str, series_id: int = 1,
             JOIN races r ON r.id = rr.race_id
             JOIN tracks t ON t.id = r.track_id
             WHERE {" AND ".join(where)}
+              AND COALESCE(r.is_exhibition, 0) = 0
         ''', params).fetchall()
         conn.close()
     except Exception as e:
@@ -1487,6 +1489,7 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
             WHERE t.name = ?
               AND r.series_id = ?
               AND r.season >= ?
+              AND COALESCE(r.is_exhibition, 0) = 0
               {where_extra}
         ''', params).fetchall()
         conn.close()
@@ -1528,7 +1531,8 @@ def query_driver_tracks_raced(driver_name: str, series_id: int = None,
         return []
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        where = "d.full_name = ? AND r.season >= ? AND rr.finish_pos IS NOT NULL"
+        where = ("d.full_name = ? AND r.season >= ? AND rr.finish_pos IS NOT NULL"
+                 " AND COALESCE(r.is_exhibition, 0) = 0")
         params = [driver_name, min_season]
         if series_id is not None:
             where += " AND r.series_id = ?"
@@ -1652,6 +1656,7 @@ def query_driver_race_log(
             JOIN races r   ON r.id = rr.race_id
             JOIN tracks t  ON t.id = r.track_id
             WHERE {where_clause} AND rr.finish_pos IS NOT NULL
+              AND COALESCE(r.is_exhibition, 0) = 0
             ORDER BY r.race_date DESC, r.id DESC
         ''', params).fetchall()
         conn.close()
@@ -1774,6 +1779,7 @@ def query_scope_craft_averages(series_id, *, track_name=None, track_type=None,
         if not dl:
             return {}
         where.append(f"d.full_name IN ({','.join('?' for _ in dl)})"); params.extend(dl)
+    where.append("COALESCE(r.is_exhibition, 0) = 0")
     wc = " AND ".join(where) if where else "1=1"
     try:
         conn = sqlite3.connect(str(DB_PATH))
@@ -1811,7 +1817,8 @@ def query_track_run_pace_aggregate(series_id, *, track_name=None, track_type=Non
     empty = {"rows": [], "n_races": 0, "years": []}
     if not DB_PATH.exists():
         return empty
-    where = ["r.series_id = ?", "r.season >= ?"]
+    where = ["r.series_id = ?", "r.season >= ?",
+             "COALESCE(r.is_exhibition, 0) = 0"]
     params = [series_id, min_season]
     if years:
         yl = [int(y) for y in years]
@@ -1875,7 +1882,8 @@ def query_track_stage_aggregate(series_id, *, track_name=None, track_type=None,
     empty = {"stages": [], "rows": [], "n_races": 0, "years": []}
     if not DB_PATH.exists():
         return empty
-    where = ["r.series_id = ?", "r.season >= ?"]
+    where = ["r.series_id = ?", "r.season >= ?",
+             "COALESCE(r.is_exhibition, 0) = 0"]
     params = [series_id, min_season]
     if years:
         yl = [int(y) for y in years]
@@ -2561,7 +2569,8 @@ def query_driver_finishes_by_track_type(
         placeholders = ",".join("?" for _ in matching_tracks)
         where = (
             f"WHERE t.name IN ({placeholders}) AND r.series_id = ? "
-            f"AND rr.finish_pos IS NOT NULL"
+            f"AND rr.finish_pos IS NOT NULL "
+            f"AND COALESCE(r.is_exhibition, 0) = 0"
         )
         params = list(matching_tracks) + [series_id]
         if before_date:
@@ -2675,7 +2684,8 @@ def query_driver_dk_points_by_track_type(
         conn = sqlite3.connect(str(DB_PATH))
         where = (
             "WHERE t.track_type = ? AND r.series_id = ? AND r.season = ? "
-            "AND rr.finish_pos IS NOT NULL"
+            "AND rr.finish_pos IS NOT NULL "
+            "AND COALESCE(r.is_exhibition, 0) = 0"
         )
         params = [track_type, series_id, season]
         if before_date:
@@ -2744,7 +2754,7 @@ def query_expected_laps_fraction(series_id: int, before_date: str = None,
         return {}
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        where = "WHERE r.series_id = ?"
+        where = "WHERE r.series_id = ? AND COALESCE(r.is_exhibition, 0) = 0"
         params = [series_id]
         if before_date:
             where += " AND r.race_date < ?"
@@ -2820,7 +2830,8 @@ def query_driver_track_dnf(track_name: str, series_id: int,
         return {}
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        where = "WHERE r.series_id = ? AND t.name = ?"
+        where = ("WHERE r.series_id = ? AND t.name = ? "
+                 "AND COALESCE(r.is_exhibition, 0) = 0")
         params = [series_id, track_name]
         if before_date:
             where += " AND r.race_date < ?"
@@ -2869,7 +2880,7 @@ def query_driver_career_dnf(series_id: int, before_date: str = None) -> dict:
         return {}
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        where = "WHERE r.series_id = ?"
+        where = "WHERE r.series_id = ? AND COALESCE(r.is_exhibition, 0) = 0"
         params = [series_id]
         if before_date:
             where += " AND r.race_date < ?"
@@ -3065,8 +3076,10 @@ def query_gfs_stats(series_id: int = None) -> pd.DataFrame:
         """
         params = ()
         if series_id:
-            query += " WHERE r.series_id = ?"
+            query += " WHERE r.series_id = ? AND COALESCE(r.is_exhibition, 0) = 0"
             params = (series_id,)
+        else:
+            query += " WHERE COALESCE(r.is_exhibition, 0) = 0"
         query += " GROUP BY d.full_name ORDER BY \"Avg DK Pts\" DESC"
         df = pd.read_sql_query(query, conn, params=params)
         conn.close()
@@ -3102,7 +3115,7 @@ def query_season_stats(track_name: str = None, season: int = None,
             LEFT JOIN dfs_points dp ON dp.race_id=rr.race_id AND dp.driver_id=rr.driver_id
                                        AND dp.platform='DraftKings'
         """
-        conditions = []
+        conditions = ["COALESCE(r.is_exhibition, 0) = 0"]
         params = []
         if track_name:
             query += " JOIN tracks t ON t.id=r.track_id"
@@ -3202,6 +3215,7 @@ def query_track_type_stats(track_type: str, season: int = None,
             JOIN races r ON r.id=rr.race_id
             JOIN tracks t ON t.id=r.track_id
             WHERE t.name IN ({placeholders})
+              AND COALESCE(r.is_exhibition, 0) = 0
         """
         params = list(filter_tracks)
         if series_id:
@@ -3294,6 +3308,7 @@ def query_team_stats(series_id: int, track_type: str = None,
             JOIN tracks t ON t.id = r.track_id
             WHERE r.series_id = ? AND r.season >= ?
               AND rr.team IS NOT NULL AND rr.team != ''
+              AND COALESCE(r.is_exhibition, 0) = 0
               {track_filter}
         )
         SELECT team, COUNT(*) as races,
@@ -3345,6 +3360,7 @@ def query_team_quality_lookup(series_id: int, min_season: int = 2022,
             JOIN races r ON r.id = rr.race_id
             WHERE r.series_id = ? AND r.season >= ?
               AND rr.team IS NOT NULL AND rr.team != ''
+              AND COALESCE(r.is_exhibition, 0) = 0
               {date_filter}
         )
         SELECT team,
@@ -3389,6 +3405,7 @@ def query_driver_track_history_by_team(track_name: str, series_id: int,
         JOIN tracks t ON t.id = r.track_id
         WHERE t.name = ? AND r.series_id = ?
           AND rr.team IS NOT NULL AND rr.team != ''
+          AND COALESCE(r.is_exhibition, 0) = 0
           {date_filter}
         ORDER BY d.full_name, r.race_date
     '''
@@ -3437,6 +3454,7 @@ def query_team_track_aggregates(track_name: str, series_id: int,
             WHERE t.name = ? AND r.series_id = ?
               AND rr.team IS NOT NULL AND rr.team != ''
               AND rr.finish_pos IS NOT NULL
+              AND COALESCE(r.is_exhibition, 0) = 0
               {where_extra}
             GROUP BY team HAVING COUNT(*) >= 2
         ''', params).fetchall()

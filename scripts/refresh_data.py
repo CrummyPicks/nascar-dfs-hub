@@ -173,6 +173,36 @@ def fetch_and_save_odds(series_id: int, year: int):
         print("No DK salary data available")
 
 
+def flag_exhibition_races():
+    """Ensure the races.is_exhibition flag exists and is set for non-points
+    races (Duels, Clash, All-Star/Open).
+
+    Exhibition races are kept in the DB — the Single Race view shows them —
+    but every averaging/aggregate query excludes them so a 60-lap split-field
+    Duel doesn't skew Daytona history or the projection signals. Runs every
+    refresh so future exhibitions (next year's Duels/Clash) auto-flag."""
+    import sqlite3
+    from src.config import DB_PATH
+    if not DB_PATH.exists():
+        return
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute("SELECT is_exhibition FROM races LIMIT 1")
+    except Exception:
+        conn.execute("ALTER TABLE races ADD COLUMN is_exhibition INTEGER DEFAULT 0")
+    cur = conn.execute("""
+        UPDATE races SET is_exhibition = 1
+        WHERE (LOWER(race_name) LIKE '%duel%' OR LOWER(race_name) LIKE '%clash%'
+            OR LOWER(race_name) LIKE '%all-star%' OR LOWER(race_name) LIKE '%all star%'
+            OR LOWER(race_name) LIKE '%nascar open%')
+          AND COALESCE(is_exhibition, 0) = 0
+    """)
+    if cur.rowcount:
+        print(f"  Flagged {cur.rowcount} exhibition race(s) (excluded from averages)")
+    conn.commit()
+    conn.close()
+
+
 def verify_api_race_ids():
     """Verify and fix api_race_id values that may be wrong (e.g. duplicates)."""
     import sqlite3
@@ -591,6 +621,7 @@ def main():
     # Verify existing api_race_ids, then backfill missing ones
     verify_api_race_ids()
     backfill_api_race_ids()
+    flag_exhibition_races()
 
     # Pre-populate all upcoming races for the season so odds/salaries can be saved
     _prepopulate_upcoming_races(args.year)

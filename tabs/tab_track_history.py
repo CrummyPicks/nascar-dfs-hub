@@ -275,16 +275,31 @@ def _render_single_race_results(track_names, series_id):
     # than once a year (Talladega, Kansas, ...) get a date suffix so both
     # visits stay distinguishable.
     from collections import Counter
+
+    def _exhibition_tag(race_name):
+        """Short tag for non-points races so they read as what they are."""
+        n = (race_name or "").lower()
+        if "duel" in n:
+            return "Duel"
+        if "clash" in n:
+            return "Clash"
+        if "all-star" in n or "all star" in n or "nascar open" in n:
+            return "All-Star"
+        return ""
+
     _track_counts = Counter(r["track"] for r in year_races)
     labels = []
     _seen = Counter()
     for r in year_races:
         lbl = r["track"]
+        _tag = _exhibition_tag(r["race_name"])
+        if _tag:
+            lbl += f" — {_tag}"
         if _track_counts[r["track"]] > 1:
             _mmdd = r["race_date"][5:] if len(r["race_date"]) >= 10 else r["race_date"]
             lbl += f" ({_mmdd})"
-        # Same track AND date (the Daytona Duels): uniquify so both stay
-        # selectable — duplicate labels make .index() unreachable for #2.
+        # Same track, tag AND date (the two Daytona Duels): number them so
+        # both stay selectable — duplicate labels make .index() unreachable.
         _seen[lbl] += 1
         if _seen[lbl] > 1:
             lbl += f" · {_seen[lbl]}"
@@ -301,8 +316,11 @@ def _render_single_race_results(track_names, series_id):
         st.info("No stored results for this race.")
         return
 
+    _exh_note = ("  •  ⚠️ Exhibition race — excluded from all history averages"
+                 if _exhibition_tag(data["race_name"]) else "")
     st.caption(f"**{data['race_name']}** — {data['track']}, {data['date']}  •  "
-               f"{len(rows)} finishers  •  Click any driver row for race-by-race history")
+               f"{len(rows)} finishers  •  Click any driver row for race-by-race history"
+               f"{_exh_note}")
     df = pd.DataFrame(rows)
     show = [c for c in ["Finish", "Driver", "Car", "Team", "Mfr", "Start",
                         "Laps Led", "Fast Laps", "Avg Run", "DK Pts", "Status"]
