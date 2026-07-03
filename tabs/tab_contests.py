@@ -99,6 +99,15 @@ def _insights(view):
     return notes
 
 
+def _secret_key():
+    """The ADMIN_PASSWORD secret, or None when unset/empty."""
+    try:
+        key = st.secrets.get("ADMIN_PASSWORD", None)
+    except Exception:
+        key = None
+    return key if key else None
+
+
 def _admin_gate() -> bool:
     """Password gate using the ADMIN_PASSWORD Streamlit secret.
 
@@ -107,10 +116,7 @@ def _admin_gate() -> bool:
     Unlock persists for the browser session. When no secret is configured,
     access stays open with a setup hint (contests.db is local-only anyway).
     """
-    try:
-        key = st.secrets.get("ADMIN_PASSWORD", None)
-    except Exception:
-        key = None
+    key = _secret_key()
     if not key:
         st.caption("🔓 No ADMIN_PASSWORD secret configured — page is open. "
                    "Add one in .streamlit/secrets.toml (and the cloud app's "
@@ -323,10 +329,62 @@ def render(*, series_name="Cup"):
                     icon = {"ok": "✅", "skipped": "⏭️", "error": "❌"}[res["status"]]
                     st.write(f"{icon} `{os.path.basename(p)}` — {res['msg']}")
 
+        # ── Cloud sync: encrypted ledger through the repo ──────────────
+        from src.contests import export_encrypted, LEDGER_ENC
+        st.divider()
+        st.markdown("**Cloud sync** — the ledger lives only on this machine; "
+                    "this encrypts it with your ADMIN_PASSWORD and commits the "
+                    "blob so the cloud app (with the same secret) can show it.")
+        if st.button("🔐 Sync encrypted ledger to repo", key="ledger_sync_btn"):
+            _key = _secret_key()
+            ok, msg = export_encrypted(str(_key or ""))
+            if not ok:
+                st.error(msg)
+            else:
+                import subprocess
+                try:
+                    root = str(LEDGER_ENC.parent)
+                    subprocess.run(["git", "add", LEDGER_ENC.name],
+                                   cwd=root, check=True, capture_output=True)
+                    r = subprocess.run(
+                        ["git", "commit", "-m",
+                         "Sync encrypted contest ledger"],
+                        cwd=root, capture_output=True, text=True)
+                    if r.returncode == 0:
+                        subprocess.run(["git", "pull", "--rebase",
+                                        "--autostash"], cwd=root,
+                                       check=True, capture_output=True)
+                        subprocess.run(["git", "push"], cwd=root, check=True,
+                                       capture_output=True)
+                        st.success(msg + " Committed & pushed — the cloud app "
+                                   "picks it up on its next redeploy (a few "
+                                   "minutes).")
+                    else:
+                        st.info(msg + " Nothing new to commit — the repo "
+                                "already has this version.")
+                except subprocess.CalledProcessError as e:
+                    st.error(f"Git step failed: {(e.stderr or b'').decode(errors='ignore') if isinstance(e.stderr, bytes) else e.stderr}")
+
     df = load_entries()
     if df.empty:
-        st.info("No contest entries stored yet — import your DraftKings entry "
-                "history above and the ROI dashboard appears here.")
+        # Cloud (or fresh machine): try the encrypted sync blob before
+        # showing an empty page.
+        from src.contests import restore_encrypted
+        _key = _secret_key()
+        if _key:
+            ok, msg = restore_encrypted(str(_key))
+            if ok:
+                st.caption(f"🔐 {msg}")
+                df = load_entries()
+            elif msg:
+                st.warning(msg)
+    if df.empty:
+        st.info("No contest entries stored **on this machine** yet. This page "
+                "is account-wide (the race selector up top doesn't filter it). "
+                "On your PC: import your DraftKings entry history above, then "
+                "hit **Sync encrypted ledger to repo** — the cloud app "
+                "decrypts it with the ADMIN_PASSWORD secret and shows your "
+                "full multi-week history here.")
         return
     df = attach_races(df)
     df["_dt"] = pd.to_datetime(df["contest_date"], errors="coerce")

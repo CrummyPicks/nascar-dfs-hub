@@ -8,3 +8,4 @@ plotly==6.6.0
 requests==2.33.1
 beautifulsoup4==4.14.3
 lxml==6.0.2
+cryptography==49.0.0

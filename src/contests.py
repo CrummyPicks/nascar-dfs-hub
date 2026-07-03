@@ -29,6 +29,61 @@ from src.config import DB_PATH
 # touched by git operations or the daily refresh job.
 CONTESTS_DB = DB_PATH.parent / "contests.db"
 
+# Encrypted ledger blob — the ONE contests artifact that IS committed. The
+# cloud app has no access to the local contests.db, so the local app
+# encrypts the ledger with ADMIN_PASSWORD (PBKDF2 -> Fernet/AES) and commits
+# this blob; the cloud app decrypts it with the same password from its
+# Streamlit secrets. Private data stays private in a public repo.
+LEDGER_ENC = DB_PATH.parent / "contests_ledger.enc"
+_KDF_ITERS = 390_000
+
+
+def _fernet(password: str, salt: bytes):
+    import base64
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt,
+                     iterations=_KDF_ITERS)
+    return Fernet(base64.urlsafe_b64encode(kdf.derive(password.encode())))
+
+
+def export_encrypted(password: str) -> tuple:
+    """Encrypt contests.db → contests_ledger.enc. Returns (ok, msg)."""
+    if not password:
+        return False, "ADMIN_PASSWORD is empty — set a real password first."
+    if not CONTESTS_DB.exists():
+        return False, "No local ledger (contests.db) to export."
+    try:
+        salt = os.urandom(16)
+        token = _fernet(password, salt).encrypt(CONTESTS_DB.read_bytes())
+        LEDGER_ENC.write_bytes(salt + token)
+        return True, (f"Encrypted ledger written "
+                      f"({LEDGER_ENC.stat().st_size / 1024:.0f} KB).")
+    except Exception as e:
+        return False, f"Encryption failed: {e}"
+
+
+def restore_encrypted(password: str) -> tuple:
+    """Decrypt contests_ledger.enc → contests.db (only when the local ledger
+    is empty — never clobbers a populated one). Returns (ok, msg)."""
+    if not password or not LEDGER_ENC.exists():
+        return False, ""
+    try:
+        if CONTESTS_DB.exists():
+            conn = _conn()
+            n = conn.execute("SELECT COUNT(*) FROM contest_entries").fetchone()[0]
+            conn.close()
+            if n > 0:
+                return False, ""          # local ledger already populated
+        raw = LEDGER_ENC.read_bytes()
+        data = _fernet(password, raw[:16]).decrypt(raw[16:])
+        CONTESTS_DB.write_bytes(data)
+        return True, "Ledger restored from the encrypted sync blob."
+    except Exception:
+        return False, ("Encrypted ledger found but could not be decrypted — "
+                       "does ADMIN_PASSWORD here match the one that synced it?")
+
 
 # ── classification helpers (tuned against the user's real 2025-26 history) ──
 
