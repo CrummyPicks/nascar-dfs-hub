@@ -812,6 +812,11 @@ from tabs import tab_db_health as tdbh
 from tabs import tab_settings as tset
 from tabs import tab_track_data as ttd
 from tabs import tab_race_brief as tbrief
+from tabs import tab_contests as tcon
+
+
+def _page_contests():
+    tcon.render(series_name=series_name)
 
 
 def _page_race_brief():
@@ -973,6 +978,8 @@ _nav = st.navigation(
         ],
         "Review": [
             st.Page(_page_accuracy, title="Accuracy", icon="🎯", url_path="accuracy"),
+            st.Page(_page_contests, title="My Contests", icon="💰",
+                    url_path="my-contests"),
             st.Page(_page_cautions, title="Cautions", icon="🚧", url_path="cautions"),
             st.Page(_page_standings, title="Standings", icon="🏆", url_path="standings"),
         ],
