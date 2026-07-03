@@ -107,11 +107,19 @@ def render(*, track_name, track_type, series_id, entry_list_df=None):
 
     _cy = _current_season()
     _season_view_label = f"{_cy} Season"
-    # Two views now (Next Gen + Season). The "By Track Type" view was
-    # removed — its data is fully covered by Next Gen + the Track Type
-    # Filter dropdown which already drives single-track vs aggregated-by-type.
-    hist_view = st.radio("View", ["Next Gen (2022+)", _season_view_label],
+    # Averages (Next Gen era / current season) or a SINGLE race's full-field
+    # results. The single-race picker spans every season in the DB — the
+    # global race selector only covers one year, which made navigating to
+    # "the 2024 race here" painful.
+    hist_view = st.radio("View", ["Next Gen (2022+)", _season_view_label,
+                                  "Single Race"],
                          horizontal=True, label_visibility="collapsed")
+
+    if hist_view == "Single Race":
+        _scope_tracks = ([track_name] if type_filter == "This Track"
+                         else _tracks_for_type(type_filter))
+        _render_single_race_results(_scope_tracks, series_id)
+        return
 
     # Active-driver controls — only visible when we have an entry list and
     # an aggregated (multi-driver) view is being shown.
@@ -223,12 +231,74 @@ def render_concrete_tab(*, series_id, entry_list_df=None):
         active_drivers = set(entry_list_df["Driver"].dropna().astype(str).str.strip().tolist())
 
     _cy = _current_season()
-    hist_view = st.radio("View", ["Next Gen (2022+)", f"{_cy} Season"],
+    hist_view = st.radio("View", ["Next Gen (2022+)", f"{_cy} Season",
+                                  "Single Race"],
                          horizontal=True, label_visibility="collapsed",
                          key="concrete_hist_view")
+    if hist_view == "Single Race":
+        _render_single_race_results(
+            _tracks_for_type(CONCRETE_GROUP_LABEL), series_id)
+        return
     _render_track_type_filtered(
         CONCRETE_GROUP_LABEL, hist_view, series_id,
         active_drivers=active_drivers, highlight_active=bool(active_drivers),
+    )
+
+
+def _render_single_race_results(track_names, series_id):
+    """Full-field results for ONE past race at this track (or track group).
+
+    The picker lists every completed race in the DB across all seasons —
+    no need to change the app's global year selector to look backward.
+    """
+    from src.data import query_track_race_list, query_race_field_results
+
+    track_names = [t for t in (track_names or []) if t]
+    if not track_names:
+        st.info("No track selected.")
+        return
+    races = query_track_race_list(track_names, series_id)
+    if not races:
+        st.info("No completed races stored for this scope yet. "
+                "Results appear after a race runs and the data refresh syncs it.")
+        return
+
+    _multi = len(track_names) > 1
+    labels = []
+    for r in races:
+        lbl = f"{r['season']} — {r['race_name']} ({r['race_date']})"
+        if _multi:
+            lbl += f"  @ {r['track']}"
+        labels.append(lbl)
+    pick_cols = st.columns([3, 2])
+    with pick_cols[0]:
+        sel = st.selectbox("Race", labels, index=0, key="th_single_race_pick")
+    race = races[labels.index(sel)]
+
+    data = query_race_field_results(race["db_id"])
+    rows = data.get("rows") if isinstance(data, dict) else None
+    if not rows:
+        st.info("No stored results for this race.")
+        return
+
+    st.caption(f"**{data['race_name']}** — {data['track']}, {data['date']}  •  "
+               f"{len(rows)} finishers  •  Click any driver row for race-by-race history")
+    df = pd.DataFrame(rows)
+    show = [c for c in ["Finish", "Driver", "Car", "Team", "Mfr", "Start",
+                        "Laps Led", "Fast Laps", "Avg Run", "DK Pts", "Status"]
+            if c in df.columns]
+    disp = format_display_df(df[show])
+
+    from src.components import apply_car_badges, CAR_BADGE_ROW_HEIGHT
+    disp, _badge_cfg = apply_car_badges(disp, series_id)
+    _badge_kw = ({"column_config": {"Car": _badge_cfg},
+                  "row_height": CAR_BADGE_ROW_HEIGHT} if _badge_cfg else {})
+    interactive_drill_down_dataframe(
+        safe_fillna(disp),
+        key=f"th_single_{series_id}_{race['db_id']}",
+        series_id=series_id, track_name=data["track"],
+        width="stretch", hide_index=True, height=560,
+        **_badge_kw,
     )
 
 

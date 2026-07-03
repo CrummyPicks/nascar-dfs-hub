@@ -2410,6 +2410,41 @@ def query_driver_stage_arc(db_race_id: int, driver_name: str) -> list:
     return out
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def query_track_race_list(track_names, series_id: int = 1) -> list:
+    """Every completed race at the given track(s), newest first.
+
+    track_names: a single track name or a list (e.g. a track-type group).
+    Returns [{"db_id", "season", "race_name", "race_date", "track"}] for races
+    that actually have stored results — so a picker built from this never
+    offers an empty race. Spans ALL seasons in the DB (this is the local
+    race-archaeology picker; the global selector only covers one year).
+    """
+    if not DB_PATH.exists():
+        return []
+    names = [track_names] if isinstance(track_names, str) else list(track_names or [])
+    names = [n for n in names if n]
+    if not names:
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        ph = ",".join("?" for _ in names)
+        rows = conn.execute(f'''
+            SELECT r.id, r.season, r.race_name, r.race_date, t.name
+            FROM races r
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name IN ({ph}) AND r.series_id = ?
+              AND EXISTS (SELECT 1 FROM race_results rr WHERE rr.race_id = r.id)
+            ORDER BY r.race_date DESC
+        ''', (*names, series_id)).fetchall()
+        conn.close()
+    except Exception:
+        return []
+    return [{"db_id": r[0], "season": r[1], "race_name": r[2] or "Race",
+             "race_date": (str(r[3]) or "")[:10], "track": r[4]}
+            for r in rows]
+
+
 def query_race_field_results(race_id: int) -> dict:
     """Full-field results for a single race (every driver).
 
