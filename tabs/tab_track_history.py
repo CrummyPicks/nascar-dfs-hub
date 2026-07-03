@@ -263,17 +263,37 @@ def _render_single_race_results(track_names, series_id):
                 "Results appear after a race runs and the data refresh syncs it.")
         return
 
-    _multi = len(track_names) > 1
-    labels = []
-    for r in races:
-        lbl = f"{r['season']} — {r['race_name']} ({r['race_date']})"
-        if _multi:
-            lbl += f"  @ {r['track']}"
-        labels.append(lbl)
-    pick_cols = st.columns([3, 2])
+    # Year selector first, then races within that year — keeps the race list
+    # short instead of one giant all-seasons dropdown.
+    seasons = sorted({r["season"] for r in races}, reverse=True)
+    pick_cols = st.columns([1, 3, 2])
     with pick_cols[0]:
-        sel = st.selectbox("Race", labels, index=0, key="th_single_race_pick")
-    race = races[labels.index(sel)]
+        year = st.selectbox("Year", seasons, index=0, key="th_single_race_year")
+    year_races = [r for r in races if r["season"] == year]
+
+    # Label by TRACK, not the sponsor-laden race name. Tracks that race more
+    # than once a year (Talladega, Kansas, ...) get a date suffix so both
+    # visits stay distinguishable.
+    from collections import Counter
+    _track_counts = Counter(r["track"] for r in year_races)
+    labels = []
+    _seen = Counter()
+    for r in year_races:
+        lbl = r["track"]
+        if _track_counts[r["track"]] > 1:
+            _mmdd = r["race_date"][5:] if len(r["race_date"]) >= 10 else r["race_date"]
+            lbl += f" ({_mmdd})"
+        # Same track AND date (the Daytona Duels): uniquify so both stay
+        # selectable — duplicate labels make .index() unreachable for #2.
+        _seen[lbl] += 1
+        if _seen[lbl] > 1:
+            lbl += f" · {_seen[lbl]}"
+        labels.append(lbl)
+    with pick_cols[1]:
+        # Key includes the year so the widget resets cleanly on year change.
+        sel = st.selectbox("Race", labels, index=0,
+                           key=f"th_single_race_pick_{year}")
+    race = year_races[labels.index(sel)]
 
     data = query_race_field_results(race["db_id"])
     rows = data.get("rows") if isinstance(data, dict) else None
