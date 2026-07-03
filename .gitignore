@@ -24,6 +24,11 @@ Thumbs.db
 # Database — tracked in git for Streamlit Cloud deployment
 # nascar.db
 
+# Personal contest ledger — private financial data, never committed.
+# (nascar.db is public + overwritten daily by the refresh job, so contest
+# entries live in their own local DB.)
+contests.db
+
 # Secrets (never commit API keys)
 .streamlit/secrets.toml
 

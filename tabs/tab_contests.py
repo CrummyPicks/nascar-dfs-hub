@@ -2,9 +2,12 @@
 
 Import the 'Download Entry History' CSV from draftkings.com/mycontests
 (auto-detected in Downloads, or drag-and-drop) and see where the bankroll
-actually grows: ROI by contest style, series, and month, plus a cumulative
-profit line. This is the ground truth the projections/optimizer work is
-ultimately graded against.
+actually grows: ROI by contest style, series, race, and month, plus a
+cumulative profit line over race days. This is the ground truth the
+projections/optimizer work is ultimately graded against.
+
+Entries are stored in a local, gitignored contests.db — private financial
+data never leaves this machine.
 """
 
 import os
@@ -13,8 +16,9 @@ import pandas as pd
 import streamlit as st
 
 from src.components import section_header
-from src.contests import (find_entry_history_csvs, import_entries,
-                          load_entries, parse_dk_entry_history)
+from src.contests import (attach_races, find_entry_history_csvs,
+                          import_entries, load_entries,
+                          parse_dk_entry_history)
 from src.utils import safe_fillna
 
 
@@ -72,6 +76,29 @@ def _style_money(df, cols):
         | ({"ROI %": "{:+.1f}%"} if "ROI %" in df.columns else {}), na_rep="—")
 
 
+def _insights(view):
+    """Auto-generated verdicts: where the bankroll grows and leaks."""
+    notes = []
+    for by, label in [("style", "contest style"), ("series", "series")]:
+        g = _breakdown(view, by)
+        g = g[g["Fees"] >= 50]        # ignore tiny-sample buckets
+        if len(g) < 2:
+            continue
+        best, worst = g.iloc[0], g.iloc[-1]
+        # NB: escape dollars — bare $...$ pairs render as LaTeX in st.markdown.
+        if best["Net"] > 0:
+            notes.append(
+                f"🟢 Best {label}: **{best[by]}** "
+                f"{'+' if best['Net'] > 0 else ''}\\${best['Net']:,.2f} "
+                f"({best['ROI %']:+.1f}% ROI on \\${best['Fees']:,.0f})")
+        if worst["Net"] < 0:
+            notes.append(
+                f"🔴 Biggest leak: **{worst[by]}** "
+                f"-\\${abs(worst['Net']):,.2f} "
+                f"({worst['ROI %']:+.1f}% ROI on \\${worst['Fees']:,.0f})")
+    return notes
+
+
 def render(*, series_name="Cup"):
     section_header("My Contests", "Real-money ROI from DraftKings entry history")
 
@@ -79,9 +106,11 @@ def render(*, series_name="Cup"):
     with st.expander("Import entry history", expanded=False):
         st.caption(
             "On [draftkings.com/mycontests](https://www.draftkings.com/mycontests) "
-            "→ **History** → **Download Entry History**. The CSV lands in "
-            "Downloads and is auto-detected below (NASCAR rows only are kept; "
-            "re-imports are deduped automatically, so download fresh anytime)."
+            "→ **History** → **Download Entry History**. The export contains "
+            "your FULL account history regardless of the page's 30-day view "
+            "filter. NASCAR rows only are kept; re-imports are deduped, so "
+            "download fresh anytime. Stored in a local private ledger "
+            "(contests.db) — never committed to the repo."
         )
         candidates = find_entry_history_csvs()
         if candidates:
@@ -112,18 +141,34 @@ def render(*, series_name="Cup"):
         st.info("No contest entries stored yet — import your DraftKings entry "
                 "history above and the ROI dashboard appears here.")
         return
+    df = attach_races(df)
+    df["_dt"] = pd.to_datetime(df["contest_date"], errors="coerce")
 
-    # ── Filters ────────────────────────────────────────────────────────
-    fcols = st.columns([1, 1, 2])
+    # ── Filters: range + style + series ────────────────────────────────
+    fcols = st.columns([1.2, 1, 1, 2])
     with fcols[0]:
+        range_pick = st.selectbox(
+            "Range", ["All Time", "Last 30 Days", "Last 90 Days",
+                      "This Year", "Last Year"], key="contest_range")
+    with fcols[1]:
         style_pick = st.selectbox("Style", ["All", "Cash", "GPP", "Qualifier"],
                                   key="contest_style_filter")
-    with fcols[1]:
+    with fcols[2]:
         _series_opts = ["All"] + sorted(
             {s for s in df["series"].fillna("") if s} | {"?"})
         series_pick = st.selectbox("Series", _series_opts,
                                    key="contest_series_filter")
+
     view = df.copy()
+    now = pd.Timestamp.now()
+    if range_pick == "Last 30 Days":
+        view = view[view["_dt"] >= now - pd.Timedelta(days=30)]
+    elif range_pick == "Last 90 Days":
+        view = view[view["_dt"] >= now - pd.Timedelta(days=90)]
+    elif range_pick == "This Year":
+        view = view[view["_dt"].dt.year == now.year]
+    elif range_pick == "Last Year":
+        view = view[view["_dt"].dt.year == now.year - 1]
     if style_pick != "All":
         view = view[view["style"] == style_pick]
     if series_pick != "All":
@@ -141,35 +186,56 @@ def render(*, series_name="Cup"):
     net = round(winnings - fees, 2)
     roi = (100 * net / fees) if fees else 0.0
     cash_rate = (100 * (view["winnings"] > 0).mean()) if len(view) else 0.0
+    n_days = view["_dt"].dt.date.nunique()
     st.markdown(_row([
-        _card("Entries", f"{len(view):,}",
-              f"{view['contest_name'].nunique()} contests"),
+        _card("Entries", f"{len(view):,}", f"{n_days} race days"),
         _card("Fees", f"${fees:,.2f}", "total buy-ins", "#fb923c"),
-        _card("Winnings", f"${winnings:,.2f}", "total returned", "#a78bfa"),
+        _card("Winnings", f"${winnings:,.2f}", "incl. ticket value", "#a78bfa"),
         _card("Net P/L", f"${net:+,.2f}", "winnings − fees", _pl_color(net)),
         _card("ROI", f"{roi:+.1f}%", "net / fees", _pl_color(net)),
-        _card("Cash Rate", f"{cash_rate:.0f}%", "entries that won $", "#2dd4bf"),
+        _card("Cash Rate", f"{cash_rate:.0f}%", "entries that won", "#2dd4bf"),
     ]), unsafe_allow_html=True)
 
-    # ── Cumulative P/L over time ───────────────────────────────────────
-    ts = view.dropna(subset=["contest_date"]).copy()
-    ts["_d"] = pd.to_datetime(ts["contest_date"], errors="coerce")
-    ts = ts.dropna(subset=["_d"]).sort_values("_d")
+    # ── Insights ───────────────────────────────────────────────────────
+    notes = _insights(view)
+    if notes:
+        st.markdown("  \n".join(notes))
+
+    # ── Cumulative P/L over race days (event days only) ────────────────
+    ts = view.dropna(subset=["_dt"]).sort_values("_dt")
     if len(ts) >= 2:
-        daily = ts.groupby(ts["_d"].dt.date).apply(
+        gcols = st.columns([1, 4])
+        with gcols[0]:
+            gran = st.selectbox("Group by", ["Day", "Week", "Month"],
+                                key="contest_granularity")
+        if gran == "Week":
+            ts["_p"] = ts["_dt"].dt.to_period("W").dt.start_time.dt.strftime("wk %Y-%m-%d")
+        elif gran == "Month":
+            ts["_p"] = ts["_dt"].dt.strftime("%Y-%m")
+        else:
+            ts["_p"] = ts["_dt"].dt.strftime("%Y-%m-%d")
+        per = ts.groupby("_p", sort=True).apply(
             lambda g: g["winnings"].sum() - g["entry_fee"].sum(),
-            include_groups=False).cumsum()
+            include_groups=False)
+        cum = per.cumsum()
+
         import plotly.graph_objects as go
         from src.charts import DARK_LAYOUT, apply_dark_theme
-        fig = go.Figure(go.Scatter(
-            x=list(daily.index), y=daily.values, mode="lines+markers",
-            line=dict(color="#38bdf8", width=2), marker=dict(size=6),
-            fill="tozeroy", fillcolor="rgba(56,189,248,0.08)",
-            hovertemplate="%{x}<br>Cumulative: $%{y:,.2f}<extra></extra>"))
+        fig = go.Figure()
+        fig.add_bar(x=list(per.index), y=per.values, name=f"Net per {gran.lower()}",
+                    marker_color=["#22c55e" if v >= 0 else "#ef4444"
+                                  for v in per.values], opacity=0.55,
+                    hovertemplate="%{x}<br>Net: $%{y:,.2f}<extra></extra>")
+        fig.add_scatter(x=list(cum.index), y=cum.values, mode="lines+markers",
+                        name="Cumulative",
+                        line=dict(color="#38bdf8", width=2), marker=dict(size=5),
+                        hovertemplate="%{x}<br>Cumulative: $%{y:,.2f}<extra></extra>")
         fig.add_hline(y=0, line_dash="dash", line_color="#475569", line_width=1)
-        fig.update_layout(**DARK_LAYOUT, height=300,
-                          title="Cumulative Profit / Loss",
-                          yaxis_title="Net $", xaxis_title=None)
+        fig.update_layout(**DARK_LAYOUT, height=340,
+                          title="Profit / Loss over race days",
+                          yaxis_title="Net $",
+                          xaxis=dict(type="category", tickangle=-45),
+                          legend=dict(orientation="h", y=1.08))
         apply_dark_theme(fig)
         st.plotly_chart(fig, width="stretch", key="contest_cum_pl")
 
@@ -185,28 +251,66 @@ def render(*, series_name="Cup"):
             _breakdown(view, "series").rename(columns={"series": "Series"}),
             {"Net", "ROI %"}), width="stretch", hide_index=True)
     with b2:
+        st.markdown("**By Track Type**")
+        from src.config import TRACK_TYPE_MAP, TRACK_TYPE_DISPLAY
+        vt = view.copy()
+        vt["Track Type"] = vt["Track"].map(
+            lambda t: TRACK_TYPE_DISPLAY.get(TRACK_TYPE_MAP.get(t, ""),
+                                             TRACK_TYPE_MAP.get(t, "?"))
+            if t else "?")
+        st.dataframe(_style_money(
+            _breakdown(vt[vt["Track Type"] != "?"], "Track Type"),
+            {"Net", "ROI %"}), width="stretch", hide_index=True)
         st.markdown("**By Month**")
         vm = view.copy()
-        vm["Month"] = pd.to_datetime(
-            vm["contest_date"], errors="coerce").dt.strftime("%Y-%m")
+        vm["Month"] = vm["_dt"].dt.strftime("%Y-%m")
         st.dataframe(_style_money(
             _breakdown(vm.dropna(subset=["Month"]), "Month")
             .sort_values("Month", ascending=False),
             {"Net", "ROI %"}), width="stretch", hide_index=True)
 
+    # ── By Race (entries linked to nascar.db by date + series) ─────────
+    st.markdown("**By Race** — your real results per event")
+    vr = view.copy()
+    vr["_race_lbl"] = vr.apply(
+        lambda r: (f"{str(r['contest_date'])[:10]} — "
+                   f"{r['Track'] or '?'} ({r['series'] or '?'})"), axis=1)
+    g = vr.groupby("_race_lbl").agg(
+        Entries=("entry_key", "count"),
+        Fees=("entry_fee", "sum"),
+        Winnings=("winnings", "sum"),
+        BestFPTS=("points", "max"),
+    ).reset_index().rename(columns={"_race_lbl": "Race Day"})
+    g["Net"] = (g["Winnings"] - g["Fees"]).round(2)
+    g["ROI %"] = (100 * g["Net"] / g["Fees"].replace(0, pd.NA)).round(1)
+    g["Fees"] = g["Fees"].round(2)
+    g["Winnings"] = g["Winnings"].round(2)
+    g["BestFPTS"] = g["BestFPTS"].round(1)
+    g = g.sort_values("Race Day", ascending=False)
+    st.dataframe(_style_money(g, {"Net", "ROI %"}), width="stretch",
+                 hide_index=True, height=350)
+    st.caption("Grade the model's projections for any of these races on the "
+               "**Accuracy** page (Race Comparison) — this table is your real-"
+               "money result; that page is why it happened.")
+
     # ── Entry log ──────────────────────────────────────────────────────
-    st.markdown("**Entries** (newest first)")
-    show = view[["contest_date", "contest_name", "series", "style", "place",
-                 "field_entries", "points", "entry_fee", "winnings"]].copy()
-    show["Net"] = (show["winnings"] - show["entry_fee"]).round(2)
-    show = show.rename(columns={
-        "contest_date": "Date", "contest_name": "Contest", "series": "Series",
-        "style": "Style", "place": "Place", "field_entries": "Field",
-        "points": "FPTS", "entry_fee": "Fee", "winnings": "Won"})
-    show["Date"] = show["Date"].astype(str).str.slice(0, 10)
-    st.dataframe(safe_fillna(show), width="stretch", hide_index=True, height=420)
+    with st.expander(f"Entry log ({len(view):,} entries)", expanded=False):
+        show = view[["contest_date", "contest_name", "Track", "series", "style",
+                     "place", "field_entries", "points", "entry_fee",
+                     "winnings"]].copy()
+        show["Net"] = (show["winnings"] - show["entry_fee"]).round(2)
+        # Finish percentile: 1 = won the contest, 100 = dead last.
+        show["Finish %ile"] = (100 * show["place"] /
+                               show["field_entries"].replace(0, pd.NA)).round(1)
+        show = show.rename(columns={
+            "contest_date": "Date", "contest_name": "Contest",
+            "series": "Series", "style": "Style", "place": "Place",
+            "field_entries": "Field", "points": "FPTS", "entry_fee": "Fee",
+            "winnings": "Won"})
+        show["Date"] = show["Date"].astype(str).str.slice(0, 10)
+        st.dataframe(safe_fillna(show), width="stretch", hide_index=True,
+                     height=420)
 
     st.caption("Data source: DraftKings 'Download Entry History' export — "
                "DK has no public API, so this CSV is the sanctioned pipe. "
-               "FanDuel import can be added the same way (their history page "
-               "has a similar export).")
+               "Winnings include ticket value (qualifiers pay tickets).")

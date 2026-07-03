@@ -314,6 +314,62 @@ def _render_actual_ownership_section(race_id: int, series_id: int):
         st.success("Saved: " + " · ".join(
             f"{p}/{c}: {len(d)} drivers" for (p, c), d in sorted(existing.items())))
 
+    # ── DK contest-standings CSV (the easy path) ──
+    # Any settled DK contest → results page → "Export Lineups" CSV. Its
+    # right-hand block has Player / %Drafted columns = the field's ACTUAL
+    # ownership, no hand-typing. Works for GPPs and cash games alike.
+    st.caption("**Fast path:** on a settled DK contest's results page, click "
+               "**Export Lineups** and drop the CSV here — the %Drafted "
+               "column is the field's actual ownership.")
+    up_cols = st.columns([1, 3])
+    with up_cols[0]:
+        std_contest = st.selectbox("Import as", ["gpp", "cash"],
+                                   format_func=lambda c: c.upper(),
+                                   key=f"own_csv_ct_{race_id}")
+    with up_cols[1]:
+        std_file = st.file_uploader(
+            "DK standings CSV", type=["csv"], label_visibility="collapsed",
+            key=f"own_csv_{race_id}")
+    if std_file is not None:
+        try:
+            import pandas as _pd
+            _sdf = _pd.read_csv(std_file)
+            _pcol = next((c for c in _sdf.columns
+                          if str(c).strip().lower() == "player"), None)
+            _dcol = next((c for c in _sdf.columns
+                          if "drafted" in str(c).lower()), None)
+            if not _pcol or not _dcol:
+                st.error("No Player / %Drafted columns found — use the "
+                         "'Export Lineups' CSV from a contest's results page.")
+            else:
+                _own = {}
+                for _, _r in _sdf[[_pcol, _dcol]].dropna().iterrows():
+                    _nm = str(_r[_pcol]).strip()
+                    _pv = str(_r[_dcol]).replace("%", "").strip()
+                    try:
+                        if _nm:
+                            _own[_nm] = float(_pv)
+                    except ValueError:
+                        continue
+                if _own:
+                    st.caption(f"Parsed {len(_own)} drivers from the export")
+                    if st.button(f"Save DraftKings {std_contest.upper()} "
+                                 "ownership from CSV", type="primary",
+                                 key=f"own_csv_save_{race_id}"):
+                        n = save_actual_ownership(race_id, series_id,
+                                                  "DraftKings", std_contest,
+                                                  _own)
+                        if n:
+                            st.success(f"Saved actual ownership for {n} drivers")
+                            st.rerun()
+                        else:
+                            st.error("Could not save — race not resolvable in DB")
+                else:
+                    st.error("Could not parse any Player/%Drafted rows.")
+        except Exception as _e:
+            st.error(f"Could not read CSV: {_e}")
+
+    st.caption("**Manual path:** paste one driver per line.")
     o_cols = st.columns([1, 1, 3])
     with o_cols[0]:
         own_platform = st.selectbox("Site", ["DraftKings", "FanDuel"],
