@@ -34,6 +34,51 @@ def _fmt(v, suffix=""):
     return f"{v}{suffix}" if v is not None else "—"
 
 
+def _render_reference_only(pick):
+    """Reference view for a track with no completed races in our data (a
+    returning venue like Chicagoland, or a brand-new one): physical specs,
+    track type, and comparable tracks from config — everything we know that
+    doesn't require race history."""
+    specs = track_specs(pick)
+    tt = TRACK_TYPE_MAP.get(pick, "intermediate")
+    tt_color = TRACK_TYPE_COLORS.get(tt, "#3b82f6")
+    tt_label = TRACK_TYPE_DISPLAY.get(tt, tt.title())
+    _sim = similar_tracks_for(pick) or {}
+    comps = list(_sim.get("primary") or []) + list(_sim.get("secondary") or [])
+    best_comp = comps[0] if comps else "—"
+    if _sim.get("profile"):
+        st.caption(f"**{pick}** — {_sim['profile']}")
+
+    st.markdown(_row([
+        _card("Track Type", tt_label,
+              f"{specs['length']:g} mi" if specs.get("length") else "", tt_color),
+        _card("Best Comp", best_comp, "similar track", "#2dd4bf"),
+    ]), unsafe_allow_html=True)
+    st.info("No completed races in our data for this track yet — showing its "
+            "physical profile and comparable tracks. Behavioral & scoring "
+            "metrics will populate once it runs. Use the similar tracks below "
+            "as a proxy in the meantime.")
+
+    if specs:
+        st.markdown("**Track Profile** (physical specs)")
+        spec_rows = [
+            ("Length", f"{specs['length']:g} mi" if specs.get("length") else "—"),
+            ("Banking", specs.get("banking", "—")),
+            ("Surface", specs.get("surface", "—")),
+            ("Shape", specs.get("shape", "—")),
+            ("Size Group", tt_label),
+        ]
+        st.dataframe(pd.DataFrame(spec_rows, columns=["Spec", "Value"]),
+                     width="stretch", hide_index=True)
+    else:
+        st.caption("Physical specs not on file for this track — add it to "
+                   "TRACK_SPECS in config.")
+
+    if comps:
+        st.divider()
+        st.caption(f"**Similar tracks** (use as a proxy pre-race): {', '.join(comps)}")
+
+
 def render(*, series_id, series_name, track_name=None, selected_year=None):
     section_header("Track Data", "DFS behavioral & scoring profile")
 
@@ -45,9 +90,11 @@ def render(*, series_id, series_name, track_name=None, selected_year=None):
     if DB_PATH.exists():
         try:
             conn = sqlite3.connect(str(DB_PATH))
+            # Every track on the 2022+ schedule for this series — NOT just those
+            # with stored results, so a venue returning to the calendar (e.g.
+            # Chicagoland in 2026) still appears with its physical profile.
             tracks = [r[0] for r in conn.execute('''
                 SELECT DISTINCT t.name FROM races r JOIN tracks t ON t.id = r.track_id
-                JOIN race_results rr ON rr.race_id = r.id
                 WHERE r.series_id = ? AND r.season >= 2022
                 ORDER BY t.name
             ''', (series_id,)).fetchall()]
@@ -67,7 +114,11 @@ def render(*, series_id, series_name, track_name=None, selected_year=None):
         if _sim0.get("profile"):
             st.caption(f"**{pick}** — {_sim0['profile']}")
     if not prof:
-        st.info(f"Not enough races at {pick} to build a profile (need 2+).")
+        # No completed races in our data (a track returning to the schedule,
+        # like Chicagoland, or a brand-new venue). Still show the physical
+        # profile, track type, and comparable tracks so the page is useful
+        # pre-race — behavioral/scoring metrics populate once it runs.
+        _render_reference_only(pick)
         return
 
     tt = prof["track_type"]
