@@ -191,28 +191,35 @@ def _model_vs_me(view):
             "My Entries": len(mine),
             "My Best": my_best,
             "Model FPTS": None, "Model GPP Best": None,
-            "My Net": round(my_win - my_fees, 2), "Model Net*": None,
+            "My Net": round(my_win - my_fees, 2),
+            "Model Net*": None, "_model_fees": None,
             "Model > Me": None,
         }
         if sim:
             model_score = sim["cash_score"]
             row["Model FPTS"] = model_score
             row["Model GPP Best"] = sim["gpp_best"]
-            # Conservative payout floor per entry via same-contest calibration
-            est = 0.0
+            # ONE model entry per unique contest — multi-entering the same
+            # lineup isn't real play, and scaling by the user's entry count
+            # would weight the model's result by the user's bullet count.
+            # Payout stays the conservative same-contest calibration floor.
+            est_win = est_fees = 0.0
             for _, grp in mine.groupby("contest_key"):
+                est_fees += float(grp["entry_fee"].iloc[0])
                 pts = grp.dropna(subset=["points"])
                 beaten = pts[pts["points"] <= model_score]
                 if not beaten.empty:
-                    est += float(beaten["winnings"].max()) * len(grp)
-            row["Model Net*"] = round(est - my_fees, 2)
+                    est_win += float(beaten["winnings"].max())
+            row["Model Net*"] = round(est_win - est_fees, 2)
+            row["_model_fees"] = round(est_fees, 2)
             row["Model > Me"] = ("✅" if my_best is not None
                                  and model_score > my_best else "—")
         rows.append(row)
     prog.empty()
 
     mdf = pd.DataFrame(rows)
-    st.dataframe(_style_money(mdf, {"My Net", "Model Net*"}).format(
+    st.dataframe(_style_money(
+        mdf.drop(columns=["_model_fees"]), {"My Net", "Model Net*"}).format(
         {"My Best": "{:.1f}", "Model FPTS": "{:.1f}",
          "Model GPP Best": "{:.1f}"}, na_rep="—"),
         width="stretch", hide_index=True)
@@ -222,18 +229,31 @@ def _model_vs_me(view):
         my_total = done["My Net"].sum()
         model_total = done["Model Net*"].sum()
         beat = (done["Model > Me"] == "✅").sum()
+        # Fee bases differ (I multi-enter; the model plays each contest once),
+        # so dollars aren't directly comparable — ROI on each side's own fees is.
+        _v2 = view[view["contest_date"].astype(str).str.slice(0, 10).isin(
+            {r["Race Day"][:10] for _, r in done.iterrows()})]
+        my_fees_total = float(_v2["entry_fee"].sum()) or 1.0
+        model_fees_total = float(done["_model_fees"].sum()) or 1.0
+        my_roi = 100 * my_total / my_fees_total
+        model_roi = 100 * model_total / model_fees_total
         st.markdown(_row([
             _card("My Net", f"${my_total:+,.2f}",
-                  f"{len(done)} race days", _pl_color(my_total)),
+                  f"{my_roi:+.1f}% ROI on ${my_fees_total:,.0f} "
+                  f"· {len(done)} days", _pl_color(my_total)),
             _card("Model Net (floor)", f"${model_total:+,.2f}",
-                  "same contests, conservative", _pl_color(model_total)),
+                  f"{model_roi:+.1f}% ROI on ${model_fees_total:,.0f} "
+                  "· 1 entry per contest", _pl_color(model_total)),
             _card("Model beat my best", f"{beat}/{len(done)}",
                   "days the model outscored me", "#2dd4bf"),
         ]), unsafe_allow_html=True)
-    st.caption("*Model Net is a conservative FLOOR: within each contest your "
-               "own entries are the score→payout calibration; the model "
-               "lineup only claims a payout it provably beat, and claims $0 "
-               "when it outscored none of your entries. Days showing — "
+    st.caption("*Model Net assumes ONE model entry per unique contest you "
+               "entered (multi-entering an identical lineup isn't real play), "
+               "and is a conservative FLOOR: within each contest your own "
+               "entries are the score→payout calibration; the model lineup "
+               "only claims a payout it provably beat, and claims $0 when it "
+               "outscored none of your entries. Compare the ROI figures — the "
+               "dollar bases differ since you multi-enter. Days showing — "
                "couldn't be replayed (missing archived salaries/odds). "
                "Model lineup = the engine's max-projection build from "
                "pre-race data only.")
