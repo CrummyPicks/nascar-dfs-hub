@@ -327,6 +327,178 @@ def race_day_index() -> pd.DataFrame:
     return df.dropna(subset=["series"])
 
 
+# ── universal ingest: drop ANY DraftKings export, we route it ──────────
+
+def detect_csv_type(df: pd.DataFrame) -> str:
+    """'entry_history' | 'standings' | 'unknown' from the header shape."""
+    cols = {_norm_col(c) for c in df.columns}
+    if "entrykey" in cols:
+        return "entry_history"
+    if "player" in cols and any("drafted" in c for c in cols) and "rank" in cols:
+        return "standings"
+    return "unknown"
+
+
+def parse_dk_standings(df: pd.DataFrame) -> dict:
+    """Parse a DK contest-standings ('Export Lineups') CSV.
+
+    Right-hand block: Player / Roster Position / %Drafted / FPTS — the
+    field's ACTUAL ownership. Left block: Rank / Points — every entrant's
+    score, which yields the exact cash line at the last paid place.
+    Returns {ownership, fpts, positions, scores}.
+    """
+    cols = {_norm_col(c): c for c in df.columns}
+    p_col, d_col = cols.get("player"), None
+    for k, c in cols.items():
+        if "drafted" in k:
+            d_col = c
+    pos_col = cols.get("rosterposition") or cols.get("position")
+    f_col = cols.get("fpts")
+    own, fpts, positions = {}, {}, set()
+    if p_col and d_col:
+        for _, r in df[[c for c in [p_col, d_col, pos_col, f_col] if c]].dropna(
+                subset=[p_col]).iterrows():
+            nm = str(r[p_col]).strip()
+            if not nm or nm.lower() == "nan":
+                continue
+            try:
+                own[nm] = float(str(r[d_col]).replace("%", "").strip())
+            except (ValueError, TypeError):
+                continue
+            if pos_col and pd.notna(r.get(pos_col)):
+                positions.add(str(r[pos_col]).strip().upper())
+            if f_col and pd.notna(r.get(f_col)):
+                try:
+                    fpts[nm] = float(r[f_col])
+                except (ValueError, TypeError):
+                    pass
+    scores = []
+    r_col, pts_col = cols.get("rank"), cols.get("points")
+    if r_col and pts_col:
+        s = pd.to_numeric(df[pts_col], errors="coerce").dropna()
+        scores = sorted(s.tolist(), reverse=True)
+    return {"ownership": own, "fpts": fpts, "positions": positions,
+            "scores": scores}
+
+
+def ingest_file(source, filename: str = "") -> dict:
+    """Route ANY dropped DraftKings CSV to the right parser + storage.
+
+    Handles mixed-sport content automatically: entry-history rows are
+    filtered to NASCAR; standings files from other sports (roster positions
+    other than D) are skipped with a clear reason. Returns
+    {type, status: ok|skipped|error, msg}.
+    """
+    try:
+        df = pd.read_csv(source)
+    except Exception as e:
+        return {"type": "unknown", "status": "error",
+                "msg": f"could not read CSV ({e})"}
+    kind = detect_csv_type(df)
+
+    if kind == "entry_history":
+        try:
+            import io
+            buf = io.StringIO()
+            df.to_csv(buf, index=False)
+            buf.seek(0)
+            parsed = parse_dk_entry_history(buf)
+        except ValueError as e:
+            return {"type": kind, "status": "error", "msg": str(e)}
+        added, skipped = import_entries(parsed)
+        return {"type": kind, "status": "ok",
+                "msg": (f"entry history — {added} new NASCAR entries imported "
+                        f"({skipped} already stored; other sports ignored)")}
+
+    if kind == "standings":
+        parsed = parse_dk_standings(df)
+        own = parsed["ownership"]
+        if not own:
+            return {"type": kind, "status": "error",
+                    "msg": "standings file, but no Player/%Drafted rows parsed"}
+        # NASCAR standings roster positions are all 'D' — anything else
+        # (QB/RB/PG/...) is another sport; skip it quietly.
+        pos = parsed["positions"]
+        if pos and not pos <= {"D", "CPT"}:
+            return {"type": kind, "status": "skipped",
+                    "msg": f"not a NASCAR contest (positions: {', '.join(sorted(pos)[:4])})"}
+
+        # Resolve which race this contest was: the filename carries DK's
+        # contest key, which joins to the imported entry history.
+        m = re.search(r"(\d{6,})", filename or "")
+        ck = m.group(1) if m else None
+        ledger = load_entries()
+        rows = (ledger[ledger["contest_key"] == ck]
+                if ck and not ledger.empty else pd.DataFrame())
+        if rows.empty:
+            return {"type": kind, "status": "skipped",
+                    "msg": ("NASCAR standings parsed, but the contest key "
+                            f"({ck or 'none in filename'}) isn't in your "
+                            "imported entry history — import that first so "
+                            "the file can be tied to a race")}
+        date = str(rows.iloc[0]["contest_date"])[:10]
+        series = rows.iloc[0]["series"] or ""
+        style = (rows.iloc[0]["style"] or "GPP").lower()
+        style = "cash" if style == "cash" else "gpp"
+
+        idx = race_day_index()
+        hit = idx[(idx["date"] == date) & (idx["series"] == series)] if series \
+            else idx[idx["date"] == date]
+        if len(hit) != 1:
+            return {"type": kind, "status": "skipped",
+                    "msg": f"couldn't uniquely match a race for {date} ({series or '?'})"}
+        race = hit.iloc[0]
+
+        from src.data import save_actual_ownership, save_contest_lines
+        n = save_actual_ownership(int(race["api_id"]), int(race["series_id"]),
+                                  "DraftKings", style, own)
+        msgs = [f"{race['track']} {date} ({series or race['series']})",
+                f"actual {style.upper()} ownership saved for {n} drivers"]
+
+        # Exact contest line: the score at the last paid place. Feeds the
+        # profit sim's real-lines override (beats the simulated-field proxy).
+        pp = rows["places_paid"].dropna()
+        scores = parsed["scores"]
+        if not pp.empty and scores:
+            pp = int(pp.iloc[0])
+            if 0 < pp <= len(scores):
+                line = float(scores[pp - 1])
+                save_contest_lines(
+                    int(race["api_id"]), int(race["series_id"]), "DraftKings",
+                    cash_line=line if style == "cash" else None,
+                    gpp_mincash=line if style == "gpp" else None)
+                msgs.append(f"real {'cash' if style == 'cash' else 'GPP min-cash'} "
+                            f"line saved: {line:.1f}")
+        return {"type": kind, "status": "ok", "msg": " · ".join(msgs)}
+
+    return {"type": kind, "status": "skipped",
+            "msg": "not a recognized DraftKings export (need the entry-history "
+                   "or contest-standings CSV)"}
+
+
+def find_dk_export_csvs() -> list:
+    """All candidate DK exports in Downloads/Desktop (entry history AND
+    contest standings), newest first."""
+    search_dirs = [os.path.expanduser("~/Downloads"),
+                   os.path.expanduser("~/Desktop")]
+    out, seen = [], set()
+    for d in search_dirs:
+        for pattern in ["*entry*history*.csv", "*Entry*History*.csv",
+                        "*contest-entry*.csv", "*EntryHistory*.csv",
+                        "*contest-standings*.csv", "*Contest*Standings*.csv"]:
+            for f in glob.glob(os.path.join(d, pattern)):
+                real = os.path.realpath(f)
+                if real in seen:
+                    continue
+                seen.add(real)
+                try:
+                    out.append((real, os.path.getmtime(real)))
+                except OSError:
+                    continue
+    out.sort(key=lambda x: -x[1])
+    return [f for f, _ in out]
+
+
 def find_entry_history_csvs() -> list:
     """Candidate DK entry-history CSVs in Downloads/Desktop, newest first."""
     search_dirs = [os.path.expanduser("~/Downloads"),

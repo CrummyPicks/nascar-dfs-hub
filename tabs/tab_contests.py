@@ -284,39 +284,44 @@ def render(*, series_name="Cup"):
     if not _admin_gate():
         return
 
-    # ── Import ─────────────────────────────────────────────────────────
-    with st.expander("Import entry history", expanded=False):
+    # ── Universal import: drop ANY DraftKings export ───────────────────
+    from src.contests import find_dk_export_csvs, ingest_file
+    with st.expander("Import DraftKings exports", expanded=False):
         st.caption(
-            "On [draftkings.com/mycontests](https://www.draftkings.com/mycontests) "
-            "→ **History** → **Download Entry History**. The export contains "
-            "your FULL account history regardless of the page's 30-day view "
-            "filter. NASCAR rows only are kept; re-imports are deduped, so "
-            "download fresh anytime. Stored in a local private ledger "
-            "(contests.db) — never committed to the repo."
+            "Drop **any** DraftKings CSV — the file type is auto-detected and "
+            "routed:  \n"
+            "• **Entry history** ([mycontests](https://www.draftkings.com/mycontests) "
+            "→ History → Download Entry History) → your P/L ledger. Contains "
+            "full account history; other sports are filtered out automatically.  \n"
+            "• **Contest standings** (any settled contest's results page → "
+            "**Export Lineups**) → the field's actual ownership + the exact "
+            "paid line for that race. Non-NASCAR standings are skipped "
+            "automatically, so batch-download freely.  \n"
+            "Everything is deduped/upserted — re-importing is always safe."
         )
-        candidates = find_entry_history_csvs()
+        ups = st.file_uploader(
+            "Drop CSVs here (multiple OK)", type=["csv"],
+            accept_multiple_files=True, key="contest_csv_upload_multi")
+        if ups and st.button(f"Ingest {len(ups)} uploaded file(s)",
+                             type="primary", key="contest_ingest_up"):
+            for f in ups:
+                res = ingest_file(f, f.name)
+                icon = {"ok": "✅", "skipped": "⏭️", "error": "❌"}[res["status"]]
+                st.write(f"{icon} `{f.name}` — {res['msg']}")
+
+        candidates = find_dk_export_csvs()
         if candidates:
-            pick = st.selectbox(
-                "Found in Downloads/Desktop", candidates[:5],
-                format_func=lambda p: os.path.basename(p), key="contest_csv_pick")
-            if st.button("Import selected file", key="contest_import_btn"):
-                try:
-                    parsed = parse_dk_entry_history(pick)
-                    added, skipped = import_entries(parsed)
-                    st.success(f"Imported {added} new entries "
-                               f"({skipped} already stored).")
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
-        up = st.file_uploader("…or drop the CSV here", type=["csv"],
-                              key="contest_csv_upload")
-        if up is not None:
-            try:
-                parsed = parse_dk_entry_history(up)
-                added, skipped = import_entries(parsed)
-                st.success(f"Imported {added} new entries ({skipped} already stored).")
-            except ValueError as e:
-                st.error(str(e))
+            picks = st.multiselect(
+                "…or ingest straight from Downloads/Desktop",
+                candidates[:12],
+                format_func=lambda p: os.path.basename(p),
+                key="contest_csv_scan_multi")
+            if picks and st.button(f"Ingest {len(picks)} selected file(s)",
+                                   key="contest_ingest_scan"):
+                for p in picks:
+                    res = ingest_file(p, os.path.basename(p))
+                    icon = {"ok": "✅", "skipped": "⏭️", "error": "❌"}[res["status"]]
+                    st.write(f"{icon} `{os.path.basename(p)}` — {res['msg']}")
 
     df = load_entries()
     if df.empty:
