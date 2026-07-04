@@ -21,6 +21,7 @@ from src.config import (
     DEFAULT_PROJECTION_WEIGHTS, DB_PATH, TRACK_TYPE_MAP,
     TRACK_TYPE_PARENT, DK_FINISH_POINTS, TRACK_TYPE_WEIGHT_DEFAULTS,
     CROSS_SERIES_HIERARCHY, PROJECTION_RECENCY_DECAY_STEP,
+    DK_PTS_LAP_LED, DK_PTS_FASTEST_LAP, DK_PTS_PLACE_DIFF,
 )
 
 
@@ -872,7 +873,8 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         # a 72-lap race is logically impossible from the user's perspective.
         display_max_ll = min(hist_max_ll, race_laps)
         display_avg_top = min(avg_top, race_laps)
-        dom_ceiling = display_avg_top * 0.25 + min(hist_max_fl, race_laps) * 0.45
+        dom_ceiling = (display_avg_top * DK_PTS_LAP_LED
+                       + min(hist_max_fl, race_laps) * DK_PTS_FASTEST_LAP)
 
         # Fastest-laps history (parallel to laps-led): the per-race FL leader's
         # average + the all-time single-driver max. Capped at race_laps for display.
@@ -898,22 +900,22 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         elif platform == "Both":
             info_cols = st.columns(5)
             info_cols[0].metric("Race Laps", f"{race_laps}")
-            info_cols[1].metric("DK Max Led Pts", f"{race_laps * 0.25:.1f}")
-            info_cols[2].metric("DK Max Fast Pts", f"{race_laps * 0.45:.1f}")
+            info_cols[1].metric("DK Max Led Pts", f"{race_laps * DK_PTS_LAP_LED:.1f}")
+            info_cols[2].metric("DK Max Fast Pts", f"{race_laps * DK_PTS_FASTEST_LAP:.1f}")
             info_cols[3].metric("DK Dom Ceiling", f"{dom_ceiling:.1f}")
             info_cols[4].metric("FD Dom Ceiling", f"{dom_ceiling_fd:.1f}")
         else:  # DraftKings
             info_cols = st.columns(4)
             info_cols[0].metric("Race Laps", f"{race_laps}")
-            info_cols[1].metric("Max Laps Led Pts", f"{race_laps * 0.25:.1f}")
-            info_cols[2].metric("Max Fastest Lap Pts", f"{race_laps * 0.45:.1f}")
+            info_cols[1].metric("Max Laps Led Pts", f"{race_laps * DK_PTS_LAP_LED:.1f}")
+            info_cols[2].metric("Max Fastest Lap Pts", f"{race_laps * DK_PTS_FASTEST_LAP:.1f}")
             info_cols[3].metric("Dominator Ceiling", f"{dom_ceiling:.1f}")
 
         _score_lines = []
         if _show_dk_score:
             _score_lines.append(
-                "<b>DK</b>: laps led 0.25/lap &nbsp;|&nbsp; fastest laps "
-                "0.45/lap &nbsp;|&nbsp; place diff \u00b11.0/pos")
+                f"<b>DK</b>: laps led {DK_PTS_LAP_LED}/lap &nbsp;|&nbsp; fastest laps "
+                f"{DK_PTS_FASTEST_LAP}/lap &nbsp;|&nbsp; place diff \u00b1{DK_PTS_PLACE_DIFF}/pos")
         if _show_fd_score:
             _score_lines.append(
                 "<b>FD</b>: laps led 0.1/lap &nbsp;|&nbsp; laps completed "

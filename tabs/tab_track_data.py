@@ -8,30 +8,14 @@ is this" reference that informs weight choices and lineup construction.
 import pandas as pd
 import streamlit as st
 
-from src.components import section_header
+from src.components import section_header, stat_card, card_row, fmt_dash
 from src.config import (TRACK_TYPE_MAP, TRACK_TYPE_DISPLAY, TRACK_TYPE_COLORS,
                         similar_tracks_for, track_specs)
 from src.data import query_track_profile
 
-
-def _card(label, value, sub="", color="#38bdf8"):
-    return (f'<div style="background:linear-gradient(135deg,#111827,#0f172a);'
-            f'border:1px solid #1e293b;border-left:3px solid {color};'
-            f'border-radius:10px;padding:10px 14px;min-width:120px;">'
-            f'<div style="color:#64748b;font-size:0.62rem;text-transform:uppercase;'
-            f'letter-spacing:0.8px;font-weight:600;">{label}</div>'
-            f'<div style="font-family:Rajdhani,sans-serif;color:#f1f5f9;'
-            f'font-size:1.5rem;font-weight:700;line-height:1.1;">{value}</div>'
-            f'<div style="color:#475569;font-size:0.68rem;">{sub}</div></div>')
-
-
-def _row(cards):
-    return ('<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.3rem 0;">'
-            + "".join(cards) + '</div>')
-
-
-def _fmt(v, suffix=""):
-    return f"{v}{suffix}" if v is not None else "—"
+_card = stat_card
+_row = card_row
+_fmt = fmt_dash
 
 
 def _render_reference_only(pick):

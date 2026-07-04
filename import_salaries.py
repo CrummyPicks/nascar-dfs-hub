@@ -29,14 +29,12 @@ logging.disable(logging.WARNING)
 # Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from src.config import DB_PATH
+from src.config import (DB_PATH, SERIES_INPUT_ALIASES as SERIES_MAP,
+                        SERIES_LABELS as SERIES_NAMES)
 from src.data import (
     parse_dk_csv, parse_fd_csv, sync_dk_salaries_to_db, sync_fd_salaries_to_db,
     fetch_race_list, filter_point_races, save_odds_to_db,
 )
-
-SERIES_MAP = {"1": 1, "2": 2, "3": 3, "cup": 1, "xfinity": 2, "truck": 3}
-SERIES_NAMES = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
 MAX_UPCOMING = 2  # Only show next 2 upcoming races
 RECENT_HISTORY = 3  # Show last 3 completed races for backfill
 

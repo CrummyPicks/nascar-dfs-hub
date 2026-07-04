@@ -23,6 +23,34 @@ def section_header(title: str, subtitle: str = ""):
     )
 
 
+def stat_card(label, value, sub="", color="#38bdf8"):
+    """One dark stat card (label / big value / sub-caption) as an HTML string.
+
+    Compose several with card_row() and render via st.markdown(...,
+    unsafe_allow_html=True). Canonical copy of the _card helper that
+    previously lived in tab_track_data / tab_race_brief / tab_contests.
+    """
+    return (f'<div style="background:linear-gradient(135deg,#111827,#0f172a);'
+            f'border:1px solid #1e293b;border-left:3px solid {color};'
+            f'border-radius:10px;padding:10px 14px;min-width:130px;">'
+            f'<div style="color:#64748b;font-size:0.62rem;text-transform:uppercase;'
+            f'letter-spacing:0.8px;font-weight:600;">{label}</div>'
+            f'<div style="font-family:Rajdhani,sans-serif;color:#f1f5f9;'
+            f'font-size:1.5rem;font-weight:700;line-height:1.1;">{value}</div>'
+            f'<div style="color:#475569;font-size:0.68rem;">{sub}</div></div>')
+
+
+def card_row(cards):
+    """Wrap a list of stat_card() strings in a flex row (HTML string)."""
+    return ('<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.3rem 0;">'
+            + "".join(cards) + '</div>')
+
+
+def fmt_dash(v, suffix=""):
+    """Format a value with an optional suffix, or an em-dash for None."""
+    return f"{v}{suffix}" if v is not None else "—"
+
+
 def build_projection_column_config(df, max_proj_dk=None):
     """Build st.column_config for the projections table."""
     config = {}
@@ -117,18 +145,6 @@ def apply_car_badges(df, series_id, car_col="Car"):
     cfg = st.column_config.ImageColumn(car_col, width="small",
                                        help="Car number")
     return out, cfg
-
-
-def build_optimizer_column_config(df):
-    """Build st.column_config for optimizer pool/lineup tables."""
-    config = {}
-    if "DK Salary" in df.columns:
-        config["DK Salary"] = st.column_config.NumberColumn("Salary", format="$%d")
-    if "Proj Score" in df.columns:
-        config["Proj Score"] = st.column_config.NumberColumn("Proj", format="%.1f")
-    if "Value" in df.columns:
-        config["Value"] = st.column_config.NumberColumn("Value", format="%.2f")
-    return config
 
 
 def _rank_color(val, max_rank=40):

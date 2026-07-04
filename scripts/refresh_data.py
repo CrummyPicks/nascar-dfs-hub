@@ -21,7 +21,8 @@ from datetime import datetime
 # whether it's run as `python scripts/refresh_data.py` or from inside scripts/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import SERIES_OPTIONS
+from src.config import (SERIES_OPTIONS, SERIES_INPUT_ALIASES as SERIES_MAP,
+                        SERIES_LABELS as SERIES_NAMES)
 from src.data import (
     fetch_race_list, filter_point_races, fetch_and_store_race,
     fetch_nascar_odds, save_odds_to_db,
@@ -36,15 +37,6 @@ from src.data import (
 _TODAY = datetime.now()
 CURRENT_SEASON = _TODAY.year + 1 if _TODAY.month >= 10 else _TODAY.year
 EARLIEST_SEASON = 2022   # Next Gen era — no historical data is loaded before this
-
-
-SERIES_MAP = {
-    "cup": 1, "1": 1,
-    "xfinity": 2, "oreilly": 2, "2": 2,
-    "truck": 3, "craftsman": 3, "3": 3,
-}
-
-SERIES_NAMES = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
 
 
 def fetch_season(series_id: int, year: int):

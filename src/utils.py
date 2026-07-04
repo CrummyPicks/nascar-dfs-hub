@@ -6,7 +6,8 @@ from typing import Optional
 
 import pandas as pd
 import numpy as np
-from src.config import DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES
+from src.config import (DK_FINISH_POINTS, FD_FINISH_POINTS, DRIVER_ALIASES,
+                        DK_PTS_LAP_LED, DK_PTS_FASTEST_LAP, DK_PTS_PLACE_DIFF)
 
 
 def compute_practice_composite(
@@ -122,46 +123,6 @@ def compute_practice_composite(
     out = df[["Driver", "Run", "Composite", "Peak", "Consistency",
               "Fade", "Shape", "Confidence", "Profile Tag"]].copy()
     return out.sort_values("Composite", ascending=False).reset_index(drop=True)
-
-
-def compute_practice_rank_signal(rank_row, field_size: int = None) -> Optional[float]:
-    """Practice-rank signal: simple mean of the lap-window ranks the driver
-    actually ran.
-
-    Replaces blind use of NASCAR's "Overall Rank", which has a real-world
-    bug for DFS purposes: it averages whatever lap *times* a driver turned,
-    so a driver who ran 3 fast laps and parked it gets a better Overall Avg
-    (and therefore better Overall Rank) than a driver who completed a 15-lap
-    run with realistic falloff. The user's example: Byron at WG had 1-Lap=8,
-    5-Lap=29, no data past that — yet NASCAR's Overall Rank put him 3rd.
-
-    Instead, we treat each lap-window rank (1L, 5L, 10L, 15L, 20L, 25L, 30L)
-    equally and take the mean of whatever's available. This matches the
-    "Average" column shown in the in-app practice heatmap, so the projection
-    signal lines up with what the user sees.
-
-    Args:
-        rank_row:   dict-like with keys "1 Lap Rank", "5 Lap Rank", ...,
-                    "30 Lap Rank". Missing/NaN values are skipped.
-        field_size: unused; kept for backwards compatibility.
-
-    Returns:
-        Average rank as a float, OR None if the row has no usable ranks.
-    """
-    RANK_KEYS = ["1 Lap Rank", "5 Lap Rank", "10 Lap Rank", "15 Lap Rank",
-                 "20 Lap Rank", "25 Lap Rank", "30 Lap Rank"]
-    vals = []
-    for col in RANK_KEYS:
-        v = rank_row.get(col) if hasattr(rank_row, "get") else None
-        try:
-            if v is None or pd.isna(v):
-                continue
-            vals.append(int(v))
-        except (TypeError, ValueError):
-            continue
-    if not vals:
-        return None
-    return sum(vals) / len(vals)
 
 
 # Per-lap-window base weights for the practice signal. Longer green-flag runs
@@ -310,9 +271,9 @@ def calc_dk_points(finish, start, laps_led, fastest_laps):
     """Calculate DraftKings NASCAR Classic DFS points."""
     try:
         place_pts = DK_FINISH_POINTS.get(int(finish), 0)
-        diff_pts = (int(start) - int(finish)) * 1.0
-        led_pts = int(laps_led) * 0.25
-        fl_pts = int(fastest_laps) * 0.45
+        diff_pts = (int(start) - int(finish)) * DK_PTS_PLACE_DIFF
+        led_pts = int(laps_led) * DK_PTS_LAP_LED
+        fl_pts = int(fastest_laps) * DK_PTS_FASTEST_LAP
         return round(place_pts + diff_pts + led_pts + fl_pts, 2)
     except (ValueError, TypeError):
         return 0.0

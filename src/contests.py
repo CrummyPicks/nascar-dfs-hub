@@ -552,24 +552,3 @@ def find_dk_export_csvs() -> list:
                     continue
     out.sort(key=lambda x: -x[1])
     return [f for f, _ in out]
-
-
-def find_entry_history_csvs() -> list:
-    """Candidate DK entry-history CSVs in Downloads/Desktop, newest first."""
-    search_dirs = [os.path.expanduser("~/Downloads"),
-                   os.path.expanduser("~/Desktop")]
-    out, seen = [], set()
-    for d in search_dirs:
-        for pattern in ["*entry*history*.csv", "*Entry*History*.csv",
-                        "*contest-entry*.csv", "*EntryHistory*.csv"]:
-            for f in glob.glob(os.path.join(d, pattern)):
-                real = os.path.realpath(f)
-                if real in seen:
-                    continue
-                seen.add(real)
-                try:
-                    out.append((real, os.path.getmtime(real)))
-                except OSError:
-                    continue
-    out.sort(key=lambda x: -x[1])
-    return [f for f, _ in out]

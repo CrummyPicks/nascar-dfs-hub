@@ -10,31 +10,17 @@ pages use, so the brief can never disagree with them.
 import pandas as pd
 import streamlit as st
 
-from src.components import section_header, interactive_drill_down_dataframe
+from src.components import (section_header, interactive_drill_down_dataframe,
+                            stat_card, card_row, fmt_dash)
 from src.config import (TRACK_TYPE_MAP, TRACK_TYPE_DISPLAY, TRACK_TYPE_COLORS,
-                        similar_tracks_for, track_specs)
+                        similar_tracks_for, track_specs,
+                        DK_PTS_LAP_LED, DK_PTS_FASTEST_LAP, DK_PTS_PLACE_DIFF)
 from src.utils import (format_display_df, safe_fillna, parse_american_odds,
                        build_norm_lookup, fuzzy_get)
 
-
-def _card(label, value, sub="", color="#38bdf8"):
-    return (f'<div style="background:linear-gradient(135deg,#111827,#0f172a);'
-            f'border:1px solid #1e293b;border-left:3px solid {color};'
-            f'border-radius:10px;padding:10px 14px;min-width:120px;">'
-            f'<div style="color:#64748b;font-size:0.62rem;text-transform:uppercase;'
-            f'letter-spacing:0.8px;font-weight:600;">{label}</div>'
-            f'<div style="font-family:Rajdhani,sans-serif;color:#f1f5f9;'
-            f'font-size:1.5rem;font-weight:700;line-height:1.1;">{value}</div>'
-            f'<div style="color:#475569;font-size:0.68rem;">{sub}</div></div>')
-
-
-def _row(cards):
-    return ('<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.3rem 0;">'
-            + "".join(cards) + '</div>')
-
-
-def _fmt(v, suffix=""):
-    return f"{v}{suffix}" if v is not None else "—"
+_card = stat_card
+_row = card_row
+_fmt = fmt_dash
 
 
 def _self_serve_projections(*, series_id, race_id, race_name, track_name,
@@ -299,5 +285,5 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
                    "0.1/lap completed  •  ±0.5/place differential (off qualifying)  •  "
                    "no fastest-lap points")
     else:
-        st.caption("**DraftKings**: 6 drivers / $50,000  •  0.25/lap led  •  "
-                   "0.45/fastest lap  •  ±1.0/place differential (off qualifying)")
+        st.caption(f"**DraftKings**: 6 drivers / $50,000  •  {DK_PTS_LAP_LED}/lap led  •  "
+                   f"{DK_PTS_FASTEST_LAP}/fastest lap  •  ±{DK_PTS_PLACE_DIFF}/place differential (off qualifying)")

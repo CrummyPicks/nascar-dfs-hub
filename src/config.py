@@ -15,6 +15,15 @@ DB_PATH = APP_DIR / "nascar.db"
 SERIES_OPTIONS = {"Cup": 1, "O'Reilly": 2, "Truck": 3}
 SERIES_LABELS = {1: "Cup", 2: "O'Reilly", 3: "Truck"}
 
+# CLI-typed tokens -> series id, shared by import_salaries.py and
+# scripts/refresh_data.py. Unrecognized input falls back to Cup (1) at the
+# call sites via .get(..., 1).
+SERIES_INPUT_ALIASES = {
+    "cup": 1, "1": 1,
+    "xfinity": 2, "oreilly": 2, "2": 2,
+    "truck": 3, "craftsman": 3, "3": 3,
+}
+
 # ----------------------------
 # TRACK TYPE CLASSIFICATION
 # ----------------------------
@@ -516,6 +525,12 @@ DK_FINISH_POINTS = {
 # table 2026-06): 1st=43, 2nd=40, 3rd=38, then -1 per position to 40th=1.
 FD_FINISH_POINTS = {1: 43, 2: 40, 3: 38}
 FD_FINISH_POINTS.update({pos: 41 - pos for pos in range(4, 41)})  # 4th=37 ... 40th=1
+
+# DraftKings per-lap/diff scoring (Classic): 0.25/lap led, 0.45/fastest lap,
+# 1.0 per position gained or lost. No laps-completed points on DK.
+DK_PTS_LAP_LED = 0.25
+DK_PTS_FASTEST_LAP = 0.45
+DK_PTS_PLACE_DIFF = 1.0
 
 # FanDuel per-lap/diff scoring (DK differs: 0.25 led / 0.45 fastest / 1.0 diff;
 # FD has NO fastest-laps points but DOES pay laps completed).
