@@ -31,6 +31,10 @@ GPP_LINEUPS = 20
 FIELD_SAMPLES = 800
 JITTER_SD = 0.11          # ~11% lognormal noise on projections for GPP builds
 MIN_SALARIED = 25         # need at least this many salaried drivers to sim
+# Max share of GPP lineups any single driver may appear in — mirrors the
+# user's hand-building exposure rule, so the replayed GPP portfolio matches
+# how the slate would actually be played (and can't be 20 copies of chalk).
+GPP_EXPOSURE_CAP = 0.60
 
 
 def sim_eligible_races(series_id: int, platform: str = "DraftKings",
@@ -197,13 +201,22 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
         return None
     cash_score = lineup_actual(cash_lu)
 
-    # GPP: jitter projections by the model's own uncertainty, re-optimize
+    # GPP: jitter projections by the model's own uncertainty, re-optimize.
+    # Exposure cap: once a driver appears in 60% of accepted lineups he's
+    # excluded from later builds — matching the user's hand-build rule, so
+    # the portfolio diversifies instead of stacking 20 copies of chalk.
     gpp_scores, seen = [], set()
+    exposure = {}
+    cap_n = max(1, int(GPP_EXPOSURE_CAP * GPP_LINEUPS))
     for i in range(GPP_LINEUPS):
         jpool = []
         for d in pool:
+            if exposure.get(d["Driver"], 0) >= cap_n:
+                continue
             noise = math.exp(rng.gauss(0, JITTER_SD))
             jpool.append({**d, "Jit": d["Proj Score"] * noise})
+        if len(jpool) < roster:
+            break
         lu = _optimal_lineup(jpool, cap, roster, "Jit", timeout_ms=300)
         if not lu or len(lu) < roster:
             continue
@@ -212,6 +225,8 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
             continue
         seen.add(key)
         gpp_scores.append(lineup_actual(lu))
+        for x in lu:
+            exposure[x["Driver"]] = exposure.get(x["Driver"], 0) + 1
     if not gpp_scores:
         return None
 

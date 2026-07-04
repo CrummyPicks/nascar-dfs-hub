@@ -57,8 +57,14 @@ def _breakdown(df, by):
     return g.sort_values("Net", ascending=False)
 
 
-def _style_money(df, cols):
-    """Green/red the money columns so profit pockets pop."""
+def _style_money(df, cols, extra_fmt=None):
+    """Green/red the money columns so profit pockets pop.
+
+    All number formats go through ONE Styler.format call — chaining a second
+    .format() resets unspecified columns to the default formatter, which is
+    how trailing-zero floats (335.000000) leaked into the By Race table.
+    Pass column-specific formats via extra_fmt instead of chaining.
+    """
     def _c(col):
         if col.name not in cols:
             return [""] * len(col)
@@ -71,9 +77,14 @@ def _style_money(df, cols):
                 continue
             out.append(f"color: {_pl_color(v)}; font-weight: 600")
         return out
-    return df.style.apply(_c).format(
-        {c: "${:,.2f}" for c in ["Fees", "Winnings", "Net"] if c in df.columns}
-        | ({"ROI %": "{:+.1f}%"} if "ROI %" in df.columns else {}), na_rep="—")
+    fmt = {c: "${:,.2f}" for c in
+           ["Fees", "Winnings", "Net", "My Net", "Model Net*"]
+           if c in df.columns}
+    if "ROI %" in df.columns:
+        fmt["ROI %"] = "{:+.1f}%"
+    if extra_fmt:
+        fmt.update(extra_fmt)
+    return df.style.apply(_c).format(fmt, na_rep="—")
 
 
 def _insights(view):
@@ -174,7 +185,7 @@ def _model_vs_me(view):
     prog = st.progress(0.0, text="Replaying model lineups...")
     for i, dk in enumerate(day_keys[:n_days]):
         race = lut[dk]
-        ck = f"mvm3_{race['db_id']}"          # v3: real laps + hardened field
+        ck = f"mvm4_{race['db_id']}"          # v4: GPP exposure cap added
         if ck not in st.session_state:
             try:
                 st.session_state[ck] = simulate_race(
@@ -237,10 +248,10 @@ def _model_vs_me(view):
     mdf = pd.DataFrame(rows)
     st.dataframe(_style_money(
         mdf.drop(columns=["_model_fees", "_dk_date", "_dk_series"]),
-        {"My Net", "Model Net*"}).format(
-        {"My Best": "{:.1f}", "Model FPTS": "{:.1f}",
-         "Model GPP Best": "{:.1f}", "My %ile": "{:.1f}",
-         "Model %ile": "{:.1f}", "GPP %ile": "{:.1f}"}, na_rep="—"),
+        {"My Net", "Model Net*"},
+        extra_fmt={"My Best": "{:.1f}", "Model FPTS": "{:.1f}",
+                   "Model GPP Best": "{:.1f}", "My %ile": "{:.1f}",
+                   "Model %ile": "{:.1f}", "GPP %ile": "{:.1f}"}),
         width="stretch", hide_index=True)
 
     done = mdf.dropna(subset=["Model Net*"])
@@ -407,9 +418,12 @@ def render(*, series_name="Cup"):
     # ── Filters: range + style + series ────────────────────────────────
     fcols = st.columns([1.2, 1, 1, 2])
     with fcols[0]:
+        # Default to the current season — All Time crams 17 months of race
+        # days onto one axis; it's still one click away.
         range_pick = st.selectbox(
             "Range", ["All Time", "Last 30 Days", "Last 90 Days",
-                      "This Year", "Last Year"], key="contest_range")
+                      "This Year", "Last Year"], index=3,
+            key="contest_range")
     with fcols[1]:
         style_pick = st.selectbox("Style", ["All", "Cash", "GPP", "Qualifier"],
                                   key="contest_style_filter")
@@ -468,33 +482,47 @@ def render(*, series_name="Cup"):
         with gcols[0]:
             gran = st.selectbox("Group by", ["Day", "Week", "Month"],
                                 key="contest_granularity")
+        # Group on a sortable timestamp key; render SHORT labels (the year is
+        # dropped when the view covers a single year). Chronological order is
+        # preserved by grouping on the timestamp, not the label string.
         if gran == "Week":
-            ts["_p"] = ts["_dt"].dt.to_period("W").dt.start_time.dt.strftime("wk %Y-%m-%d")
+            ts["_k"] = ts["_dt"].dt.to_period("W").dt.start_time
         elif gran == "Month":
-            ts["_p"] = ts["_dt"].dt.strftime("%Y-%m")
+            ts["_k"] = ts["_dt"].dt.to_period("M").dt.start_time
         else:
-            ts["_p"] = ts["_dt"].dt.strftime("%Y-%m-%d")
-        per = ts.groupby("_p", sort=True).apply(
+            ts["_k"] = ts["_dt"].dt.normalize()
+        per = ts.groupby("_k", sort=True).apply(
             lambda g: g["winnings"].sum() - g["entry_fee"].sum(),
             include_groups=False)
         cum = per.cumsum()
+        _multi_yr = len({k.year for k in per.index}) > 1
+        if gran == "Month":
+            _lbl = [k.strftime("%b %y" if _multi_yr else "%b") for k in per.index]
+        elif gran == "Week":
+            _lbl = [k.strftime("wk %m/%d/%y" if _multi_yr else "wk %m/%d")
+                    for k in per.index]
+        else:
+            _lbl = [k.strftime("%m/%d/%y" if _multi_yr else "%m/%d")
+                    for k in per.index]
 
         import plotly.graph_objects as go
         from src.charts import DARK_LAYOUT, apply_dark_theme
         fig = go.Figure()
-        fig.add_bar(x=list(per.index), y=per.values, name=f"Net per {gran.lower()}",
+        fig.add_bar(x=_lbl, y=[round(v, 2) for v in per.values],
+                    name=f"Net per {gran.lower()}",
                     marker_color=["#22c55e" if v >= 0 else "#ef4444"
                                   for v in per.values], opacity=0.55,
                     hovertemplate="%{x}<br>Net: $%{y:,.2f}<extra></extra>")
-        fig.add_scatter(x=list(cum.index), y=cum.values, mode="lines+markers",
-                        name="Cumulative",
+        fig.add_scatter(x=_lbl, y=[round(v, 2) for v in cum.values],
+                        mode="lines+markers", name="Cumulative",
                         line=dict(color="#38bdf8", width=2), marker=dict(size=5),
                         hovertemplate="%{x}<br>Cumulative: $%{y:,.2f}<extra></extra>")
         fig.add_hline(y=0, line_dash="dash", line_color="#475569", line_width=1)
         fig.update_layout(**DARK_LAYOUT, height=340,
                           title="Profit / Loss over race days",
                           yaxis_title="Net $",
-                          xaxis=dict(type="category", tickangle=-45),
+                          xaxis=dict(type="category", tickangle=-45, nticks=14,
+                                     tickfont=dict(size=11)),
                           legend=dict(orientation="h", y=1.08))
         apply_dark_theme(fig)
         st.plotly_chart(fig, width="stretch", key="contest_cum_pl")
@@ -547,9 +575,9 @@ def render(*, series_name="Cup"):
     g["Winnings"] = g["Winnings"].round(2)
     g["BestFPTS"] = g["BestFPTS"].round(1)
     g = g.sort_values("Race Day", ascending=False)
-    st.dataframe(_style_money(g, {"Net", "ROI %"}).format(
-        {"BestFPTS": "{:.1f}"}, na_rep="—"), width="stretch",
-        hide_index=True, height=350)
+    st.dataframe(_style_money(g, {"Net", "ROI %"},
+                              extra_fmt={"BestFPTS": "{:.1f}"}),
+                 width="stretch", hide_index=True, height=350)
     st.caption("Grade the model's projections for any of these races on the "
                "**Accuracy** page (Race Comparison) — this table is your real-"
                "money result; that page is why it happened.")
