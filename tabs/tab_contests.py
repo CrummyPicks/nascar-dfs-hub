@@ -398,7 +398,8 @@ def render(*, series_name="Cup"):
             "Everything is deduped/upserted — re-importing is always safe."
         )
         ups = st.file_uploader(
-            "Drop CSVs here (multiple OK)", type=["csv"],
+            "Drop CSVs or DK standings ZIPs here (multiple OK)",
+            type=["csv", "zip"],
             accept_multiple_files=True, key="contest_csv_upload_multi")
         if ups and st.button(f"Ingest {len(ups)} uploaded file(s)",
                              type="primary", key="contest_ingest_up"):

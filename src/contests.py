@@ -529,19 +529,58 @@ def parse_dk_standings(df: pd.DataFrame) -> dict:
             "scores": scores}
 
 
-def ingest_file(source, filename: str = "") -> dict:
-    """Route ANY dropped DraftKings CSV to the right parser + storage.
+def _load_export_frame(source, filename: str = "") -> pd.DataFrame:
+    """DataFrame from a DK export — plain CSV or the ZIP DK actually serves.
 
-    Handles mixed-sport content automatically: entry-history rows are
-    filtered to NASCAR; standings files from other sports (roster positions
-    other than D) are skipped with a clear reason. Returns
-    {type, status: ok|skipped|error, msg}.
+    DK's standings endpoint downloads a zip named contest-standings-<key>.zip
+    with the CSV inside; expired contests download as 0-byte files. Raises
+    ValueError with a user-readable reason on both edge cases.
+    """
+    import io
+    import zipfile
+    name = (filename or getattr(source, "name", "") or str(source)).lower()
+    if hasattr(source, "read"):
+        data = source.read()
+    else:
+        with open(source, "rb") as fh:
+            data = fh.read()
+    if not data:
+        raise ValueError(
+            "empty file — DK returned no data (that contest has likely "
+            "EXPIRED on DraftKings; older contests can't be exported)")
+    if data[:2] == b"PK" or name.endswith(".zip"):
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+            member = next((m for m in zf.namelist()
+                           if m.lower().endswith(".csv")), None)
+            if not member:
+                raise ValueError("zip contains no CSV")
+            data = zf.read(member)
+        except zipfile.BadZipFile:
+            raise ValueError("looks like a zip but couldn't be opened")
+        if not data:
+            raise ValueError("zip's CSV is empty — contest data expired on DK")
+    try:
+        return pd.read_csv(io.BytesIO(data))
+    except Exception as e:
+        raise ValueError(f"could not parse CSV ({e})")
+
+
+def ingest_file(source, filename: str = "") -> dict:
+    """Route ANY dropped DraftKings export to the right parser + storage.
+
+    Accepts plain CSVs and DK's standings ZIPs as-is. Handles mixed-sport
+    content automatically: entry-history rows are filtered to NASCAR;
+    standings files from other sports (roster positions other than D) are
+    skipped with a clear reason. Returns {type, status: ok|skipped|error, msg}.
     """
     try:
-        df = pd.read_csv(source)
+        df = _load_export_frame(source, filename)
+    except ValueError as e:
+        return {"type": "unknown", "status": "error", "msg": str(e)}
     except Exception as e:
         return {"type": "unknown", "status": "error",
-                "msg": f"could not read CSV ({e})"}
+                "msg": f"could not read file ({e})"}
     kind = detect_csv_type(df)
 
     if kind == "entry_history":
@@ -633,7 +672,8 @@ def find_dk_export_csvs() -> list:
     for d in search_dirs:
         for pattern in ["*entry*history*.csv", "*Entry*History*.csv",
                         "*contest-entry*.csv", "*EntryHistory*.csv",
-                        "*contest-standings*.csv", "*Contest*Standings*.csv"]:
+                        "*contest-standings*.csv", "*Contest*Standings*.csv",
+                        "*contest-standings*.zip"]:
             for f in glob.glob(os.path.join(d, pattern)):
                 real = os.path.realpath(f)
                 if real in seen:
