@@ -333,10 +333,19 @@ def render(*, series_name="Cup"):
         from src.contests import export_encrypted, LEDGER_ENC
         st.divider()
         st.markdown("**Cloud sync** — the ledger lives only on this machine; "
-                    "this encrypts it with your ADMIN_PASSWORD and commits the "
-                    "blob so the cloud app (with the same secret) can show it.")
-        if st.button("🔐 Sync encrypted ledger to repo", key="ledger_sync_btn"):
-            _key = _secret_key()
+                    "this encrypts it and commits the blob so the cloud app "
+                    "can show it. Use the **same password as the cloud app's "
+                    "ADMIN_PASSWORD secret** — that's its decryption key.")
+        _key = _secret_key()
+        if not _key:
+            _key = st.text_input(
+                "Encryption password (= cloud ADMIN_PASSWORD)",
+                type="password", key="ledger_sync_pw",
+                help="No local ADMIN_PASSWORD secret is set, so type the "
+                     "password here. It must match the cloud app's "
+                     "ADMIN_PASSWORD or the cloud can't decrypt the ledger.")
+        if st.button("🔐 Sync encrypted ledger to repo", key="ledger_sync_btn",
+                     disabled=not _key):
             ok, msg = export_encrypted(str(_key or ""))
             if not ok:
                 st.error(msg)
