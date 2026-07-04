@@ -369,6 +369,30 @@ def attach_races(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def ground_truth_counts() -> tuple:
+    """(ownership_rows, contest_line_rows) currently in nascar.db.
+
+    Standings ingests write into nascar.db, NOT contests.db — so the ledger
+    sync must also commit nascar.db or the ground truth never reaches the
+    repo/cloud and can be lost to pulls or the daily refresh."""
+    if not DB_PATH.exists():
+        return 0, 0
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            o = conn.execute("SELECT COUNT(*) FROM actual_ownership").fetchone()[0]
+        except Exception:
+            o = 0
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM contest_lines").fetchone()[0]
+        except Exception:
+            n = 0
+        conn.close()
+        return o, n
+    except Exception:
+        return 0, 0
+
+
 def race_day_index() -> pd.DataFrame:
     """Every points race with ids, keyed by (date, series label).
 

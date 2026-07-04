@@ -370,7 +370,21 @@ def render(*, series_name="Cup"):
 
     # ── Universal import: drop ANY DraftKings export ───────────────────
     from src.contests import find_dk_export_csvs, ingest_file
+    # Streamlit Cloud runs from /mount/src on Linux; the user's machine is
+    # Windows. Cloud storage is EPHEMERAL (wiped on every redeploy) and the
+    # container can't push to the repo — so imports/sync are PC-only, and the
+    # cloud page must say so loudly instead of silently eating uploads.
+    _cloud = os.path.exists("/mount/src") or os.name != "nt"
     with st.expander("Import DraftKings exports", expanded=False):
+        if _cloud:
+            st.warning(
+                "**You're on the cloud app — don't import here.** Cloud "
+                "storage is temporary: anything ingested is wiped on the "
+                "next redeploy, and this server can't push to the repo. "
+                "Do imports on your **PC's app**, then click its "
+                "**Sync to repo** button — this page picks the data up "
+                "automatically."
+            )
         st.caption(
             "Drop **any** DraftKings CSV — the file type is auto-detected and "
             "routed:  \n"
@@ -393,64 +407,77 @@ def render(*, series_name="Cup"):
                 icon = {"ok": "✅", "skipped": "⏭️", "error": "❌"}[res["status"]]
                 st.write(f"{icon} `{f.name}` — {res['msg']}")
 
-        candidates = find_dk_export_csvs()
-        if candidates:
-            picks = st.multiselect(
-                "…or ingest straight from Downloads/Desktop",
-                candidates[:12],
-                format_func=lambda p: os.path.basename(p),
-                key="contest_csv_scan_multi")
-            if picks and st.button(f"Ingest {len(picks)} selected file(s)",
-                                   key="contest_ingest_scan"):
-                for p in picks:
-                    res = ingest_file(p, os.path.basename(p))
-                    icon = {"ok": "✅", "skipped": "⏭️", "error": "❌"}[res["status"]]
-                    st.write(f"{icon} `{os.path.basename(p)}` — {res['msg']}")
+        if not _cloud:
+            candidates = find_dk_export_csvs()
+            if candidates:
+                picks = st.multiselect(
+                    "…or ingest straight from Downloads/Desktop",
+                    candidates[:12],
+                    format_func=lambda p: os.path.basename(p),
+                    key="contest_csv_scan_multi")
+                if picks and st.button(f"Ingest {len(picks)} selected file(s)",
+                                       key="contest_ingest_scan"):
+                    for p in picks:
+                        res = ingest_file(p, os.path.basename(p))
+                        icon = {"ok": "✅", "skipped": "⏭️", "error": "❌"}[res["status"]]
+                        st.write(f"{icon} `{os.path.basename(p)}` — {res['msg']}")
 
-        # ── Cloud sync: encrypted ledger through the repo ──────────────
-        from src.contests import export_encrypted, LEDGER_ENC
-        st.divider()
-        st.markdown("**Cloud sync** — the ledger lives only on this machine; "
-                    "this encrypts it and commits the blob so the cloud app "
-                    "can show it. Use the **same password as the cloud app's "
-                    "ADMIN_PASSWORD secret** — that's its decryption key.")
-        _key = _secret_key()
-        if not _key:
-            _key = st.text_input(
-                "Encryption password (= cloud ADMIN_PASSWORD)",
-                type="password", key="ledger_sync_pw",
-                help="No local ADMIN_PASSWORD secret is set, so type the "
-                     "password here. It must match the cloud app's "
-                     "ADMIN_PASSWORD or the cloud can't decrypt the ledger.")
-        if st.button("🔐 Sync encrypted ledger to repo", key="ledger_sync_btn",
-                     disabled=not _key):
-            ok, msg = export_encrypted(str(_key or ""))
-            if not ok:
-                st.error(msg)
-            else:
-                import subprocess
-                try:
-                    root = str(LEDGER_ENC.parent)
-                    subprocess.run(["git", "add", LEDGER_ENC.name],
-                                   cwd=root, check=True, capture_output=True)
-                    r = subprocess.run(
-                        ["git", "commit", "-m",
-                         "Sync encrypted contest ledger"],
-                        cwd=root, capture_output=True, text=True)
-                    if r.returncode == 0:
-                        subprocess.run(["git", "pull", "--rebase",
-                                        "--autostash"], cwd=root,
-                                       check=True, capture_output=True)
-                        subprocess.run(["git", "push"], cwd=root, check=True,
-                                       capture_output=True)
-                        st.success(msg + " Committed & pushed — the cloud app "
-                                   "picks it up on its next redeploy (a few "
-                                   "minutes).")
-                    else:
-                        st.info(msg + " Nothing new to commit — the repo "
-                                "already has this version.")
-                except subprocess.CalledProcessError as e:
-                    st.error(f"Git step failed: {(e.stderr or b'').decode(errors='ignore') if isinstance(e.stderr, bytes) else e.stderr}")
+        # ── Sync to repo (PC only): encrypted ledger + ground truth ────
+        if not _cloud:
+            from src.contests import (export_encrypted, ground_truth_counts,
+                                      LEDGER_ENC)
+            st.divider()
+            st.markdown("**Sync to repo** — encrypts the private ledger "
+                        "(contests.db) AND commits the shared ground truth "
+                        "(ownership + contest lines in nascar.db) so the "
+                        "cloud app gets everything. Use the **same password "
+                        "as the cloud app's ADMIN_PASSWORD secret**.")
+            _key = _secret_key()
+            if not _key:
+                _key = st.text_input(
+                    "Encryption password (= cloud ADMIN_PASSWORD)",
+                    type="password", key="ledger_sync_pw",
+                    help="No local ADMIN_PASSWORD secret is set, so type the "
+                         "password here. It must match the cloud app's "
+                         "ADMIN_PASSWORD or the cloud can't decrypt the ledger.")
+            if st.button("🔐 Sync to repo", key="ledger_sync_btn",
+                         disabled=not _key):
+                ok, msg = export_encrypted(str(_key or ""))
+                if not ok:
+                    st.error(msg)
+                else:
+                    import subprocess
+                    try:
+                        root = str(LEDGER_ENC.parent)
+                        _files = [LEDGER_ENC.name]
+                        n_own, n_lines = ground_truth_counts()
+                        if n_own or n_lines:
+                            # Standings ingests write to nascar.db — commit it
+                            # too or the ownership/lines never reach the repo
+                            # and are lost to the next pull/daily refresh.
+                            _files.append("nascar.db")
+                            msg += (f" Including ground truth: {n_own} ownership "
+                                    f"rows, {n_lines} contest lines.")
+                        subprocess.run(["git", "add"] + _files,
+                                       cwd=root, check=True, capture_output=True)
+                        r = subprocess.run(
+                            ["git", "commit", "-m",
+                             "Sync contest ledger + ground truth"],
+                            cwd=root, capture_output=True, text=True)
+                        if r.returncode == 0:
+                            subprocess.run(["git", "pull", "--rebase",
+                                            "--autostash"], cwd=root,
+                                           check=True, capture_output=True)
+                            subprocess.run(["git", "push"], cwd=root, check=True,
+                                           capture_output=True)
+                            st.success(msg + " Committed & pushed — the cloud "
+                                       "app picks it up on its next redeploy "
+                                       "(a few minutes).")
+                        else:
+                            st.info(msg + " Nothing new to commit — the repo "
+                                    "already has this version.")
+                    except subprocess.CalledProcessError as e:
+                        st.error(f"Git step failed: {(e.stderr or b'').decode(errors='ignore') if isinstance(e.stderr, bytes) else e.stderr}")
 
     df = load_entries()
     if df.empty:
