@@ -423,12 +423,14 @@ def render(*, series_name="Cup"):
                 else:
                     st.caption(
                         f"**{len(tgt)} links** — your biggest GPP + Cash "
-                        "contest per race day (last ~120 days; DK expires "
-                        "older data). Be logged into DraftKings in this "
-                        "browser, click down the list (each click downloads "
-                        "one CSV — allow 'multiple downloads' if asked), "
-                        "then drop them ALL into the box above. Re-imports "
-                        "dedupe, already-covered races just overwrite."
+                        "contest per race day. ⚠️ DK deletes the export "
+                        "FILES after roughly a week even though the results "
+                        "pages stay viewable longer — links beyond ~7 days "
+                        "usually download an empty file. Be logged into "
+                        "DraftKings in this browser, click the fresh ones "
+                        "(each click downloads one ZIP — drop them in the "
+                        "box above as-is). Re-imports dedupe. Grab each "
+                        "week's files within a few days of the race."
                     )
                     _lines = []
                     for _, r in tgt.iterrows():

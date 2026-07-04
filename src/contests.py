@@ -369,7 +369,7 @@ def attach_races(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def ownership_backfill_targets(max_days: int = 120) -> pd.DataFrame:
+def ownership_backfill_targets(max_days: int = 21) -> pd.DataFrame:
     """The best contest per race day to pull ownership from — the
     biggest-field GPP (and biggest Cash game) the user entered.
 
