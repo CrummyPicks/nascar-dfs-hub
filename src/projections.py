@@ -24,7 +24,7 @@ from src.config import (
 #     let a fast car work forward, so a moderate, gentle dampener.
 # Values are (floor, slope): for a start beyond P10 the multiplier is
 # max(floor, 1 - (start-10)*slope). P1-P3 get a small boost, P4-P10 are neutral.
-# NOTE: As of the start-aware laps-led gate (_start_avail in tab_projections.py),
+# NOTE: As of the start-aware laps-led gate (_start_avail in this module),
 # the laps-led MAGNITUDE suppression for deep starters lives in the allocator.
 # This score-level multiplier is now SOFT — it only nudges dominator rank ORDER
 # (which feeds dominator identification), so a deep starter isn't penalized twice
@@ -182,6 +182,395 @@ def _finish_dist_expectations(raw_scores, drivers, field_size):
     return out
 
 
+# Fallback track-type concentration exponents
+# Higher = more concentrated (top drivers get more of the pie)
+# Lower = more distributed (laps spread across many drivers)
+TRACK_TYPE_CONCENTRATION = {
+    "superspeedway": 0.6,   # Very distributed — pack racing
+    "road": 1.0,            # Moderate
+    "dirt": 1.2,            # Moderate-high
+    "intermediate": 1.5,    # Concentrated
+    "intermediate_worn": 1.6,  # Darlington/Homestead — high wear, slightly more concentrated
+    "short": 2.0,           # Very concentrated — single driver can dominate
+    "short_concrete": 2.2,  # Bristol/Dover concrete — even more concentrated
+}
+
+
+# ── Soft-rank smoothing of the empirical by-rank curves ──────────────────────
+# The empirical laps-led / fastest-laps curves describe the SHAPE of a typical
+# race (the leader takes ~46% of laps at Charlotte, steep dropoff). The old
+# mapping assigned that shape by HARD rank — driver_k gets curve[k] — which is a
+# step function of the dominator score: a razor-thin score change flips a driver
+# between adjacent rungs, and because the laps-led curve is steep that swung
+# drivers like Byron between 87 and 18 projected laps on a tiny weight-slider
+# change. `_soft_rank_shares` replaces the hard rank with an EXPECTED (soft)
+# rank so the allocation is continuous in the scores: near-tied contenders SHARE
+# the dominator laps instead of one taking the whole top rung, while a clear
+# runaway favorite still collapses to the full leader share.
+_LL_SOFT_TAU = 5.0       # logistic temperature for laps led (0-100 score units)
+_FL_SOFT_TAU = 7.0       # fastest laps spread wider, so smooth a touch softer
+_LL_SOFT_TOPK = 14       # only realistic leaders compete for laps-led shares
+_FL_SOFT_TOPK = 28       # fastest laps legitimately reach far more drivers
+
+
+def _interp_curve(curve: list, x: float) -> float:
+    """Linear interpolation of `curve` (indexed 0,1,2,...) at fractional x."""
+    if not curve:
+        return 0.0
+    if x <= 0:
+        return curve[0]
+    if x >= len(curve) - 1:
+        return curve[-1]
+    lo = int(math.floor(x))
+    frac = x - lo
+    return curve[lo] * (1.0 - frac) + curve[lo + 1] * frac
+
+
+def _soft_rank_shares(scores: dict, dist: list, tau: float, top_k: int) -> dict:
+    """Map dominator scores onto an empirical by-rank share curve via EXPECTED
+    ranks (Bradley-Terry), instead of snapping each driver to one hard rung.
+
+    For each contender i, the expected rank is the expected number of drivers
+    who outrank it:  E[rank_i] = Σ_j σ((s_j - s_i)/τ).  The empirical curve is
+    then read at that fractional rank by interpolation. Properties:
+      • Continuous in the scores → no step jumps; a small weight change moves a
+        driver's laps smoothly instead of flipping 87 ↔ 18.
+      • Separated limit (clear favorite, big score gap) → E[rank] → integer
+        rank → recovers the exact hard-rank curve (leader still gets ~46%).
+      • Tie limit (cluster of equal dominators) → they SHARE the top rungs
+        evenly rather than one winning all the laps on a hair-thin edge.
+
+    Scores are normalized so the field leader = 100, making τ a stable unit
+    regardless of track / weight scale. Only the top_k by score compete (laps
+    led realistically go to a handful of cars; restricting the pool also stops
+    a long tail of backmarkers from inflating every contender's expected rank).
+    Shares are renormalized to the curve's total mass so all laps stay allocated.
+    """
+    items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    out = {d: 0.0 for d, _ in items}
+    if not items or not dist:
+        return out
+    smax = items[0][1]
+    if smax <= 0:
+        return out
+    k = min(len(items), max(1, top_k))
+    top = [(d, 100.0 * max(0.0, s) / smax) for d, s in items[:k]]
+    curve = list(dist) + [0.0] * max(0, k - len(dist))
+
+    raw = {}
+    for d_i, ns_i in top:
+        er = 0.0
+        for d_j, ns_j in top:
+            if d_j == d_i:
+                continue
+            er += 1.0 / (1.0 + math.exp(-(ns_j - ns_i) / tau))
+        raw[d_i] = max(0.0, _interp_curve(curve, er))
+
+    target = sum(dist)
+    tot = sum(raw.values())
+    if tot > 0:
+        for d, v in raw.items():
+            out[d] = v * target / tot
+    return out
+
+
+# ── Start-position availability gate for laps led ────────────────────────────
+# The soft-rank allocator maps PACE rank onto the empirical laps-led-by-rank
+# curve, but that curve is start-BLIND — it only encodes how concentrated laps
+# are among whoever led them. So a fast car starting deep inherits the leader's
+# ~40% share even though, empirically, a P18+ starter leads ~0.6% of laps on
+# average (Cup 2022+, 90th pctl ~0%). This gate multiplies each driver's curve
+# share by an availability factor in [floor, 1.0] that is ~1.0 through P10 and
+# decays for deeper starts, then RE-NORMALIZES so the freed laps flow to the
+# front-runners and the total stays == race_laps. It is continuous in start_pos
+# (logistic), preserving the soft-rank allocator's no-step-jump property.
+#
+# Decay is track-type aware: steep on concrete/short (track position is king,
+# dirty air makes advancing slow), moderate on intermediate/road (long green
+# runs and tire falloff let a fast car work forward), near-flat on superspeedway
+# (the pack cycles the lead through the whole field regardless of start).
+#   (floor, p50): p50 = the start at which availability is halfway from 1.0 to
+#   floor; the transition spans ~13 positions either side of p50.
+_LL_AVAIL = {
+    "superspeedway":     (0.82, 22),
+    "road":              (0.45, 16),
+    "intermediate":      (0.45, 16),
+    "intermediate_worn": (0.45, 16),
+    "short":             (0.30, 15),
+    "short_concrete":    (0.25, 15),
+}
+_LL_AVAIL_DEFAULT = (0.45, 16)
+
+
+def _start_avail(start_pos, floor: float, p50: float) -> float:
+    """Laps-led availability multiplier in [floor, 1.0] as a function of start.
+
+    Flat ~1.0 through ~P10, smooth logistic decay deeper, asymptote `floor`.
+    Continuous in start_pos so it never reintroduces rank step-jumps."""
+    if start_pos is None or start_pos <= 10:
+        return 1.0
+    decay = 1.0 / (1.0 + math.exp((start_pos - p50) / 6.0))
+    return floor + (1.0 - floor) * decay
+
+
+def _apply_start_gate(alloc: dict, start_positions: dict,
+                      track_type: str, parent: str) -> dict:
+    """Damp each driver's laps-led allocation by start availability, then
+    renormalize so the total is unchanged (the laps a deep starter loses flow to
+    the front-runners). No-op when start_positions is empty. Operates on either
+    fractional shares or absolute lap counts — it preserves the input's total."""
+    if not start_positions:
+        return alloc
+    floor, p50 = _LL_AVAIL.get(track_type, _LL_AVAIL.get(parent, _LL_AVAIL_DEFAULT))
+    gated = {d: v * _start_avail(start_positions.get(d), floor, p50)
+             for d, v in alloc.items()}
+    target = sum(alloc.values())
+    tot = sum(gated.values())
+    if tot > 0 and target > 0:
+        return {d: v * target / tot for d, v in gated.items()}
+    return alloc
+
+
+def _allocate_laps_led(driver_scores: dict, race_laps: int, track_name: str,
+                        track_type: str, calibration: dict = None,
+                        odds_display: dict = None,
+                        start_positions: dict = None) -> dict:
+    """Allocate projected laps led across the field.
+
+    Uses historical data to determine:
+    - How many drivers lead laps (avg_n_leaders from DB)
+    - Per-driver cap (avg_top_leader, NOT the extreme max)
+    - Power curve from track-type concentration
+    - Odds-gap boost: heavy favorites get higher concentration
+    """
+    if not driver_scores or race_laps <= 0:
+        return {}
+
+    cal = calibration or {}
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+
+    # ── Preferred path: map our projected dominator order onto the EMPIRICAL
+    # historical laps-led-by-rank shape (same approach as fastest laps). Our
+    # model decides WHO dominates; the real historical curve decides HOW MANY
+    # laps each rank leads. This reproduces the true concentration of
+    # intermediate races — the leader takes ~46% of laps at Charlotte with a
+    # steep dropoff — instead of the parametric power curve below, which
+    # spread laps too evenly (top ~60 across ~11 drivers). ──
+    ll_dist = cal.get("ll_rank_distribution")
+    if ll_dist:
+        shares = _soft_rank_shares(driver_scores, ll_dist,
+                                   tau=_LL_SOFT_TAU, top_k=_LL_SOFT_TOPK)
+        shares = _apply_start_gate(shares, start_positions, track_type, parent)
+        return {d: race_laps * frac for d, frac in shares.items()}
+
+    # ── Fallback path (no historical LL shape for this track/type): parametric
+    # power-curve concentration. ──
+    # Number of leaders: use historical average, fall back to track-type defaults
+    FALLBACK_LEADERS = {"superspeedway": 15, "road": 8, "intermediate": 8,
+                        "intermediate_worn": 7, "short": 7, "short_concrete": 6}
+    n_leaders = int(cal.get("avg_n_leaders",
+                            FALLBACK_LEADERS.get(track_type, FALLBACK_LEADERS.get(parent, 8))))
+    n_leaders = max(4, min(n_leaders, len(driver_scores)))
+
+    # Rank drivers by raw score, only top N get any laps led
+    sorted_drivers = sorted(driver_scores.items(), key=lambda x: x[1], reverse=True)
+    top_drivers = dict(sorted_drivers[:n_leaders])
+
+    # Power curve from track-type concentration (lower = more spread)
+    exponent = cal.get("concentration", TRACK_TYPE_CONCENTRATION.get(track_type, 1.5))
+
+    # Odds-gap boost: when the favorite has a massive implied probability lead,
+    # increase concentration so they get a proportionally larger share of laps.
+    # e.g., -115 (53.5%) vs +500 (16.7%) = 3.2x ratio → boost exponent
+    if odds_display:
+        impl_pcts = [v.get("impl_pct", 0) for v in odds_display.values() if v.get("impl_pct")]
+        if len(impl_pcts) >= 2:
+            impl_pcts_sorted = sorted(impl_pcts, reverse=True)
+            top_impl = impl_pcts_sorted[0]
+            second_impl = impl_pcts_sorted[1]
+            if second_impl > 0:
+                odds_ratio = top_impl / second_impl  # how dominant the favorite is
+                # ratio 2.0+ = strong favorite, 3.0+ = heavy favorite
+                if odds_ratio >= 2.0:
+                    boost = min(0.8, (odds_ratio - 2.0) * 0.4)  # +0.4 per ratio point, cap +0.8
+                    exponent = exponent + boost
+
+    # Clamp to reasonable range
+    exponent = max(1.0, min(exponent, 3.5))
+
+    scores = {d: max(0.01, s) for d, s in top_drivers.items()}
+    powered = {d: s ** exponent for d, s in scores.items()}
+    total = sum(powered.values())
+    if total <= 0:
+        return {}
+
+    # Every lap has a leader — distribute ALL race laps
+    result = {d: (s / total) * race_laps for d, s in powered.items()}
+
+    # Start-position gate (same as the empirical path): pull deep starters' laps
+    # toward the front-runners BEFORE capping, so cap/redistribute still
+    # guarantees the total stays == race_laps and respects the per-driver ceiling.
+    result = _apply_start_gate(result, start_positions, track_type, parent)
+
+    # Per-driver cap: use average top leader with generous headroom
+    # A dominant favorite (-100) routinely exceeds the average leader's laps
+    avg_top = cal.get("avg_top_leader", race_laps * 0.40)
+    max_laps = min(race_laps * 0.75, avg_top * 1.40)  # 40% headroom over average
+
+    result = _cap_and_redistribute(result, max_laps, race_laps)
+    return result
+
+
+def _allocate_fastest_laps(driver_fl_scores: dict, race_laps: int,
+                            track_type: str, calibration: dict = None,
+                            odds_display: dict = None) -> dict:
+    """Allocate projected fastest laps across the field (zero-sum).
+
+    Uses historical data for number of drivers and per-driver cap.
+    Fastest laps are more distributed than laps led, but still
+    concentrate toward the front-runners.
+    """
+    if not driver_fl_scores or race_laps <= 0:
+        return {}
+
+    cal = calibration or {}
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+
+    # ── Preferred path: map our projected FL order onto the EMPIRICAL
+    # historical FL-by-rank shape (track -> track-type fallback, computed in
+    # the calibration). Our model only decides WHO is fastest; the real
+    # historical curve decides HOW MANY fast laps each rank gets. This fixes
+    # the over-concentration the parametric exponent produced (e.g. 70/70/47
+    # at Charlotte vs the real 59/40/31 shape). ──
+    fl_dist = cal.get("fl_rank_distribution")
+    if fl_dist:
+        shares = _soft_rank_shares(driver_fl_scores, fl_dist,
+                                   tau=_FL_SOFT_TAU, top_k=_FL_SOFT_TOPK)
+        return {d: race_laps * frac for d, frac in shares.items()}
+
+    # ── Fallback path (no historical FL data for this track or track type):
+    # parametric exponent-based concentration. ──
+    # Number of drivers with fastest laps — calibrated from historical Cup
+    # data (2022+). Captures ~90-97% of real FL distribution at each
+    # track type while avoiding over-dilution to drivers who realistically
+    # get <2% of FL points.
+    #
+    # Superspeedway is the biggest outlier: the draft spreads FL across
+    # 30+ drivers per race. Capping at 20 (old behavior) missed 18%+ of
+    # the real distribution, which significantly under-projected FL points
+    # for mid-pack speedway drivers.
+    #
+    # Historical Top-N share by track type (Cup 2022+):
+    #    superspeedway:    Top 20 = 82%, Top 30 = 97%  → use 30
+    #    road:             Top 10 = 82%, Top 15 = 92%  → use 12
+    #    intermediate:     Top 10 = 80%, Top 15 = 91%  → use 15
+    #    intermediate_worn: Top 15 = 86%, Top 20 = 93% → use 18
+    #    short:            Top 15 = 87%, Top 20 = 93%  → use 18
+    #    short_concrete:   Top 15 = 85%, Top 20 = 92%  → use 18
+    FALLBACK_FL = {"superspeedway": 30, "road": 12, "intermediate": 15,
+                   "intermediate_worn": 18, "short": 18, "short_concrete": 18}
+    n_with_fl = int(cal.get("avg_n_fl_leaders",
+                            FALLBACK_FL.get(track_type, FALLBACK_FL.get(parent, 15))))
+    # Cap to track-type-appropriate ceiling (35 = max observed across all
+    # track types) and the actual field size. The old hardcoded 20 cap was
+    # the bug that limited Talladega to 20 even when calibration said 35+.
+    max_fl_drivers = 35 if parent == "superspeedway" else 25
+    n_with_fl = max(5, min(n_with_fl, max_fl_drivers, len(driver_fl_scores)))
+
+    # Rank drivers by raw FL score, only top N get any fastest laps
+    sorted_drivers = sorted(driver_fl_scores.items(), key=lambda x: x[1], reverse=True)
+    top_drivers = dict(sorted_drivers[:n_with_fl])
+
+    # Fastest laps concentration exponent — empirically tuned per track
+    # type to reproduce historical Top-N FL share (Cup 2022+). Higher =
+    # more concentrated on leaders, lower = more evenly spread.
+    #
+    # Historical targets (Top5 / Top10 / Top15 / Top20 share of total FL):
+    #   superspeedway:    36% / 56% / 71% / 82%   -> exp 1.3
+    #   road:             62% / 82% / 92% / 98%   -> exp 2.2
+    #   intermediate:     57% / 80% / 91% / 96%   -> exp 2.4
+    #   intermediate_worn: 55% / 75% / 86% / 93%  -> exp 2.2
+    #   short:            54% / 76% / 87% / 93%   -> exp 2.2
+    #   short_concrete:   52% / 73% / 85% / 92%   -> exp 2.0
+    FL_EXPONENT_MAP = {
+        "superspeedway":     1.3,
+        "road":              2.2,
+        "intermediate":      2.4,
+        "intermediate_worn": 2.2,
+        "short":             2.2,
+        "short_concrete":    2.0,
+    }
+    fl_exponent = FL_EXPONENT_MAP.get(track_type,
+                                        FL_EXPONENT_MAP.get(parent, 2.0))
+
+    # Odds-gap boost (same logic as laps led)
+    if odds_display:
+        impl_pcts = [v.get("impl_pct", 0) for v in odds_display.values() if v.get("impl_pct")]
+        if len(impl_pcts) >= 2:
+            impl_pcts_sorted = sorted(impl_pcts, reverse=True)
+            top_impl = impl_pcts_sorted[0]
+            second_impl = impl_pcts_sorted[1]
+            if second_impl > 0:
+                odds_ratio = top_impl / second_impl
+                if odds_ratio >= 2.0:
+                    boost = min(0.5, (odds_ratio - 2.0) * 0.25)  # smaller boost than LL
+                    fl_exponent = fl_exponent + boost
+
+    fl_exponent = max(1.2, min(fl_exponent, 2.5))
+
+    scores = {d: max(0.01, s) for d, s in top_drivers.items()}
+    powered = {d: s ** fl_exponent for d, s in scores.items()}
+    total = sum(powered.values())
+    if total <= 0:
+        return {}
+
+    # Every lap has a fastest lap — distribute ALL race laps
+    result = {d: (s / total) * race_laps for d, s in powered.items()}
+
+    # Per-driver cap. Anchor on the historical FL LEADER's average (the
+    # typical most-fastest-laps driver) with modest headroom, not the
+    # all-time max — even a dominant car rarely exceeds the leader average
+    # by much (Charlotte: leader avg ~59, all-time max 70). Hard ceiling at
+    # the all-time max so we never project above what's ever happened.
+    avg_fl_leader = cal.get("avg_fl_leader")
+    hist_max_fl = cal.get("max_fastest_laps", race_laps * 0.25)
+    if avg_fl_leader:
+        max_fl = min(hist_max_fl, avg_fl_leader * 1.30)
+    else:
+        max_fl = min(race_laps * 0.30, hist_max_fl)
+
+    result = _cap_and_redistribute(result, max_fl, race_laps)
+    return result
+
+
+def _cap_and_redistribute(result: dict, max_per_driver: float,
+                          total_to_allocate: float) -> dict:
+    """Cap any driver above max_per_driver and redistribute the excess to
+    uncapped drivers, repeating until stable.
+
+    Replaces the previous in-line loops which were dead code: they checked
+    `deficit = total - sum(result)` first and broke immediately because the
+    initial allocation already summed to the total — so the per-driver cap
+    never ran and top drivers could be allocated above the historical max.
+    """
+    result = dict(result)
+    for _ in range(25):
+        excess = 0.0
+        for d in result:
+            if result[d] > max_per_driver:
+                excess += result[d] - max_per_driver
+                result[d] = max_per_driver
+        if excess < 0.5:
+            break
+        uncapped = {d: s for d, s in result.items() if s < max_per_driver - 1e-9}
+        uncapped_total = sum(uncapped.values())
+        if uncapped_total <= 0:
+            break  # everyone is at the cap — can't redistribute further
+        for d in uncapped:
+            result[d] += excess * (uncapped[d] / uncapped_total)
+    return result
+
+
 def compute_projections(
     drivers, field_size, wn,
     th_data, tt_data, qual_pos, practice_data,
@@ -202,9 +591,6 @@ def compute_projections(
     where signal_details = {driver: {"Track": val, "Odds": val, ...}} with
     normalized signal values and adjustment info for display.
     """
-    from tabs.tab_projections import (
-        _allocate_laps_led, _allocate_fastest_laps,
-    )
     from src.utils import fuzzy_match_name, arp_finish_blend
 
     if cross_th_lookup is None:

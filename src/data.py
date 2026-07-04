@@ -16,8 +16,10 @@ from bs4 import BeautifulSoup
 
 from src.config import (
     NASCAR_API_BASE, DB_PATH, DA_TRACK_IDS, EXHIBITION_KEYWORDS,
-    CONCRETE_TRACKS, CONCRETE_GROUP_LABEL,
+    CONCRETE_TRACKS, CONCRETE_GROUP_LABEL, TRACK_TYPE_MAP,
+    TRACK_TYPE_PARENT,
 )
+from src.projections import TRACK_TYPE_CONCENTRATION
 from src.utils import int_col, calc_dk_points, calc_fd_points, normalize_driver_name
 import re
 
@@ -982,6 +984,495 @@ def query_db_track_history(track_name: str, series_id: int = 1,
         return df
     except Exception:
         return pd.DataFrame()
+
+
+# ── Projection-engine queries ────────────────────────────────────────────────
+# Moved verbatim from tabs/tab_projections.py (the projection engine must not
+# live in the UI layer). NOTE: query_db_track_history above is a DIFFERENT,
+# display-flavored query (no before_date / exclude_race_id); the underscore-
+# prefixed functions below belong to the projection engine — do not merge.
+
+PROJ_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "nascar.db")
+
+
+# Fallback dominator ceilings by track type (max laps led, max fastest laps)
+TRACK_TYPE_DOM_DEFAULTS = {
+    "superspeedway":        {"max_ll": 70,  "max_fl": 40},
+    "road":                 {"max_ll": 60,  "max_fl": 30},
+    "dirt":                 {"max_ll": 100, "max_fl": 50},
+    "intermediate":         {"max_ll": 200, "max_fl": 80},
+    "intermediate_worn":    {"max_ll": 200, "max_fl": 80},
+    "short":                {"max_ll": 350, "max_fl": 120},
+    "short_concrete":       {"max_ll": 400, "max_fl": 130},
+}
+
+
+def _get_track_dominator_calibration(track_name: str, track_type: str,
+                                      series_id: int = None,
+                                      before_date: str = None) -> dict:
+    """Pull historical domination stats from DB for this track.
+
+    before_date: when replaying a past race (backtests, profit sim,
+    Accuracy), pass the race date so the calibration only sees races BEFORE
+    it — without this, the replayed race's own concentration leaked into
+    the curve used to project it.
+
+    Returns dict with:
+        avg_top_leader: average laps led by the race leader per race
+        max_laps_led: highest single-race laps led at this track
+        max_fastest_laps: highest single-race fastest laps at this track
+        avg_n_leaders: average number of drivers who lead laps per race
+        avg_n_fl_leaders: average number of drivers who get fastest laps per race
+        concentration: exponent for score distribution
+
+    Calibration source priority:
+        1. Per-track history (if races >= MIN_RACES_TRACK_CAL at this track)
+        2. Track-type history for the SAME series (e.g. for Watkins Glen
+           Truck without enough race history, query all Truck road races)
+        3. Hardcoded track-type defaults (Cup-scaled fallback)
+
+    Without #2, sparse per-track Truck/O'Reilly data fell through to the
+    Cup-scaled defaults — producing nonsense like "avg leader leads 80 laps"
+    for a 72-lap Truck road race.
+    """
+    MIN_RACES_TRACK_CAL = 3  # below this, per-track numbers are too noisy
+
+    # Pull track-type fallbacks for dominator-leader counts. These align with
+    # FALLBACK_FL in _allocate_fastest_laps and are empirically calibrated
+    # from Cup 2022+ data across track types.
+    FALLBACK_FL_CAL = {"superspeedway": 30, "road": 12, "intermediate": 15,
+                       "intermediate_worn": 18, "short": 18, "short_concrete": 18}
+    FALLBACK_N_LEADERS = {"superspeedway": 12, "road": 4, "intermediate": 6,
+                          "intermediate_worn": 7, "short": 6, "short_concrete": 5}
+
+    type_defaults = TRACK_TYPE_DOM_DEFAULTS.get(track_type, {"max_ll": 150, "max_fl": 60})
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    # avg_top_leader hardcoded default scales by track type so a missing
+    # series-specific fallback at least uses a number tied to the track type
+    # rather than the same 80 (Cup intermediate-ish) for everything.
+    AVG_TOP_LEADER_DEFAULT = {
+        "superspeedway": 35, "road": 25, "intermediate": 80,
+        "intermediate_worn": 80, "short": 100, "short_concrete": 110,
+    }
+    # Default avg fastest-laps for the per-race FL leader, scaled by track type
+    # (≈55-60% of the max). Used as the FL projection ceiling anchor.
+    AVG_FL_LEADER_DEFAULT = {
+        "superspeedway": 18, "road": 14, "intermediate": 45,
+        "intermediate_worn": 40, "short": 55, "short_concrete": 55,
+    }
+    defaults = {
+        "avg_top_leader": AVG_TOP_LEADER_DEFAULT.get(track_type,
+                            AVG_TOP_LEADER_DEFAULT.get(parent, 60)),
+        "max_laps_led": type_defaults["max_ll"],
+        "max_fastest_laps": type_defaults["max_fl"],
+        "avg_fl_leader": AVG_FL_LEADER_DEFAULT.get(track_type,
+                            AVG_FL_LEADER_DEFAULT.get(parent, 40)),
+        "avg_n_leaders": FALLBACK_N_LEADERS.get(track_type,
+                                                  FALLBACK_N_LEADERS.get(parent, 6)),
+        "avg_n_fl_leaders": FALLBACK_FL_CAL.get(track_type,
+                                                  FALLBACK_FL_CAL.get(parent, 15)),
+        "concentration": TRACK_TYPE_CONCENTRATION.get(track_type, 1.5),
+    }
+    if not os.path.exists(PROJ_DB):
+        return defaults
+
+    # Resolve the set of tracks to consider for the track-type fallback —
+    # use the same family-folding logic as query_team_stats so e.g. road
+    # courses pull in road, short_concrete pulls in short, etc.
+    type_family = {track_type, parent}
+    for tt, p in TRACK_TYPE_PARENT.items():
+        if tt == track_type or p == parent:
+            type_family.add(tt)
+    if track_type == "short_concrete":
+        type_family.add("short")
+    family_tracks = [t for t, tt in TRACK_TYPE_MAP.items() if tt in type_family]
+
+    def _summarize(rows):
+        """Reduce a list of (top_led, n_leaders, top_fl, n_fl) per-race rows
+        to a calibration-style summary."""
+        if not rows:
+            return None
+        top_leaders = [r[0] for r in rows if r[0] and r[0] > 0]
+        n_leaders_list = [r[1] for r in rows if r[1] and r[1] > 0]
+        top_fl = [r[2] for r in rows if r[2] and r[2] > 0]
+        n_fl_list = [r[3] for r in rows if r[3] and r[3] > 0]
+        out = {}
+        if top_leaders:
+            out["avg_top_leader"] = float(np.mean(top_leaders))
+            out["max_laps_led"] = int(max(top_leaders))
+        if n_leaders_list:
+            out["avg_n_leaders"] = float(np.mean(n_leaders_list))
+        if top_fl:
+            out["max_fastest_laps"] = int(max(top_fl))
+            out["avg_fl_leader"] = float(np.mean(top_fl))
+        if n_fl_list:
+            out["avg_n_fl_leaders"] = float(np.mean(n_fl_list))
+        return out
+
+    def _rank_curve(conn, where_sql, where_params, value_col):
+        """Empirical {value_col}-by-rank distribution from history.
+
+        For each race matching the filter, sort drivers by `value_col`
+        (fastest_laps OR laps_led) descending and record each rank's
+        fractional share of that race's total. Average the fractions across
+        races, normalize to sum to 1. Returns [frac_rank1, frac_rank2, ...]
+        or None if too few races.
+
+        Using FRACTIONS (not absolute counts) makes the shape robust to
+        differing race lengths / caution-shortened totals between years.
+        Only races with a meaningful total are included so empty future rows
+        and tiny exhibition heats don't distort the curve.
+
+        Critically for LAPS LED: real intermediate races concentrate laps on
+        one dominator (~46% to the leader, steep dropoff), so the empirical
+        curve reproduces that shape instead of the old parametric power curve,
+        which spread laps too evenly across the field.
+        """
+        rows = conn.execute(f'''
+            SELECT r.id, rr.{value_col}
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE {where_sql} AND rr.{value_col} IS NOT NULL
+            ORDER BY r.id, rr.{value_col} DESC
+        ''', where_params).fetchall()
+        if not rows:
+            return None
+        per_race = {}
+        for rid, v in rows:
+            per_race.setdefault(rid, []).append(v or 0)
+        rank_fracs = {}
+        n_races = 0
+        for rid, vals in per_race.items():
+            total = sum(vals)
+            if total < 30:   # skip races with negligible data (future/heats)
+                continue
+            n_races += 1
+            for rank, v in enumerate(vals):
+                rank_fracs.setdefault(rank, []).append(v / total)
+        if n_races < 2:
+            return None
+        # Average the fraction at each rank, then normalize to sum to 1.0
+        curve = []
+        for rank in sorted(rank_fracs.keys()):
+            curve.append(float(np.mean(rank_fracs[rank])))
+        s = sum(curve)
+        if s <= 0:
+            return None
+        curve = [c / s for c in curve]
+
+        # Sample-size-aware temperature smoothing. With few historical races
+        # the empirical curve can be extremely top-heavy by random luck — e.g.
+        # Nashville Trucks (5 races, dominated 1-2 cars each) yields rank 5 =
+        # 0.5% of laps, so a real contender stuck at dom-rank 5 by chance
+        # would only get ~1 lap in a 150-lap race. Raising each share to a
+        # sub-1 power flattens the curve while preserving rank ordering (a
+        # principled "shrinkage to prior" for small samples). Full trust at
+        # n ≥ 10 races; T floor 0.75 protects against extreme cliffs.
+        T = max(0.75, min(1.0, n_races / 10.0))
+        if T < 1.0:
+            curve = [c ** T for c in curve]
+            s2 = sum(curve)
+            if s2 > 0:
+                curve = [c / s2 for c in curve]
+        return curve
+
+    try:
+        conn = sqlite3.connect(PROJ_DB)
+
+        # Step 1: per-track history. Exhibitions excluded (Duels would skew
+        # Daytona's concentration); before_date bounds replays to pre-race
+        # knowledge only.
+        series_filter = "AND r.series_id = ?" if series_id else ""
+        series_filter += " AND COALESCE(r.is_exhibition, 0) = 0"
+        if before_date:
+            series_filter += " AND r.race_date < ?"
+        params = [track_name]
+        if series_id:
+            params.append(series_id)
+        if before_date:
+            params.append(before_date)
+        per_track_rows = conn.execute(f'''
+            SELECT MAX(rr.laps_led) as top_led,
+                   COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
+                   MAX(rr.fastest_laps) as top_fl,
+                   COUNT(CASE WHEN rr.fastest_laps > 0 THEN 1 END) as n_fl
+            FROM race_results rr
+            JOIN races r ON r.id = rr.race_id
+            JOIN tracks t ON t.id = r.track_id
+            WHERE t.name = ?
+            {series_filter}
+            GROUP BY r.id
+        ''', params).fetchall()
+
+        result = dict(defaults)
+        per_track_summary = _summarize(per_track_rows) if per_track_rows else None
+
+        # Step 2: track-type history for the same series (used as fallback when
+        # per-track is too sparse, AND as the source for any fields the per-track
+        # query couldn't fill in)
+        type_summary = None
+        type_placeholders = None
+        _type_extra = " AND COALESCE(r.is_exhibition, 0) = 0"
+        _type_params_extra = []
+        if before_date:
+            _type_extra += " AND r.race_date < ?"
+            _type_params_extra.append(before_date)
+        if family_tracks and series_id:
+            type_placeholders = ",".join("?" for _ in family_tracks)
+            type_rows = conn.execute(f'''
+                SELECT MAX(rr.laps_led) as top_led,
+                       COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
+                       MAX(rr.fastest_laps) as top_fl,
+                       COUNT(CASE WHEN rr.fastest_laps > 0 THEN 1 END) as n_fl
+                FROM race_results rr
+                JOIN races r ON r.id = rr.race_id
+                JOIN tracks t ON t.id = r.track_id
+                WHERE t.name IN ({type_placeholders})
+                  AND r.series_id = ?{_type_extra}
+                GROUP BY r.id
+            ''', list(family_tracks) + [series_id] + _type_params_extra).fetchall()
+            type_summary = _summarize(type_rows)
+
+        # Empirical FL- and LL-by-rank distributions: prefer per-track, fall
+        # back to track-type-for-series. Stored on the calibration so the
+        # allocators map projected order onto the REAL historical shape — this
+        # is what makes laps led concentrate on the dominator (~46% to the
+        # leader at Charlotte) instead of the old too-flat power curve.
+        for _col, _key in [("fastest_laps", "fl_rank_distribution"),
+                           ("laps_led", "ll_rank_distribution")]:
+            _dist = _rank_curve(conn, f"t.name = ? {series_filter}", params, _col)
+            if _dist is None and type_placeholders:
+                _dist = _rank_curve(
+                    conn,
+                    f"t.name IN ({type_placeholders}) AND r.series_id = ?{_type_extra}",
+                    list(family_tracks) + [series_id] + _type_params_extra, _col)
+            if _dist:
+                result[_key] = _dist
+
+        conn.close()
+
+        # Use per-track when it has enough races; otherwise fall through to
+        # track-type-for-series; otherwise stay on the (track-type-scaled) defaults.
+        n_per_track = len(per_track_rows) if per_track_rows else 0
+        use_per_track = (n_per_track >= MIN_RACES_TRACK_CAL) and per_track_summary
+
+        if use_per_track:
+            result.update(per_track_summary)
+        elif type_summary:
+            result.update(type_summary)
+        # else: result stays on defaults
+        # (fl_rank_distribution was set above regardless and survives .update)
+
+        return result
+
+    except Exception:
+        pass
+
+    return defaults
+
+
+def _query_db_track_history(track_name, series_id, exclude_race_id=None,
+                             before_date=None, cross_series_ids=None,
+                             trim_worst: bool = False):
+    """Query per-driver track history from DB with date filtering.
+
+    Args:
+        cross_series_ids: list of higher-series IDs for cross-series blending.
+            When provided, returns a tuple (current_df, cross_df).
+            When None, returns just current_df.
+        trim_worst: superspeedway flag. When True, crash/mechanical DNFs are
+            KEPT in the finish average (wrecks at supers are frequent and
+            partly a driver skill, so excluding them overstates pace). When
+            False, DNFs are excluded from the finish average (their bad finish
+            is luck; crash rate is priced separately by the DNF penalty).
+            Aggregates are recency-weighted by race order either way.
+    """
+    if not os.path.exists(PROJ_DB):
+        return (pd.DataFrame(), pd.DataFrame()) if cross_series_ids else pd.DataFrame()
+
+    def _run_query(conn, sid_list):
+        if len(sid_list) == 1:
+            where = "WHERE t.name = ? AND r.series_id = ?"
+            params = [track_name, sid_list[0]]
+        else:
+            placeholders = ",".join("?" for _ in sid_list)
+            where = f"WHERE t.name = ? AND r.series_id IN ({placeholders})"
+            params = [track_name] + sid_list
+        if exclude_race_id:
+            where += " AND r.id != ?"
+            params.append(exclude_race_id)
+        if before_date:
+            where += " AND r.race_date < ?"
+            params.append(before_date)
+
+        # Recency by RACE ORDER: rank each driver's races newest-first and
+        # weight w = max(0, 1-(rn-1)*STEP) so the last ~10-14 races dominate
+        # (current form isn't drowned by the volume of older races).
+        w = _recency_weight_sql("rn")
+        # Accident-aware finish average: exclude crash/mechanical-DNF races
+        # (the bad finish is luck; crash rate is priced by the DNF penalty),
+        # raw fallback when every race was a DNF. Avg Run Pos keeps ALL races
+        # (running position reflects the pace shown). Superspeedways
+        # (trim_worst) keep DNFs in the finish average.
+        _clean = "LOWER(COALESCE(status,'running')) IN ('running','')"
+        if trim_worst:
+            finish_num, finish_den = f"SUM(finish_pos*{w})", f"SUM({w})"
+        else:
+            finish_num = f"SUM(CASE WHEN {_clean} THEN finish_pos*{w} END)"
+            finish_den = f"SUM(CASE WHEN {_clean} THEN {w} END)"
+
+        query = f'''
+            WITH ranked AS (
+                SELECT d.id AS did, d.full_name AS Driver,
+                       rr.finish_pos, rr.start_pos, rr.laps_led, rr.fastest_laps,
+                       rr.avg_running_position AS arp, rr.rating AS rating, rr.status,
+                       ROW_NUMBER() OVER (PARTITION BY d.id
+                                          ORDER BY r.race_date DESC, r.id DESC) AS rn
+                FROM race_results rr
+                JOIN drivers d ON d.id = rr.driver_id
+                JOIN races r ON r.id = rr.race_id
+                JOIN tracks t ON t.id = r.track_id
+                {where}
+            )
+            SELECT Driver,
+                   COUNT(*) as Races,
+                   ROUND(COALESCE({finish_num}/NULLIF({finish_den},0), AVG(finish_pos)), 1) as "Avg Finish",
+                   ROUND(AVG(start_pos), 1) as "Avg Start",
+                   SUM(laps_led) as "Laps Led",
+                   SUM(fastest_laps) as "Fastest Laps",
+                   ROUND(SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
+                         NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0), 1) as "Avg Run Pos",
+                   ROUND(SUM(CASE WHEN rating IS NOT NULL THEN rating*{w} END)/
+                         NULLIF(SUM(CASE WHEN rating IS NOT NULL THEN {w} END),0), 1) as "Avg Rating",
+                   SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as Wins,
+                   SUM(CASE WHEN finish_pos <= 5 THEN 1 ELSE 0 END) as "Top 5",
+                   SUM(CASE WHEN finish_pos <= 10 THEN 1 ELSE 0 END) as "Top 10",
+                   SUM(CASE WHEN LOWER(COALESCE(status,'running')) NOT IN ('running','')
+                        THEN 1 ELSE 0 END) as DNF
+            FROM ranked
+            GROUP BY did
+            HAVING COUNT(*) >= 1
+        '''
+        try:
+            return pd.read_sql_query(query, conn, params=params)
+        except Exception:
+            return pd.DataFrame()
+
+    conn = sqlite3.connect(PROJ_DB)
+    current_df = _run_query(conn, [series_id])
+
+    if cross_series_ids:
+        cross_df = _run_query(conn, cross_series_ids)
+        conn.close()
+        return current_df, cross_df
+
+    conn.close()
+    return current_df
+
+
+def _query_db_track_type_history(track_type, series_id, exclude_track=None,
+                                  exclude_race_id=None, before_date=None,
+                                  cross_series_ids=None):
+    """Query per-driver stats across all tracks of a given type from DB.
+
+    Used for completed races to prevent data leakage.
+    When cross_series_ids provided, returns (current_dict, cross_dict).
+    """
+    if not os.path.exists(PROJ_DB):
+        return ({}, {}) if cross_series_ids else {}
+
+    from src.config import TRACK_TYPE_MAP as _TTM
+    # Match by parent type so subtypes include siblings
+    # e.g. Bristol (short_concrete) includes all "short" tracks
+    parent = TRACK_TYPE_PARENT.get(track_type, track_type)
+    matching_tracks = [t for t, tt in _TTM.items()
+                       if TRACK_TYPE_PARENT.get(tt, tt) == parent]
+    if exclude_track:
+        matching_tracks = [t for t in matching_tracks if exclude_track not in t]
+    if not matching_tracks:
+        return ({}, {}) if cross_series_ids else {}
+
+    def _run_tt_query(conn, sid_list):
+        placeholders_t = ",".join("?" for _ in matching_tracks)
+        if len(sid_list) == 1:
+            series_clause = "AND r.series_id = ?"
+            params = matching_tracks + [sid_list[0]]
+        else:
+            series_ph = ",".join("?" for _ in sid_list)
+            series_clause = f"AND r.series_id IN ({series_ph})"
+            params = matching_tracks + sid_list
+        where_extra = ""
+        if exclude_race_id:
+            where_extra += " AND r.id != ?"
+            params.append(exclude_race_id)
+        if before_date:
+            where_extra += " AND r.race_date < ?"
+            params.append(before_date)
+
+        # Recency by RACE ORDER (see _query_db_track_history): rank each
+        # driver's track-type races newest-first; weight w=max(0,1-(rn-1)*STEP)
+        # so recent form dominates the volume of older races. Accident-aware
+        # finish average (exclude crash/mechanical DNFs, raw fallback); ARP
+        # keeps all races; superspeedways keep DNFs in the finish average.
+        w = _recency_weight_sql("rn")
+        if parent == "superspeedway":
+            fnum, fden = f"SUM(finish_pos*{w})", f"SUM({w})"
+        else:
+            _clean = "LOWER(COALESCE(status,'running')) IN ('running','')"
+            fnum = f"SUM(CASE WHEN {_clean} THEN finish_pos*{w} END)"
+            fden = f"SUM(CASE WHEN {_clean} THEN {w} END)"
+
+        query = f'''
+            WITH ranked AS (
+                SELECT d.id AS did, d.full_name AS name,
+                       rr.finish_pos, rr.avg_running_position AS arp,
+                       rr.rating AS rating, rr.laps_led, rr.status,
+                       ROW_NUMBER() OVER (PARTITION BY d.id
+                                          ORDER BY r.race_date DESC, r.id DESC) AS rn
+                FROM race_results rr
+                JOIN drivers d ON d.id = rr.driver_id
+                JOIN races r ON r.id = rr.race_id
+                JOIN tracks t ON t.id = r.track_id
+                WHERE t.name IN ({placeholders_t})
+                  {series_clause}
+                  {where_extra}
+            )
+            SELECT name,
+                   COUNT(*) as races,
+                   COALESCE({fnum}/NULLIF({fden},0), AVG(finish_pos)) as avg_finish,
+                   SUM(CASE WHEN arp IS NOT NULL THEN arp*{w} END)/
+                     NULLIF(SUM(CASE WHEN arp IS NOT NULL THEN {w} END),0) as avg_running_pos,
+                   SUM(CASE WHEN rating IS NOT NULL THEN rating*{w} END)/
+                     NULLIF(SUM(CASE WHEN rating IS NOT NULL THEN {w} END),0) as avg_rating,
+                   SUM(laps_led) as total_laps_led
+            FROM ranked
+            GROUP BY did
+        '''
+        rows = conn.execute(query, params).fetchall()
+        result = {}
+        for row in rows:
+            name, races, avg_f, avg_arp, avg_rating, ll = row
+            if races and races > 0:
+                result[name] = {
+                    "avg_finish": avg_f or 20,
+                    "avg_running_pos": avg_arp,
+                    "tt_rating": avg_rating,
+                    "laps_led_per_race": (ll or 0) / races,
+                    "races": races,
+                }
+        return result
+
+    conn = sqlite3.connect(PROJ_DB)
+    current = _run_tt_query(conn, [series_id])
+
+    if cross_series_ids:
+        cross = _run_tt_query(conn, cross_series_ids)
+        conn.close()
+        return current, cross
+
+    conn.close()
+    return current
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
