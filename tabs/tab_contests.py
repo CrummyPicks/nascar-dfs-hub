@@ -112,6 +112,65 @@ def _insights(view):
     return notes
 
 
+@st.dialog("Race Day Results", width="large")
+def _race_day_dialog(day_df: pd.DataFrame, label: str):
+    """Every contest entered on one race day, with the real results — the
+    contest-level 'why' behind a By Race row (mirrors the driver drill-in)."""
+    st.markdown(f"#### {label}")
+    fees = float(day_df["entry_fee"].sum())
+    won = float(day_df["winnings"].sum())
+    net = round(won - fees, 2)
+    best = day_df["points"].max()
+    st.markdown(_row([
+        _card("Entries", f"{len(day_df)}",
+              f"{day_df['contest_name'].nunique()} contests"),
+        _card("Fees", f"${fees:,.2f}", "buy-ins", "#fb923c"),
+        _card("Winnings", f"${won:,.2f}", "returned", "#a78bfa"),
+        _card("Net", f"${net:+,.2f}", "day P/L", _pl_color(net)),
+        _card("Best FPTS", f"{best:.1f}" if pd.notna(best) else "—",
+              "my top lineup", "#2dd4bf"),
+    ]), unsafe_allow_html=True)
+
+    st.markdown("**By Contest**")
+    c = day_df.groupby("contest_name").agg(
+        Style=("style", "first"),
+        Entries=("entry_key", "count"),
+        Fees=("entry_fee", "sum"),
+        Winnings=("winnings", "sum"),
+        Best=("place", "min"),
+        Field=("field_entries", "max"),
+        Paid=("places_paid", "max"),
+        BestFPTS=("points", "max"),
+    ).reset_index().rename(columns={
+        "contest_name": "Contest", "Best": "Best Place",
+        "BestFPTS": "Best FPTS"})
+    c["Net"] = (c["Winnings"] - c["Fees"]).round(2)
+    c["Fees"] = c["Fees"].round(2)
+    c["Winnings"] = c["Winnings"].round(2)
+    c = c.sort_values("Net", ascending=False)
+    st.dataframe(_style_money(c, {"Net"}, extra_fmt={"Best FPTS": "{:.1f}"}),
+                 width="stretch", hide_index=True)
+
+    st.markdown("**Every Entry**")
+    e = day_df[["contest_name", "style", "place", "field_entries", "points",
+                "entry_fee", "winnings"]].copy()
+    e["Net"] = (e["winnings"] - e["entry_fee"]).round(2)
+    e["%ile"] = (100 * e["place"] / e["field_entries"].replace(0, pd.NA)).round(1)
+    e = e.rename(columns={
+        "contest_name": "Contest", "style": "Style", "place": "Place",
+        "field_entries": "Field", "points": "FPTS", "entry_fee": "Fee",
+        "winnings": "Won"})
+    e = e.sort_values(["Contest", "Place"])
+    st.dataframe(_style_money(e, {"Net"},
+                              extra_fmt={"FPTS": "{:.1f}", "%ile": "{:.1f}",
+                                         "Fee": "${:,.2f}",
+                                         "Won": "${:,.2f}"}),
+                 width="stretch", hide_index=True,
+                 height=min(420, 60 + 30 * len(e)))
+    st.caption("%ile = finishing percentile within the contest "
+               "(lower = better; 1 = won it).")
+
+
 def _secret_key():
     """The ADMIN_PASSWORD secret, or None when unset/empty."""
     try:
@@ -562,10 +621,12 @@ def render(*, series_name="Cup"):
     # ── By Race (entries linked to nascar.db by date + series) ─────────
     st.markdown("**By Race** — your real results per event")
     vr = view.copy()
+    vr["_d"] = vr["contest_date"].astype(str).str.slice(0, 10)
+    vr["_series_key"] = vr["series"].fillna("")
     vr["_race_lbl"] = vr.apply(
-        lambda r: (f"{str(r['contest_date'])[:10]} — "
+        lambda r: (f"{r['_d']} — "
                    f"{r['Track'] or '?'} ({r['series'] or '?'})"), axis=1)
-    g = vr.groupby("_race_lbl").agg(
+    g = vr.groupby(["_race_lbl", "_d", "_series_key"]).agg(
         Entries=("entry_key", "count"),
         Fees=("entry_fee", "sum"),
         Winnings=("winnings", "sum"),
@@ -576,10 +637,28 @@ def render(*, series_name="Cup"):
     g["Fees"] = g["Fees"].round(2)
     g["Winnings"] = g["Winnings"].round(2)
     g["BestFPTS"] = g["BestFPTS"].round(1)
-    g = g.sort_values("Race Day", ascending=False)
-    st.dataframe(_style_money(g, {"Net", "ROI %"},
-                              extra_fmt={"BestFPTS": "{:.1f}"}),
-                 width="stretch", hide_index=True, height=350)
+    g = g.sort_values("Race Day", ascending=False).reset_index(drop=True)
+    st.caption("Click any row to open every contest from that race day")
+    _ev = st.dataframe(
+        _style_money(g.drop(columns=["_d", "_series_key"]), {"Net", "ROI %"},
+                     extra_fmt={"BestFPTS": "{:.1f}"}),
+        width="stretch", hide_index=True, height=350,
+        selection_mode="single-row", on_select="rerun",
+        key="contest_byrace_tbl")
+    # Same guard pattern as the driver drill-in: only open on a NEW row, so
+    # a closed dialog doesn't reopen on every rerun while the row stays
+    # visually selected.
+    _sel = getattr(_ev, "selection", None)
+    _rows_sel = (getattr(_sel, "rows", None) or []) if _sel is not None else []
+    if _rows_sel:
+        _i = _rows_sel[0]
+        if 0 <= _i < len(g) and st.session_state.get("byrace_last_idx") != _i:
+            st.session_state["byrace_last_idx"] = _i
+            _day = vr[(vr["_d"] == g.iloc[_i]["_d"])
+                      & (vr["_series_key"] == g.iloc[_i]["_series_key"])]
+            _race_day_dialog(_day, g.iloc[_i]["Race Day"])
+    else:
+        st.session_state["byrace_last_idx"] = None
     st.caption("Grade the model's projections for any of these races on the "
                "**Accuracy** page (Race Comparison) — this table is your real-"
                "money result; that page is why it happened.")
