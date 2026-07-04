@@ -73,26 +73,42 @@ def _style_money(df, cols, extra_fmt=None):
     return df.style.apply(_c).format(fmt, na_rep="—")
 
 
+def _fmt_net(net):
+    """Sign-aware escaped money: +\\$1,234.56 / -\\$1,234.56 (LaTeX-safe)."""
+    return (f"+\\${net:,.2f}" if net >= 0 else f"-\\${abs(net):,.2f}")
+
+
 def _insights(view):
-    """Auto-generated verdicts: where the bankroll grows and leaks."""
+    """Auto-generated verdicts: where the bankroll grows and leaks.
+
+    Contest style keeps the best/leak call-outs; series shows ALL of them
+    (best -> worst) — a three-line scoreboard beats hiding the middle one.
+    NB: dollars are escaped — bare $...$ pairs render as LaTeX in st.markdown.
+    """
     notes = []
-    for by, label in [("style", "contest style"), ("series", "series")]:
-        g = _breakdown(view, by)
-        g = g[g["Fees"] >= 50]        # ignore tiny-sample buckets
-        if len(g) < 2:
-            continue
+    g = _breakdown(view, "style")
+    g = g[g["Fees"] >= 50]            # ignore tiny-sample buckets
+    if len(g) >= 2:
         best, worst = g.iloc[0], g.iloc[-1]
-        # NB: escape dollars — bare $...$ pairs render as LaTeX in st.markdown.
         if best["Net"] > 0:
             notes.append(
-                f"🟢 Best {label}: **{best[by]}** "
-                f"{'+' if best['Net'] > 0 else ''}\\${best['Net']:,.2f} "
+                f"🟢 Best contest style: **{best['style']}** "
+                f"{_fmt_net(best['Net'])} "
                 f"({best['ROI %']:+.1f}% ROI on \\${best['Fees']:,.0f})")
         if worst["Net"] < 0:
             notes.append(
-                f"🔴 Biggest leak: **{worst[by]}** "
-                f"-\\${abs(worst['Net']):,.2f} "
+                f"🔴 Biggest leak: **{worst['style']}** "
+                f"{_fmt_net(worst['Net'])} "
                 f"({worst['ROI %']:+.1f}% ROI on \\${worst['Fees']:,.0f})")
+
+    gs = _breakdown(view, "series")
+    gs = gs[gs["series"] != "?"]      # unlinked private leagues stay out
+    for _, r in gs.iterrows():        # already sorted best -> worst net
+        icon = "🟢" if r["Net"] > 0 else ("🔴" if r["Net"] < 0 else "⚪")
+        roi = (f"{r['ROI %']:+.1f}%" if pd.notna(r["ROI %"]) else "—")
+        notes.append(
+            f"{icon} **{r['series']}** {_fmt_net(r['Net'])} "
+            f"({roi} ROI on \\${r['Fees']:,.0f})")
     return notes
 
 
