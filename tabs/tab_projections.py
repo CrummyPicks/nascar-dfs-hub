@@ -105,8 +105,14 @@ TRACK_TYPE_DOM_DEFAULTS = {
 
 
 def _get_track_dominator_calibration(track_name: str, track_type: str,
-                                      series_id: int = None) -> dict:
+                                      series_id: int = None,
+                                      before_date: str = None) -> dict:
     """Pull historical domination stats from DB for this track.
+
+    before_date: when replaying a past race (backtests, profit sim,
+    Accuracy), pass the race date so the calibration only sees races BEFORE
+    it — without this, the replayed race's own concentration leaked into
+    the curve used to project it.
 
     Returns dict with:
         avg_top_leader: average laps led by the race leader per race
@@ -271,11 +277,18 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
     try:
         conn = sqlite3.connect(PROJ_DB)
 
-        # Step 1: per-track history
+        # Step 1: per-track history. Exhibitions excluded (Duels would skew
+        # Daytona's concentration); before_date bounds replays to pre-race
+        # knowledge only.
         series_filter = "AND r.series_id = ?" if series_id else ""
+        series_filter += " AND COALESCE(r.is_exhibition, 0) = 0"
+        if before_date:
+            series_filter += " AND r.race_date < ?"
         params = [track_name]
         if series_id:
             params.append(series_id)
+        if before_date:
+            params.append(before_date)
         per_track_rows = conn.execute(f'''
             SELECT MAX(rr.laps_led) as top_led,
                    COUNT(CASE WHEN rr.laps_led > 0 THEN 1 END) as n_leaders,
@@ -297,6 +310,11 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
         # query couldn't fill in)
         type_summary = None
         type_placeholders = None
+        _type_extra = " AND COALESCE(r.is_exhibition, 0) = 0"
+        _type_params_extra = []
+        if before_date:
+            _type_extra += " AND r.race_date < ?"
+            _type_params_extra.append(before_date)
         if family_tracks and series_id:
             type_placeholders = ",".join("?" for _ in family_tracks)
             type_rows = conn.execute(f'''
@@ -308,9 +326,9 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
                 JOIN races r ON r.id = rr.race_id
                 JOIN tracks t ON t.id = r.track_id
                 WHERE t.name IN ({type_placeholders})
-                  AND r.series_id = ?
+                  AND r.series_id = ?{_type_extra}
                 GROUP BY r.id
-            ''', list(family_tracks) + [series_id]).fetchall()
+            ''', list(family_tracks) + [series_id] + _type_params_extra).fetchall()
             type_summary = _summarize(type_rows)
 
         # Empirical FL- and LL-by-rank distributions: prefer per-track, fall
@@ -323,8 +341,9 @@ def _get_track_dominator_calibration(track_name: str, track_type: str,
             _dist = _rank_curve(conn, f"t.name = ? {series_filter}", params, _col)
             if _dist is None and type_placeholders:
                 _dist = _rank_curve(
-                    conn, f"t.name IN ({type_placeholders}) AND r.series_id = ?",
-                    list(family_tracks) + [series_id], _col)
+                    conn,
+                    f"t.name IN ({type_placeholders}) AND r.series_id = ?{_type_extra}",
+                    list(family_tracks) + [series_id] + _type_params_extra, _col)
             if _dist:
                 result[_key] = _dist
 

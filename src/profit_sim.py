@@ -104,7 +104,10 @@ def _sample_field_lineup(rng, names, salaries, weights, cap, roster):
         if len(picks) != roster:
             continue
         sal = sum(salaries[n] for n in picks)
-        if sal <= cap and sal >= cap * 0.90:
+        # Real cash-game lineups nearly always spend >=98% of the cap — a 90%
+        # floor let the proxy field leave salary on the table, softening the
+        # simulated lines and flattering the model's beat-rates.
+        if sal <= cap and sal >= cap * 0.98:
             return picks
     return None
 
@@ -163,7 +166,7 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
         practice_data=prac, odds_finish=race["odds_finish"],
         odds_display=race["odds_display"], team_signal=race["team_signal"],
         mfr_adjustment={}, team_adj_data=race["team_adj"], dnf_data={},
-        race_laps=200, track_name=track_name, track_type=race["track_type"],
+        race_laps=race.get("race_laps", 200), track_name=track_name, track_type=race["track_type"],
         series_id=series_id, calibration=race["calibration"], cross_th_lookup={})
     proj = {r["driver"]: r["proj_dk"] for r in rows}
 
@@ -215,11 +218,16 @@ def simulate_race(db_id, api_id, season, race_date, track_name, race_name,
     # FIELD PROXY: chalk-leaning random-legal lineups scored on actuals
     sal_map = {d["Driver"]: d["DK Salary"] for d in pool}
     act_map = {d["Driver"]: d["Actual"] for d in pool}
-    # Public weighting: value^2 (points per $ drives chalk), floor for studs
+    # Public weighting: half model value (points per $ drives chalk), half a
+    # MODEL-INDEPENDENT salary prior (the public rosters big names). A field
+    # weighted purely by our own projections shares every model blind spot —
+    # "beating" it then measures the model against a shadow of itself.
+    _max_sal = max(d["DK Salary"] for d in pool) or 1
     weights = {}
     for d in pool:
         val = d["Proj Score"] / max(d["DK Salary"] / 1000.0, 1.0)
-        weights[d["Driver"]] = max(0.05, val) ** 2
+        sal_prior = 8.0 * d["DK Salary"] / _max_sal
+        weights[d["Driver"]] = (0.5 * max(0.05, val) + 0.5 * sal_prior) ** 2
     names = [d["Driver"] for d in pool]
     field = []
     for _ in range(FIELD_SAMPLES):

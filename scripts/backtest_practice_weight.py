@@ -70,7 +70,24 @@ def fetch_practice(season, series_id, api_race_id):
             pass
     if not data or not isinstance(data, list):
         return {}
-    df = _parse(data[-1])
+    # UNION all practice session blocks — when NASCAR splits practice into
+    # groups, each driver appears in exactly one block, so parsing only the
+    # last block dropped everyone who ran in an earlier group (the same bug
+    # fixed in the live fetch_lap_averages; mirrors its union + re-rank).
+    import pandas as _pd
+    frames = [f for f in (_parse(s) for s in data) if not f.empty]
+    if not frames:
+        return {}
+    df = _pd.concat(frames, ignore_index=True)
+    if "Driver" in df.columns:
+        df = df.drop_duplicates("Driver", keep="first").reset_index(drop=True)
+    for time_col, rank_col in [("Overall Avg", "Overall Rank"), ("Best Lap", "1 Lap Rank"),
+                               ("5 Lap", "5 Lap Rank"), ("10 Lap", "10 Lap Rank"),
+                               ("15 Lap", "15 Lap Rank"), ("20 Lap", "20 Lap Rank"),
+                               ("25 Lap", "25 Lap Rank"), ("30 Lap", "30 Lap Rank")]:
+        if time_col in df.columns and rank_col in df.columns:
+            df[rank_col] = _pd.to_numeric(
+                df[time_col], errors="coerce").rank(method="min")
     if df.empty:
         return {}
     has_ranks = any(c in df.columns for c in
@@ -91,7 +108,7 @@ def project(race, raw_weights, practice_data):
         practice_data=practice_data or {}, odds_finish=race["odds_finish"],
         odds_display=race["odds_display"], team_signal=race["team_signal"],
         mfr_adjustment={}, team_adj_data=race["team_adj"], dnf_data={},
-        race_laps=200, track_name=race["track_name"], track_type=race["track_type"],
+        race_laps=race.get("race_laps", 200), track_name=race["track_name"], track_type=race["track_type"],
         series_id=race["series_id"], calibration=race["calibration"], cross_th_lookup={})
     return {r["driver"]: r["proj_dk"] for r in rows}
 

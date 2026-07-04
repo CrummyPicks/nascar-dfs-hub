@@ -860,7 +860,11 @@ def _generate_race_projections(race, series_id, weights=None,
     except (ValueError, TypeError):
         race_laps = 0
 
-    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
+    # before_date keeps replays pre-race-only; for upcoming races the date is
+    # in the future, so nothing is excluded — correct either way.
+    calibration = _get_track_dominator_calibration(track_name, track_type,
+                                                   series_id,
+                                                   before_date=race_date)
 
     # ── 10. Run shared projection engine ──
     proj_rows, proj_detail = compute_projections(
@@ -1053,21 +1057,26 @@ def _render_profit_sim(series_id, series_name):
     avg_gpp_cash = sum(r["gpp_cashed_pct"] for r in results) / n
     best_pct = sum(r["gpp_best_pctile"] for r in results) / n
 
+    # No-skill baselines: min-cash = 80th pct of the SAME field, so random
+    # lineups cash 20% by construction; and the best of 20 lineups lands at
+    # the ~95.2nd percentile with zero skill (E[max of 20] = 20/21). Grade
+    # ABOVE those floors, not above zero.
     _metric_cards([
         ("Cash Beat Rate", f"{beat}/{n} ({100*beat/n:.0f}%)",
          _metric_color(beat / n, 0.60, 0.50, False)),
         ("Avg Cash Margin", f"{avg_margin:+.1f} pts",
          _metric_color(avg_margin, 5, 0, False)),
-        ("GPP Lineups Cashing", f"{avg_gpp_cash:.0f}%",
-         _metric_color(avg_gpp_cash / 100, 0.30, 0.20, False)),
-        ("Best Lineup Percentile", f"{best_pct:.0f}",
-         _metric_color(best_pct / 100, 0.97, 0.90, False)),
+        ("GPP Lineups Cashing", f"{avg_gpp_cash:.0f}% (random=20%)",
+         _metric_color(avg_gpp_cash / 100, 0.30, 0.22, False)),
+        ("Best Lineup Percentile", f"{best_pct:.0f} (random≈95)",
+         _metric_color(best_pct / 100, 0.975, 0.952, False)),
     ])
     st.caption(
         "Reading it: a cash lineup that beats the median field >55-60% of "
         "weeks with a positive average margin is profitable after rake in "
-        "50/50s. GPP: cashing ~25-30% of lineups treads water; profit comes "
-        "from the best lineup's percentile pushing 99+ on your best weeks."
+        "50/50s. GPP baselines are NOT zero: random lineups cash 20% and the "
+        "best-of-20 lands ~95th percentile by luck alone — skill is the "
+        "excess above those floors (cashing 30%+, best pushing 98-99+)."
     )
 
     n_real = sum(1 for r in results if r.get("line_source") == "real")
@@ -2467,7 +2476,9 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
         except (ValueError, TypeError):
             race_laps = 0
 
-        calibration = _get_track_dominator_calibration(track_name, track_type, race_sid)
+        calibration = _get_track_dominator_calibration(track_name, track_type,
+                                                       race_sid,
+                                                       before_date=race_date)
 
         # Pre-index actual DK pts per driver for fast lookup in combo loop.
         # Also flag DNFs so the grading set can exclude them (the projection

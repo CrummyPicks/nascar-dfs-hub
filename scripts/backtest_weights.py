@@ -139,13 +139,34 @@ def load_race(conn, race_id, series_id, track_name, race_date):
     team_adj = compute_team_adjusted_track_history(track_name, series_id, team_map,
                                                    before_date=race_date, track_type=track_type)
 
-    calibration = _get_track_dominator_calibration(track_name, track_type, series_id)
+    # Pre-race-only calibration: without before_date the replayed race's own
+    # dominator concentration leaked into the curve used to project it.
+    calibration = _get_track_dominator_calibration(track_name, track_type,
+                                                   series_id,
+                                                   before_date=race_date)
+
+    # Real race length — compute_projections sizes the laps-led/fastest-lap
+    # point pools from it (0.7 pts/lap), so a hardcoded 200 understated
+    # dominators ~60% at Bristol and overstated them ~2x at road courses.
+    race_laps = None
+    row = conn.execute("SELECT laps FROM races WHERE id = ?", (race_id,)).fetchone()
+    if row and row[0]:
+        race_laps = int(row[0])
+    if not race_laps:
+        row = conn.execute(
+            "SELECT MAX(laps_completed) FROM race_results WHERE race_id = ?",
+            (race_id,)).fetchone()
+        if row and row[0]:
+            race_laps = int(row[0])
+    if not race_laps:
+        race_laps = 200
 
     return dict(drivers=drivers, field_size=field_size, track_name=track_name,
                 track_type=track_type, parent=parent, series_id=series_id,
                 qual_pos=start_pos, odds_finish=odds_finish, odds_display=odds_display,
                 th_data=th_data, tt_data=tt_data, team_signal=team_signal,
                 team_adj=team_adj, calibration=calibration,
+                race_laps=race_laps,
                 actual_dk=actual_dk, actual_finish=actual_finish,
                 actual_ll=actual_ll, actual_fl=actual_fl,
                 start_pos=start_pos, status=status_map, team_map=team_map)
@@ -170,7 +191,7 @@ def project_race(race, raw_weights):
         wn=wn, th_data=race["th_data"], tt_data=race["tt_data"], qual_pos=race["qual_pos"],
         practice_data={}, odds_finish=race["odds_finish"], odds_display=race["odds_display"],
         team_signal=race["team_signal"], mfr_adjustment={}, team_adj_data=race["team_adj"],
-        dnf_data={}, race_laps=200, track_name=race["track_name"], track_type=race["track_type"],
+        dnf_data={}, race_laps=race.get("race_laps", 200), track_name=race["track_name"], track_type=race["track_type"],
         series_id=race["series_id"], calibration=race["calibration"], cross_th_lookup={})
     return {r["driver"]: r["proj_dk"] for r in rows}
 

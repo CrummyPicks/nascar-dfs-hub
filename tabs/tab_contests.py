@@ -174,7 +174,7 @@ def _model_vs_me(view):
     prog = st.progress(0.0, text="Replaying model lineups...")
     for i, dk in enumerate(day_keys[:n_days]):
         race = lut[dk]
-        ck = f"mvm2_{race['db_id']}"          # v2: results include the field
+        ck = f"mvm3_{race['db_id']}"          # v3: real laps + hardened field
         if ck not in st.session_state:
             try:
                 st.session_state[ck] = simulate_race(
@@ -194,6 +194,7 @@ def _model_vs_me(view):
         my_best = float(mine["points"].max()) if mine["points"].notna().any() else None
         row = {
             "Race Day": f"{dk[0]} — {race['track']} ({dk[1]})",
+            "_dk_date": dk[0], "_dk_series": dk[1],
             "My Entries": len(mine),
             "My Best": my_best, "My %ile": None,
             "Model FPTS": None, "Model %ile": None,
@@ -235,7 +236,8 @@ def _model_vs_me(view):
 
     mdf = pd.DataFrame(rows)
     st.dataframe(_style_money(
-        mdf.drop(columns=["_model_fees"]), {"My Net", "Model Net*"}).format(
+        mdf.drop(columns=["_model_fees", "_dk_date", "_dk_series"]),
+        {"My Net", "Model Net*"}).format(
         {"My Best": "{:.1f}", "Model FPTS": "{:.1f}",
          "Model GPP Best": "{:.1f}", "My %ile": "{:.1f}",
          "Model %ile": "{:.1f}", "GPP %ile": "{:.1f}"}, na_rep="—"),
@@ -248,8 +250,12 @@ def _model_vs_me(view):
         beat = (done["Model > Me"] == "✅").sum()
         # Fee bases differ (I multi-enter; the model plays each contest once),
         # so dollars aren't directly comparable — ROI on each side's own fees is.
-        _v2 = view[view["contest_date"].astype(str).str.slice(0, 10).isin(
-            {r["Race Day"][:10] for _, r in done.iterrows()})]
+        # Filter my fees to the analyzed (date, SERIES) days — date alone
+        # dragged in same-day entries from other series and skewed my ROI.
+        _done_keys = {(r["_dk_date"], r["_dk_series"]) for _, r in done.iterrows()}
+        _v2 = view[view.apply(
+            lambda r: (str(r["contest_date"])[:10], r["series"]) in _done_keys,
+            axis=1)]
         my_fees_total = float(_v2["entry_fee"].sum()) or 1.0
         model_fees_total = float(done["_model_fees"].sum()) or 1.0
         my_roi = 100 * my_total / my_fees_total
