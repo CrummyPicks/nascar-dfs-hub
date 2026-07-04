@@ -623,9 +623,13 @@ def render(*, series_name="Cup"):
     vr = view.copy()
     vr["_d"] = vr["contest_date"].astype(str).str.slice(0, 10)
     vr["_series_key"] = vr["series"].fillna("")
+    # NB: float NaN is TRUTHY in Python, so `r['Track'] or '?'` rendered the
+    # literal string "nan" for unlinked rows — guard with notna instead.
     vr["_race_lbl"] = vr.apply(
         lambda r: (f"{r['_d']} — "
-                   f"{r['Track'] or '?'} ({r['series'] or '?'})"), axis=1)
+                   f"{r['Track'] if pd.notna(r['Track']) and r['Track'] else '?'} "
+                   f"({r['series'] if pd.notna(r['series']) and r['series'] else '?'})"),
+        axis=1)
     g = vr.groupby(["_race_lbl", "_d", "_series_key"]).agg(
         Entries=("entry_key", "count"),
         Fees=("entry_fee", "sum"),

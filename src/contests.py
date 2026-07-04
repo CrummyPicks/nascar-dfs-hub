@@ -310,11 +310,13 @@ def attach_races(df: pd.DataFrame) -> pd.DataFrame:
     out["_date"] = out["contest_date"].astype(str).str.slice(0, 10)
     try:
         conn = sqlite3.connect(str(DB_PATH))
+        # Exhibitions INCLUDED here — this labels the user's ledger (they
+        # really entered All-Star/Duel contests), unlike the averages, and
+        # race_day_index (Model-vs-Me) still excludes them.
         races = pd.read_sql_query('''
             SELECT r.series_id, substr(r.race_date, 1, 10) as d,
                    r.race_name, t.name as track
             FROM races r JOIN tracks t ON t.id = r.track_id
-            WHERE COALESCE(r.is_exhibition, 0) = 0
         ''', conn)
         conn.close()
     except Exception:
@@ -330,12 +332,24 @@ def attach_races(df: pd.DataFrame) -> pd.DataFrame:
             (int(r["series_id"]), r["race_name"], r["track"]))
     _id_to_series = {v: k for k, v in SERIES_TO_ID.items()}
 
+    def _date_neighbors(d):
+        """d, d+1, d-1 — DK sometimes dates contests the day before the race
+        (e.g. Truck contests on 05-22 for the 05-23 Charlotte race)."""
+        from datetime import datetime as _dt, timedelta as _td
+        try:
+            base = _dt.strptime(d, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return [d]
+        return [d, (base + _td(days=1)).strftime("%Y-%m-%d"),
+                (base - _td(days=1)).strftime("%Y-%m-%d")]
+
     def _match(row):
         sid = SERIES_TO_ID.get(row.get("series"))
         if sid:
-            hit = lut.get((sid, row["_date"]))
-            if hit:
-                return hit + (row.get("series"),)
+            for dd in _date_neighbors(row["_date"]):
+                hit = lut.get((sid, dd))
+                if hit:
+                    return hit + (row.get("series"),)
             return None
         candidates = by_date.get(row["_date"], [])
         if len(candidates) == 1:
