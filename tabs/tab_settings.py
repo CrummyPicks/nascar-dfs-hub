@@ -389,7 +389,20 @@ def _render_actual_ownership_section(race_id: int, series_id: int):
     if own_text and own_text.strip():
         import re as _re
         for line in own_text.strip().split("\n"):
-            m = _re.match(r'^(.+?)[,\s]+([\d.]+)\s*%?\s*$', line.strip())
+            line = line.strip()
+            if not line:
+                continue
+            # DK gamecenter rows copy as "Name D 45.95% 79.3" (name, roster
+            # position, %drafted, FPTS) — when a %-marked number exists,
+            # THAT is the ownership; the trailing bare number is FPTS.
+            mp = _re.search(r'^(.+?)(?:\s+[A-Z]{1,4})?\s+([\d.]+)\s*%', line)
+            if mp:
+                try:
+                    own_data[mp.group(1).strip().rstrip(",")] = float(mp.group(2))
+                    continue
+                except ValueError:
+                    pass
+            m = _re.match(r'^(.+?)[,\s]+([\d.]+)\s*%?\s*$', line)
             if m:
                 try:
                     own_data[m.group(1).strip()] = float(m.group(2))
