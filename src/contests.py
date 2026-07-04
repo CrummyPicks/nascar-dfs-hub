@@ -369,6 +369,61 @@ def attach_races(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def ownership_backfill_targets(max_days: int = 120) -> pd.DataFrame:
+    """The best contest per race day to pull ownership from — the
+    biggest-field GPP (and biggest Cash game) the user entered.
+
+    DK has no bulk standings export; its per-contest "Export Lineups"
+    button is just a GET to /contest/exportfullstandingscsv/<contest_key>.
+    Since the ledger already has every contest key, we can emit a direct
+    click-list (logged-in browser downloads each instantly). One good GPP
+    per race day is representative ownership; DK expires old contest data,
+    so newest first, capped at max_days.
+
+    Returns columns: date, track, series, style, contest_name, entries,
+    contest_key, url.
+    """
+    df = attach_races(load_entries())
+    if df.empty:
+        return pd.DataFrame()
+    df = df[df["contest_key"].astype(str).str.len() >= 6].copy()
+    df["_dt"] = pd.to_datetime(df["contest_date"], errors="coerce")
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=max_days)
+    df = df.dropna(subset=["_dt"])
+    df = df[df["_dt"] >= cutoff]
+    if df.empty:
+        return pd.DataFrame()
+    df["_day"] = df["_dt"].dt.strftime("%Y-%m-%d")
+    df["field_entries"] = pd.to_numeric(df["field_entries"], errors="coerce")
+
+    picks = []
+    for (day, series), grp in df.groupby(["_day", "series"]):
+        for style in ("GPP", "Cash"):
+            sg = grp[grp["style"] == style]
+            sg = sg.dropna(subset=["field_entries"])
+            if sg.empty:
+                continue
+            r = sg.loc[sg["field_entries"].idxmax()]
+            picks.append({
+                "date": day,
+                "track": r.get("Track") if pd.notna(r.get("Track")) else "?",
+                "series": series or "?",
+                "style": style,
+                "contest_name": r["contest_name"],
+                "entries": int(r["field_entries"]),
+                "contest_key": str(r["contest_key"]),
+                "url": ("https://www.draftkings.com/contest/"
+                        f"exportfullstandingscsv/{r['contest_key']}"),
+            })
+    out = pd.DataFrame(picks)
+    if out.empty:
+        return out
+    # One row per (day, series, style, contest) — drop dup contest keys
+    # (multi-entry days pick the same contest repeatedly by construction).
+    out = out.drop_duplicates("contest_key")
+    return out.sort_values(["date", "series"], ascending=[False, True]).reset_index(drop=True)
+
+
 def ground_truth_counts() -> tuple:
     """(ownership_rows, contest_line_rows) currently in nascar.db.
 

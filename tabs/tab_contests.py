@@ -408,6 +408,35 @@ def render(*, series_name="Cup"):
                 st.write(f"{icon} `{f.name}` — {res['msg']}")
 
         if not _cloud:
+            # ── Ownership backfill: direct export links per contest ────
+            # DK has no bulk standings export; these links ARE its "Export
+            # Lineups" button (same endpoint), one per the user's biggest
+            # GPP/Cash contest per race day — click down the list while
+            # logged into DK, then drop the downloaded files above.
+            with st.expander("⚡ Ownership backfill — direct download links",
+                             expanded=False):
+                from src.contests import ownership_backfill_targets
+                tgt = ownership_backfill_targets()
+                if tgt.empty:
+                    st.info("No linked contests found in the ledger yet.")
+                else:
+                    st.caption(
+                        f"**{len(tgt)} links** — your biggest GPP + Cash "
+                        "contest per race day (last ~120 days; DK expires "
+                        "older data). Be logged into DraftKings in this "
+                        "browser, click down the list (each click downloads "
+                        "one CSV — allow 'multiple downloads' if asked), "
+                        "then drop them ALL into the box above. Re-imports "
+                        "dedupe, already-covered races just overwrite."
+                    )
+                    _lines = []
+                    for _, r in tgt.iterrows():
+                        _lines.append(
+                            f"- [{r['date']} — {r['track']} ({r['series']}) "
+                            f"· {r['style']} · {r['entries']:,} entries]"
+                            f"({r['url']})")
+                    st.markdown("\n".join(_lines))
+
             candidates = find_dk_export_csvs()
             if candidates:
                 picks = st.multiselect(
