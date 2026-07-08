@@ -144,21 +144,75 @@ def _ramp_sigma(center, n):
     return _FINISH_SIGMA_FRONT + (_FINISH_SIGMA_WIDE - _FINISH_SIGMA_FRONT) * t
 
 
+# Explicit attrition lift (2026-07). The old kernel simply truncated each
+# driver's Gaussian at the field edge, which dragged deep centers toward
+# mid-field (center 34, sigma 11 in a 38-car field -> mean ~27.6). That
+# truncation artifact WAS the back-half compression (drivers who actually
+# finished 23rd/30th/38th all projected ~22) — but it was also accidentally
+# simulating a real effect: slow cars DO get vaulted forward by others'
+# attrition (a past experiment that tightened back sigma re-broke back
+# calibration for exactly this reason). Fix = separate the two: the kernel
+# below is MEAN-PRESERVING (spreading no longer moves the center), and the
+# attrition lift is THIS explicit, tunable pull toward mid-field applied to
+# back-half raw scores. Tuned via scripts/calibration_study.py.
+_BACK_ATTRITION_PULL = 0.25
+
+
+def _mean_preserving_center(target, sigma, n):
+    """Center c* such that a Gaussian(c*, sigma) truncated to positions 1..n
+    has MEAN == target. Plain truncation biases the mean toward mid-field at
+    both edges; recentering removes that artifact so deep raw scores survive
+    the spreading step. Monotone in c* -> binary search."""
+    lo, hi = target - 6.0 * sigma, target + 6.0 * sigma
+    ks = range(1, n + 1)
+    for _ in range(36):
+        c = (lo + hi) / 2.0
+        wsum = msum = 0.0
+        for k in ks:
+            w = math.exp(-0.5 * ((k - c) / sigma) ** 2)
+            wsum += w
+            msum += k * w
+        mean = msum / wsum if wsum > 0 else c
+        if mean < target:
+            lo = c
+        else:
+            hi = c
+    return (lo + hi) / 2.0
+
+
 def _finish_dist_expectations(raw_scores, drivers, field_size):
     """Return {driver: (expected_finish, expected_finish_points)} from each
     driver's continuous raw_finish, via a Sinkhorn-normalized Gaussian finish
-    distribution over positions 1..field_size with a front-tight 'ramp' spread."""
+    distribution over positions 1..field_size with a front-tight 'ramp' spread.
+
+    The kernel is mean-preserving (see _mean_preserving_center) and the
+    attrition upside of slow cars is an explicit raw-space pull
+    (_BACK_ATTRITION_PULL) instead of a truncation accident."""
     order = list(drivers)
     n = max(1, int(field_size))
     if n == 1 or not order:
         return {d: (1.0, _expected_finish_pts(1)) for d in order}
-    # Row = driver, col = finishing position (1..n); start from a Gaussian
-    # centered on the driver's clipped expected finish, with a per-driver spread.
+    mid = (n + 1) / 2.0
+    # Row = driver, col = finishing position (1..n); Gaussian recentered so
+    # its truncated mean equals the (attrition-adjusted) raw expected finish.
     mat = []
     for d in order:
         c = max(1.0, min(float(n), raw_scores.get(d, n * 0.75)))
-        sigma = _ramp_sigma(c, n)
-        row = [math.exp(-0.5 * ((k - c) / sigma) ** 2) for k in range(1, n + 1)]
+        if c > mid:
+            # BACK half: explicit attrition lift, then a mean-preserving
+            # kernel so deep raw scores survive the spreading step (the old
+            # truncation dragged center-34 to ~27.6 — the measured blob).
+            c = c - _BACK_ATTRITION_PULL * (c - mid)
+            sigma = _ramp_sigma(c, n)
+            c_star = _mean_preserving_center(c, sigma, n)
+        else:
+            # FRONT half: keep the original truncated kernel. Its mean-pull
+            # toward mid was accidentally CALIBRATING favorites (validated by
+            # past tuning; recentering the front measurably worsened front
+            # points bias +3.5 -> +5.8 in the calibration study).
+            sigma = _ramp_sigma(c, n)
+            c_star = c
+        row = [math.exp(-0.5 * ((k - c_star) / sigma) ** 2) for k in range(1, n + 1)]
         s = sum(row) or 1.0
         mat.append([x / s for x in row])
     # Sinkhorn: alternately normalize rows → 1 and columns → 1.
