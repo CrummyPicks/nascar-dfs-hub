@@ -566,6 +566,57 @@ def _load_export_frame(source, filename: str = "") -> pd.DataFrame:
         raise ValueError(f"could not parse CSV ({e})")
 
 
+def _resolve_race_by_fpts(parsed: dict):
+    """Identify a standings file's race by its FPTS fingerprint.
+
+    The right-block FPTS ARE DraftKings points, so the (driver -> score)
+    map uniquely identifies the race — no ledger needed. Compares against
+    actual DK scoring of recent completed races; accepts a race when 10+
+    drivers overlap with near-zero mean abs difference.
+
+    Returns (race_row, n_matched) or None.
+    """
+    fpts = parsed.get("fpts") or {}
+    if len(fpts) < 8:
+        return None
+    from src.utils import calc_dk_points, normalize_driver_name
+    idx = race_day_index()
+    if idx.empty:
+        return None
+    recent = idx[idx["date"] >= (pd.Timestamp.now()
+                                 - pd.Timedelta(days=35)).strftime("%Y-%m-%d")]
+    norm_fpts = {normalize_driver_name(k): v for k, v in fpts.items()}
+    best = None
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        for _, race in recent.iterrows():
+            rows = conn.execute('''
+                SELECT d.full_name, rr.finish_pos, rr.start_pos,
+                       rr.laps_led, rr.fastest_laps
+                FROM race_results rr JOIN drivers d ON d.id = rr.driver_id
+                WHERE rr.race_id = ? AND rr.finish_pos IS NOT NULL
+            ''', (int(race["db_id"]),)).fetchall()
+            if len(rows) < 8:
+                continue
+            diffs = []
+            for name, fin, st_, ll, fl in rows:
+                nk = normalize_driver_name(name)
+                if nk in norm_fpts:
+                    pts = calc_dk_points(fin, st_ if st_ is not None else fin,
+                                         ll or 0, fl or 0)
+                    diffs.append(abs(pts - norm_fpts[nk]))
+            if len(diffs) >= min(10, len(fpts) - 2):
+                mad = sum(diffs) / len(diffs)
+                if mad <= 0.75 and (best is None or mad < best[2]):
+                    best = (race, len(diffs), mad)
+        conn.close()
+    except Exception:
+        return None
+    if best is None:
+        return None
+    return best[0], best[1]
+
+
 def ingest_file(source, filename: str = "") -> dict:
     """Route ANY dropped DraftKings export to the right parser + storage.
 
@@ -618,11 +669,32 @@ def ingest_file(source, filename: str = "") -> dict:
         rows = (ledger[ledger["contest_key"] == ck]
                 if ck and not ledger.empty else pd.DataFrame())
         if rows.empty:
-            return {"type": kind, "status": "skipped",
-                    "msg": ("NASCAR standings parsed, but the contest key "
-                            f"({ck or 'none in filename'}) isn't in your "
-                            "imported entry history — import that first so "
-                            "the file can be tied to a race")}
+            # FALLBACK: newer contests aren't in the ledger yet (entry
+            # history lags standings downloads). The FPTS column IS DK
+            # scoring, so match the score fingerprint against recent races.
+            fp = _resolve_race_by_fpts(parsed)
+            if fp is None:
+                return {"type": kind, "status": "skipped",
+                        "msg": ("NASCAR standings parsed, but the contest key "
+                                f"({ck or 'none in filename'}) isn't in your "
+                                "entry history AND no recent race matches its "
+                                "scores — is the race synced to the DB yet?")}
+            race, n_match = fp
+            from src.data import save_actual_ownership
+            own = parsed["ownership"]
+            # Style unknown without the ledger — store as GPP (the bucket
+            # the leverage model grades against); a later re-drop after an
+            # entry-history refresh upserts the correctly-typed rows + line.
+            n = save_actual_ownership(int(race["api_id"]),
+                                      int(race["series_id"]),
+                                      "DraftKings", "gpp", own)
+            return {"type": kind, "status": "ok",
+                    "msg": (f"{race['track']} {race['date']} "
+                            f"({race['series']}) — matched by score "
+                            f"fingerprint ({n_match} drivers) · actual GPP "
+                            f"ownership saved for {n} drivers · paid line "
+                            "skipped (needs entry history: re-drop this file "
+                            "after refreshing it to add the line)")}
         date = str(rows.iloc[0]["contest_date"])[:10]
         series = rows.iloc[0]["series"] or ""
         style = (rows.iloc[0]["style"] or "GPP").lower()
