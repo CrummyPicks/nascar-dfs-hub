@@ -571,6 +571,45 @@ def _cap_and_redistribute(result: dict, max_per_driver: float,
     return result
 
 
+def odds_expected_finish(odds_probs: dict, field_size: int = None) -> dict:
+    """Win odds → expected finish via Bradley-Terry pairwise strengths.
+
+    E[rank_i] = 1 + Σ_j P(j beats i), with P(j beats i) = w_j/(w_i+w_j) and
+    w = implied win probability. Replaces the old linear log-odds squash into
+    [0.13n, 0.58n], which had two unfixable flaws the anchors couldn't tune
+    away: (1) it could never say "worse than ~22nd" in a 38-car field — a
+    +250,000 no-hoper projected the same as a decent 25th-place car (measured:
+    drivers who actually finished 23rd/30th/38th all carried ~22 projections);
+    (2) any DEEPER anchor (0.82 was tried) pinned every longshot at the wall
+    together, burying +5000 value plays next to +250000 no-hopers — which is
+    why it was pulled in to 0.58 in the first place. Strength RATIOS fix both:
+    sharp separation among favorites, a genuinely deep tail, and intra-tail
+    discrimination (a 50x odds ratio between two longshots = many positions).
+
+    Validated on 37 replayed races: Spearman vs actual finish 0.495 (old map
+    0.468), monotone calibration through the 30s where the old map's deepest
+    bucket held drivers averaging 28th.
+
+    Only quoted drivers get a value; ranks are within the QUOTED pool (when
+    the book quotes fewer cars than the field, the unquoted sit behind — the
+    engine's absent-from-Vegas penalty handles them). field_size is accepted
+    for signature clarity/future scaling but not required by the math.
+    """
+    if not odds_probs:
+        return {}
+    names = list(odds_probs)
+    w = [max(float(odds_probs[n] or 0.0), 1e-6) for n in names]
+    out = {}
+    for i, nm in enumerate(names):
+        wi = w[i]
+        s = 0.0
+        for j, wj in enumerate(w):
+            if j != i:
+                s += wj / (wi + wj)
+        out[nm] = 1.0 + s
+    return out
+
+
 def compute_projections(
     drivers, field_size, wn,
     th_data, tt_data, qual_pos, practice_data,

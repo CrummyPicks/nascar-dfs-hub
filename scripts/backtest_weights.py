@@ -84,19 +84,14 @@ def load_race(conn, race_id, series_id, track_name, race_date):
         "WHERE o.race_id=? AND o.win_odds IS NOT NULL", (race_id,)).fetchall()
         if n in start_pos}
 
-    # Odds -> implied finish (mirror tab_projections anchors) + implied-win %
-    # display (drives the dominator/FL odds signal, like the live app).
-    odds_finish = {}
+    # Odds -> implied finish (mirror tab_projections: Bradley-Terry pairwise
+    # mapping, 2026-07) + implied-win % display (drives the dominator/FL odds
+    # signal, like the live app). See src.projections.odds_expected_finish.
+    from src.projections import odds_expected_finish
     probs = {n: (100/(o+100) if o > 0 else abs(o)/(abs(o)+100))
              for n, o in odds_data.items()}
     odds_display = {n: {"impl_pct": round(p*100, 1)} for n, p in probs.items()}
-    if probs:
-        best, worst = max(2.0, field_size*0.13), field_size*0.58
-        ranked = sorted(probs.items(), key=lambda x: x[1], reverse=True)
-        lp = {n: math.log(p) for n, p in ranked}
-        mx, mn = max(lp.values()), min(lp.values()); rng = mx - mn
-        for n, p in ranked:
-            odds_finish[n] = best + (worst-best)*(1-(lp[n]-mn)/rng) if rng > 0 else field_size*0.5
+    odds_finish = odds_expected_finish(probs, field_size)
 
     # History (current-series, before this race)
     th_df = _query_db_track_history(track_name, series_id, before_date=race_date)

@@ -872,34 +872,19 @@ def _build_dfs_projections(entry_df, qualifying_df, lap_averages_df,
             # range), so odds dominated the weighted average far beyond its
             # nominal weight.
             #
-            # The WORST anchor is the subtle one: win odds barely discriminate
-            # the back half of the field (everyone past a few favorites is a
-            # tiny, noisy win%), yet a 38-car field has ONE winner and 37
-            # non-winners who AVERAGE ~mid-field — not the wall. Anchoring the
-            # longest shot to field*0.82 (~31st) was systematically burying
-            # value plays: a driver with ~0% win equity but solid race pace
-            # (good track/track-type form) was getting dragged toward 31st by
-            # the heaviest single weight (odds = 33% on intermediates). Pulling
-            # the worst anchor in to field*0.58 (~22nd) lets odds stay sharp
-            # where they're reliable (separating the genuine contenders at the
-            # front) while letting track/track-type/qual/DNF — not win odds —
-            # decide who runs 22nd vs 35th.
-            import math
-            best_anchor = max(2.0, field_size * 0.13)
-            worst_anchor = field_size * 0.58
-            ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-            log_probs = {name: math.log(prob) for name, prob in ranked}
-            max_lp = max(log_probs.values())
-            min_lp = min(log_probs.values())
-            lp_range = max_lp - min_lp
-            for name, prob in ranked:
+            # Bradley-Terry pairwise mapping (2026-07): the old linear
+            # log-odds squash into [0.13n, 0.58n] could never say "worse
+            # than ~22nd" AND couldn't separate a +5000 value play from a
+            # +250000 no-hoper at any anchor setting (0.82 was tried and
+            # buried them together at the wall). Strength ratios give a
+            # sharp front, a genuinely deep tail, and intra-tail
+            # discrimination. See odds_expected_finish for the evidence.
+            from src.projections import odds_expected_finish
+            _bt = odds_expected_finish(odds_probs, field_size)
+            for name, ef in _bt.items():
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    if lp_range > 0:
-                        t = 1 - (log_probs[name] - min_lp) / lp_range  # 0=best, 1=worst
-                        odds_finish[matched] = best_anchor + (worst_anchor - best_anchor) * t
-                    else:
-                        odds_finish[matched] = mid_field
+                    odds_finish[matched] = ef
         elif odds_probs:
             pct = len(odds_probs) / field_size * 100
             st.caption(f"⚠️ Odds cover only {len(odds_probs)}/{field_size} drivers "

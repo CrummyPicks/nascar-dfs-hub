@@ -783,25 +783,15 @@ def _generate_race_projections(race, series_id, weights=None,
             odds_probs[name] = prob
 
         if len(odds_probs) >= field_size * 0.3:
-            # Realistic expected-finish anchors (mirror tab_projections) — odds
-            # do not imply the favorite finishes 1st, and the full-range mapping
-            # over-weighted odds vs the clamped track/ttype signals. Worst anchor
-            # pulled to 0.58 so ~0%-win value plays aren't buried at the wall.
-            _best_anchor = max(2.0, field_size * 0.13)
-            _worst_anchor = field_size * 0.58
-            ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-            log_probs = {name: math.log(prob) for name, prob in ranked}
-            max_lp = max(log_probs.values())
-            min_lp = min(log_probs.values())
-            lp_range = max_lp - min_lp
-            for name, prob in ranked:
+            # Bradley-Terry mapping (mirror tab_projections, 2026-07) — the
+            # linear squash couldn't project anyone past ~22nd or separate
+            # value-play longshots from no-hopers. See odds_expected_finish.
+            from src.projections import odds_expected_finish
+            _bt = odds_expected_finish(odds_probs, field_size)
+            for name, ef in _bt.items():
                 matched = fuzzy_match_name(name, drivers)
                 if matched:
-                    if lp_range > 0:
-                        t = 1 - (log_probs[name] - min_lp) / lp_range
-                        odds_finish[matched] = _best_anchor + (_worst_anchor - _best_anchor) * t
-                    else:
-                        odds_finish[matched] = mid_field
+                    odds_finish[matched] = ef
 
         # Build odds display dict (for dominator scoring)
         for name, odds_str in clean_odds.items():
@@ -2410,24 +2400,14 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 except (ValueError, TypeError):
                     continue
             if len(odds_probs) >= field_size * 0.3:
-                # Realistic expected-finish anchors (mirror tab_projections).
-                # Worst anchor pulled to 0.58 so ~0%-win value plays aren't
-                # buried at the wall by the heaviest single weight (odds).
-                _best_anchor = max(2.0, field_size * 0.13)
-                _worst_anchor = field_size * 0.58
-                ranked = sorted(odds_probs.items(), key=lambda x: x[1], reverse=True)
-                log_probs = {name: math.log(prob) for name, prob in ranked}
-                max_lp = max(log_probs.values())
-                min_lp = min(log_probs.values())
-                lp_range = max_lp - min_lp
-                for name, prob in ranked:
+                # Bradley-Terry mapping (mirror tab_projections, 2026-07).
+                # See src.projections.odds_expected_finish for the evidence.
+                from src.projections import odds_expected_finish
+                _bt = odds_expected_finish(odds_probs, field_size)
+                for name, ef in _bt.items():
                     matched = fuzzy_match_name(name, drivers)
                     if matched:
-                        if lp_range > 0:
-                            t = 1 - (log_probs[name] - min_lp) / lp_range
-                            odds_finish[matched] = _best_anchor + (_worst_anchor - _best_anchor) * t
-                        else:
-                            odds_finish[matched] = mid_field
+                        odds_finish[matched] = ef
             for name, odds_str in clean_odds.items():
                 try:
                     oval = int(str(odds_str).replace("+", ""))
