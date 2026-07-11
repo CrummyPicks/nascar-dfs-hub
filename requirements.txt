@@ -9,3 +9,8 @@ requests==2.33.1
 beautifulsoup4==4.14.3
 lxml==6.0.2
 cryptography==49.0.0
+# pyarrow is what Streamlit uses to serialize EVERY st.dataframe — the
+# 2026-07-11 cloud segfaults (crash on any table render: driver dialog,
+# Projections) were the unpinned float pulling brand-new pyarrow 25.0.0.
+# 23.0.1 is the version proven on this exact stack locally.
+pyarrow==23.0.1
