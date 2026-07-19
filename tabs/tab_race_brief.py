@@ -181,15 +181,52 @@ def render(*, entry_list_df, qualifying_df, lap_averages_df, practice_data,
         else:
             st.info("No odds loaded for this race yet.")
 
-    # ── Practice standouts (top 5 overall) ───────────────────────────
+    # ── Practice standouts (top 5 by the ENGINE's practice signal) ────
+    # NOT NASCAR's overall lap average: that metric averages every lap a
+    # driver turns, so short-burst profiles (fresh tires each run) rank
+    # high while honest race-sim long runs get dragged down by worn-tire
+    # laps — e.g. a driver 4th "overall" with only the 25th-best single
+    # lap and mid-pack in every sustained window. The engine's signal
+    # (coverage-weighted consecutive-lap window ranks) is what actually
+    # feeds projections, so the brief must agree with it.
     with col_r:
         st.markdown("**Practice Standouts**")
-        if lap_averages_df is not None and not lap_averages_df.empty:
-            pcols = [c for c in ["Driver", "Overall Rank", "Overall Avg", "Laps"]
-                     if c in lap_averages_df.columns]
-            pr = lap_averages_df[pcols].copy()
-            if "Overall Rank" in pr.columns:
-                pr = pr.sort_values("Overall Rank", na_position="last")
+        la = (lap_averages_df if lap_averages_df is not None
+              else pd.DataFrame())
+        if practice_data:
+            top = sorted(practice_data.items(), key=lambda x: x[1])[:5]
+            rows = []
+            for d, sig in top:
+                r = (la[la["Driver"] == d]
+                     if not la.empty and "Driver" in la.columns
+                     else pd.DataFrame())
+
+                def _g(col):
+                    if r.empty or col not in r.columns:
+                        return None
+                    v = r.iloc[0][col]
+                    return v if pd.notna(v) else None
+                rows.append({"Driver": d, "Sig Rank": round(float(sig), 1),
+                             "10L Rk": _g("10 Lap Rank"),
+                             "15L Rk": _g("15 Lap Rank"),
+                             "Best Rk": _g("1 Lap Rank"),
+                             "Laps": _g("Laps")})
+            st.dataframe(safe_fillna(format_display_df(pd.DataFrame(rows))),
+                         width="stretch", hide_index=True)
+            st.caption("Ranked by the projection engine's practice signal "
+                       "(long-run-weighted window ranks) — NASCAR's raw "
+                       "'overall average' is not used; it flatters "
+                       "short-burst run profiles.")
+        elif not la.empty:
+            # Signal unavailable (shouldn't happen when laps exist) — fall
+            # back to sustained-run windows, never the overall average.
+            pcols = [c for c in ["Driver", "15 Lap Rank", "10 Lap Rank",
+                                 "Laps"] if c in la.columns]
+            pr = la[pcols].copy()
+            _sort = next((c for c in ["15 Lap Rank", "10 Lap Rank"]
+                          if c in pr.columns), None)
+            if _sort:
+                pr = pr.sort_values(_sort, na_position="last")
             st.dataframe(safe_fillna(format_display_df(pr.head(5))),
                          width="stretch", hide_index=True)
         else:

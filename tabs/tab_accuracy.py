@@ -747,16 +747,21 @@ def _generate_race_projections(race, series_id, weights=None,
         if practice_data:
             raise StopIteration  # skip the API fetch — we already have it
         from src.data import fetch_lap_averages
+        from src.utils import compute_practice_signals
         yr = _get_race_year(race)
         lap_avg_df = fetch_lap_averages(series_id, race_id, yr)
-        if not lap_avg_df.empty and "Overall Rank" in lap_avg_df.columns:
-            for _, prow in lap_avg_df.iterrows():
-                pdriver = prow.get("Driver")
-                prank = prow.get("Overall Rank")
-                if pdriver and prank and not pd.isna(prank):
-                    matched = fuzzy_match_name(pdriver, drivers)
-                    if matched:
-                        practice_data[matched] = int(prank)
+        if not lap_avg_df.empty:
+            # SAME signal the live app computes (coverage-weighted window
+            # ranks) — NOT NASCAR's Overall Rank, which averages every lap
+            # and flatters short-burst run profiles. Using Overall Rank
+            # here made replays validate a practice signal the app doesn't
+            # run (found via the Custer 4th-overall/25th-best-lap case).
+            sigs = compute_practice_signals(lap_avg_df,
+                                            field_size=len(drivers)) or {}
+            for pdriver, sig in sigs.items():
+                matched = fuzzy_match_name(pdriver, drivers)
+                if matched:
+                    practice_data[matched] = sig
     except Exception:
         pass
 
@@ -2424,19 +2429,21 @@ def _run_backtest(test_races, series_id, selected_year, context_label,
                 except (ValueError, TypeError):
                     continue
 
-        # Load practice data from NASCAR API
+        # Load practice data from NASCAR API — the SAME window-based signal
+        # the live app uses, not NASCAR's short-burst-flattering Overall Rank
+        # (mirrors the fix in _generate_race_projections).
         practice_data = {}
         try:
             from src.data import fetch_lap_averages
+            from src.utils import compute_practice_signals
             lap_avg_df = fetch_lap_averages(race_sid, race_id, yr)
-            if not lap_avg_df.empty and "Overall Rank" in lap_avg_df.columns:
-                for _, prow in lap_avg_df.iterrows():
-                    pdriver = prow.get("Driver")
-                    prank = prow.get("Overall Rank")
-                    if pdriver and prank and not pd.isna(prank):
-                        matched = fuzzy_match_name(pdriver, drivers)
-                        if matched:
-                            practice_data[matched] = int(prank)
+            if not lap_avg_df.empty:
+                sigs = compute_practice_signals(lap_avg_df,
+                                                field_size=len(drivers)) or {}
+                for pdriver, sig in sigs.items():
+                    matched = fuzzy_match_name(pdriver, drivers)
+                    if matched:
+                        practice_data[matched] = sig
         except Exception:
             pass
 
