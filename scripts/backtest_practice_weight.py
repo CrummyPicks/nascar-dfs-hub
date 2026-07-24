@@ -80,7 +80,17 @@ def fetch_practice(season, series_id, api_race_id):
         return {}
     df = _pd.concat(frames, ignore_index=True)
     if "Driver" in df.columns:
-        df = df.drop_duplicates("Driver", keep="first").reset_index(drop=True)
+        # Best-per-window across sessions (mirrors fetch_lap_averages) —
+        # keep="first" silently discarded better Final Practice laps for
+        # drivers who ran multiple sessions.
+        _tc = [c for c in ["Overall Avg", "Best Lap", "5 Lap", "10 Lap",
+                           "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
+               if c in df.columns]
+        _agg = {c: "min" for c in _tc}
+        for c in df.columns:
+            if c != "Driver" and c not in _agg:
+                _agg[c] = "first"
+        df = df.groupby("Driver", as_index=False, sort=False).agg(_agg)
     for time_col, rank_col in [("Overall Avg", "Overall Rank"), ("Best Lap", "1 Lap Rank"),
                                ("5 Lap", "5 Lap Rank"), ("10 Lap", "10 Lap Rank"),
                                ("15 Lap", "15 Lap Rank"), ("20 Lap", "20 Lap Rank"),

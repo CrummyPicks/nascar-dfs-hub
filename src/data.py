@@ -547,8 +547,21 @@ def fetch_lap_averages(series_id: int, race_id: int, year: int = None) -> pd.Dat
             return pd.DataFrame()
         combined = pd.concat(frames, ignore_index=True)
         if "Driver" in combined.columns:
-            # One row per driver (guards the rare cross-block duplicate).
-            combined = combined.drop_duplicates("Driver", keep="first").reset_index(drop=True)
+            # One row per driver, taking each driver's BEST (minimum) time per
+            # window ACROSS sessions. The old drop_duplicates(keep="first")
+            # kept only the first session block for drivers who ran multiple
+            # sessions — silently discarding a better Final Practice lap
+            # (e.g. San Diego Trucks: 29 drivers ran both sessions; Chandler
+            # Smith's real best 137.804 was dropped for his P1 138.536).
+            _time_cols = [c for c in ["Overall Avg", "Best Lap", "5 Lap",
+                                      "10 Lap", "15 Lap", "20 Lap", "25 Lap",
+                                      "30 Lap"] if c in combined.columns]
+            _agg = {c: "min" for c in _time_cols}
+            for c in combined.columns:
+                if c != "Driver" and c not in _agg:
+                    _agg[c] = "first"        # Car/Mfr/Sponsor: first non-null
+            combined = combined.groupby("Driver", as_index=False,
+                                        sort=False).agg(_agg)
         # Per-group ranks from the feed aren't comparable across blocks — re-rank
         # the whole field by each underlying time column (lower time = better).
         for time_col, rank_col in [("Overall Avg", "Overall Rank"), ("Best Lap", "1 Lap Rank"),
