@@ -651,6 +651,19 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
     if not races:
         return pd.DataFrame()
 
+    results = (races[0].get("results") or [])
+    # Once the starting lineup is set, drivers who failed to qualify stay at
+    # starting_position 0 while the field gets 1..N (e.g. 38 trucks entered,
+    # 36-truck field -> the two DNQs keep 0). Pre-qualifying, EVERY entry is
+    # 0, so only filter when a real lineup exists. Qualifying time alone
+    # can't decide this — provisionals let a slower car bump a faster one.
+    dnq = set()
+    lineup_set = sum(1 for r in results
+                     if (r.get("starting_position") or 0) > 0) >= 20
+    if lineup_set:
+        dnq = {_clean_api_name(r.get("driver_fullname") or "")
+               for r in results if not (r.get("starting_position") or 0)}
+
     cars = (races[0].get("cars") or [])
     if cars:
         rows = [{
@@ -660,9 +673,11 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
             "Manufacturer": car.get("car_make"),
             "Crew Chief": car.get("crew_chief_fullname", ""),
         } for car in cars]
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        if dnq:
+            df = df[~df["Driver"].isin(dnq)].reset_index(drop=True)
+        return df
 
-    results = (races[0].get("results") or [])
     if results:
         rows = [{
             "Car": r.get("car_number"),
@@ -671,7 +686,9 @@ def extract_entry_list(feed: dict) -> pd.DataFrame:
             "Manufacturer": r.get("car_make"),
             "Crew Chief": r.get("crew_chief_fullname", ""),
             "Starting Position": r.get("starting_position"),
-        } for r in results if r.get("driver_fullname")]
+        } for r in results
+            if r.get("driver_fullname")
+            and _clean_api_name(r.get("driver_fullname")) not in dnq]
         if rows:
             return pd.DataFrame(rows)
     return pd.DataFrame()
