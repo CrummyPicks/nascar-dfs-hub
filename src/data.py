@@ -2119,6 +2119,31 @@ def query_driver_dk_points_at_track(track_name: str, series_id: int = 1,
         return {}
 
 
+def resolve_db_driver_name(driver_name: str) -> str:
+    """Resolve a display-name variant to the DB's canonical drivers.full_name.
+
+    Feeds disagree on spellings — the live feed and lap-averages say "Nick
+    Sanchez" while the entry list, results, and DB say "Nicholas Sanchez" —
+    and the history queries match full_name EXACTLY, so a variant name
+    silently returned an empty race log. Exact hits pass straight through;
+    anything else goes through the nickname-aware fuzzy matcher against the
+    actual driver list.
+    """
+    if not driver_name or not DB_PATH.exists():
+        return driver_name
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        names = [r[0] for r in conn.execute(
+            "SELECT full_name FROM drivers").fetchall()]
+        conn.close()
+    except Exception:
+        return driver_name
+    if driver_name in names:
+        return driver_name
+    from src.utils import fuzzy_match_name
+    return fuzzy_match_name(driver_name, names) or driver_name
+
+
 def query_driver_tracks_raced(driver_name: str, series_id: int = None,
                               min_season: int = 2022) -> list:
     """Distinct tracks a driver has raced (most-raced first).
@@ -2128,6 +2153,7 @@ def query_driver_tracks_raced(driver_name: str, series_id: int = None,
     """
     if not DB_PATH.exists() or not driver_name:
         return []
+    driver_name = resolve_db_driver_name(driver_name)
     try:
         conn = sqlite3.connect(str(DB_PATH))
         where = ("d.full_name = ? AND r.season >= ? AND rr.finish_pos IS NOT NULL"
@@ -2180,6 +2206,7 @@ def query_driver_race_log(
     """
     if not DB_PATH.exists() or not driver_name:
         return []
+    driver_name = resolve_db_driver_name(driver_name)
     if (not track_name and not track_type and not season and not all_tracks
             and not track_names):
         return []

@@ -80,9 +80,12 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         return
 
     # NASCAR's lap-averages feed sometimes misspells names vs the entry list
-    # (e.g. "Carson Kvapili" vs "Carson Kvapil"). Remap practice driver names
-    # to the entry-list spelling so the heatmap reads right AND the drill-down
-    # dialog resolves their history. Mirrors the projection-path remap.
+    # (e.g. "Carson Kvapili" vs "Carson Kvapil"), and the live feed uses
+    # nickname variants ("Nick Sanchez" vs "Nicholas Sanchez"). Remap
+    # practice AND captured-lap driver names to the entry-list spelling so
+    # every table reads consistently and the drill-down dialog resolves
+    # their history. Mirrors the projection-path remap.
+    _canon_fn = lambda d: d
     if feed:
         from src.data import extract_entry_list
         from src.utils import normalize_driver_name, fuzzy_match_name
@@ -100,6 +103,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                     return _norm_entry[nk]
                 m = fuzzy_match_name(str(d), _entry_drivers, threshold=0.82)
                 return m or d
+            _canon_fn = _canon
             lap_averages_df = lap_averages_df.copy()
             lap_averages_df["Driver"] = lap_averages_df["Driver"].map(_canon)
 
@@ -209,6 +213,11 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
     # the ONLY lap-by-lap source — feeds both Lap Chart and Best X Laps.
     from src.data import fetch_captured_practice_laps, best_lap_averages_from_captured
     cap_df = fetch_captured_practice_laps(race_id)
+    if not cap_df.empty:
+        # Entry-list spelling for captured names too (live feed says "Nick
+        # Sanchez"; entry list/DB say "Nicholas Sanchez")
+        cap_df = cap_df.copy()
+        cap_df["driver"] = cap_df["driver"].map(lambda d: _canon_fn(str(d)))
     if not practice_laps and not cap_df.empty:
         practice_laps = [
             {"driver": d, "laps": [{"lap_num": int(r.lap_number),
