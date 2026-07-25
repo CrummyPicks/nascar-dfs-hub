@@ -707,12 +707,18 @@ def extract_qualifying(feed: dict) -> pd.DataFrame:
             if results:
                 rows = []
                 for r in results:
-                    cn = str(r.get("car_number", "")).strip()
-                    driver = r.get("driver_fullname")
+                    # Open (non-chartered) cars carry an asterisk prefix on
+                    # car_number in run results ("*67") — strip before the
+                    # car-map lookup. Run rows also use driver_name, not
+                    # driver_fullname.
+                    cn = str(r.get("car_number", "")).strip().lstrip("*")
+                    driver = r.get("driver_fullname") or r.get("driver_name")
                     team = r.get("team_name")
                     if not driver and cn in car_map:
                         driver = car_map[cn]["driver"]
                         team = team or car_map[cn]["team"]
+                    if driver:
+                        driver = _clean_api_name(driver)
                     speed = r.get("best_lap_speed") or r.get("best_speed") or r.get("qualifying_speed")
                     rows.append({
                         "Driver": driver,
@@ -747,8 +753,11 @@ def extract_practice_lap_counts(feed: dict) -> dict:
         rn = str(run.get("run_name", "")).lower()
         if rt == 1 or "practice" in rn:
             for r in (run.get("results") or []):
-                cn = str(r.get("car_number", "")).strip()
-                driver = r.get("driver_fullname")
+                # Run rows use driver_name and asterisk-prefixed car numbers
+                # for open cars ("*67") — both broke the old lookup and left
+                # those drivers with no lap count.
+                cn = str(r.get("car_number", "")).strip().lstrip("*")
+                driver = r.get("driver_fullname") or r.get("driver_name")
                 if not driver and cn in car_map:
                     driver = car_map[cn]["driver"]
                 laps = r.get("laps_completed")
@@ -773,10 +782,12 @@ def extract_practice_laps(feed: dict) -> list:
             if results:
                 driver_laps = []
                 for r in results:
-                    cn = str(r.get("car_number", "")).strip()
-                    driver = r.get("driver_fullname")
+                    cn = str(r.get("car_number", "")).strip().lstrip("*")
+                    driver = r.get("driver_fullname") or r.get("driver_name")
                     if not driver and cn in car_map:
                         driver = car_map[cn]["driver"]
+                    if driver:
+                        driver = _clean_api_name(driver)
                     laps = r.get("laps") or []
                     if driver and laps:
                         lap_data = []
@@ -790,6 +801,73 @@ def extract_practice_laps(feed: dict) -> list:
                 if driver_laps:
                     return driver_laps
     return []
+
+
+def fetch_captured_practice_laps(api_race_id: int) -> pd.DataFrame:
+    """Lap-by-lap practice/qualifying laps recorded live by
+    scripts/capture_practice_laps.py.
+
+    NASCAR publishes no per-lap practice data (lap-times.json is race laps
+    only; lap-averages has only consecutive windows) — per-lap times exist
+    only in the live feed DURING a session, so they must be captured live.
+    Returns an empty frame when nothing was captured for this race.
+    """
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            return pd.read_sql_query(
+                "SELECT run_name, vehicle_number, driver, lap_number, "
+                "lap_time, flag_state FROM captured_laps "
+                "WHERE api_race_id = ? ORDER BY driver, run_name, lap_number",
+                conn, params=(api_race_id,))
+        finally:
+            conn.close()
+    except Exception:
+        return pd.DataFrame()
+
+
+def best_lap_averages_from_captured(cap_df: pd.DataFrame) -> pd.DataFrame:
+    """Best-X-laps-OVERALL averages (not consecutive) from captured laps.
+
+    Complements NASCAR's consecutive windows: a driver whose 27 laps came in
+    short bursts never posts a 10-lap consecutive average, but their best 10
+    laps overall still describe pace. Column names mirror the lap-averages
+    frame so render_practice_heatmap and practice_bar_chart work unchanged.
+    "Overall Avg" = mean of clean laps (within 115% of the driver's median,
+    the same outlier rule as the lap chart) — NOT NASCAR's all-lap average,
+    which cool-down/pit laps distort.
+    """
+    if cap_df is None or cap_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for drv, g in cap_df.groupby("driver"):
+        times = sorted(pd.to_numeric(g["lap_time"], errors="coerce")
+                       .dropna().tolist())
+        times = [t for t in times if t > 0]
+        if not times:
+            continue
+        med = float(np.median(times))
+        clean = [t for t in times if t <= med * 1.15]
+        row = {"Driver": drv, "Laps": len(times),
+               "Overall Avg": round(sum(clean) / len(clean), 3) if clean else None}
+        for x, col in [(1, "Best Lap"), (5, "5 Lap"), (10, "10 Lap"),
+                       (15, "15 Lap"), (20, "20 Lap"), (25, "25 Lap"),
+                       (30, "30 Lap")]:
+            row[col] = round(sum(times[:x]) / x, 3) if len(times) >= x else None
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    for col, rank_col in [("Overall Avg", "Overall Rank"), ("Best Lap", "1 Lap Rank"),
+                          ("5 Lap", "5 Lap Rank"), ("10 Lap", "10 Lap Rank"),
+                          ("15 Lap", "15 Lap Rank"), ("20 Lap", "20 Lap Rank"),
+                          ("25 Lap", "25 Lap Rank"), ("30 Lap", "30 Lap Rank")]:
+        s = pd.to_numeric(df[col], errors="coerce")
+        if s.notna().any():
+            df[rank_col] = s.rank(method="min")
+    if "Overall Rank" in df.columns:
+        df = df.sort_values("Overall Rank", na_position="last").reset_index(drop=True)
+    return df
 
 
 def extract_race_results(feed: dict) -> pd.DataFrame:

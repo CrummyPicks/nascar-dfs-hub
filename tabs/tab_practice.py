@@ -157,7 +157,25 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
 
     # Check if practice lap-by-lap data exists before offering Lap Chart option
     practice_laps = extract_practice_laps(feed) if feed else []
+
+    # Live-captured lap-by-lap (scripts/capture_practice_laps.py). NASCAR
+    # never archives per-lap practice times, so for most weekends this is
+    # the ONLY lap-by-lap source — feeds both Lap Chart and Best X Laps.
+    from src.data import fetch_captured_practice_laps, best_lap_averages_from_captured
+    cap_df = fetch_captured_practice_laps(race_id)
+    if not practice_laps and not cap_df.empty:
+        practice_laps = [
+            {"driver": d, "laps": [{"lap_num": int(r.lap_number),
+                                    "lap_time": float(r.lap_time)}
+                                   for r in g.itertuples()
+                                   if r.lap_time and r.lap_time > 0]}
+            for d, g in cap_df.groupby("driver")]
+        practice_laps = [e for e in practice_laps if e["laps"]]
+    best_x_df = best_lap_averages_from_captured(cap_df)
+
     display_options = ["Rankings (Heatmap)", "Composite Score", "Lap Times"]
+    if not best_x_df.empty:
+        display_options.append("Best X Laps")
     if practice_laps:
         display_options.append("Lap Chart")
 
@@ -200,15 +218,35 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
             st.dataframe(safe_fillna(disp), width="stretch", hide_index=True,
                          height=560, **_badge_kw)
 
+    elif prac_mode == "Best X Laps":
+        n_cap = int(pd.to_numeric(best_x_df["Laps"], errors="coerce").sum())
+        st.caption(
+            f"**Best X laps overall** (not consecutive) — built from "
+            f"{n_cap} live-captured laps. A driver whose laps came in short "
+            "bursts never posts a 10-lap *consecutive* average (NASCAR's "
+            "windows), but their best 10 laps overall still show pace. "
+            "Lap Avg = clean-lap average (within 115% of driver median).")
+        render_practice_heatmap(best_x_df, show_heatmap=True,
+                                series_id=series_id, track_name=track_name)
+        with st.expander("Best-X lap times (seconds)"):
+            tcols = [c for c in ["Driver", "Laps", "Overall Avg", "Best Lap",
+                                 "5 Lap", "10 Lap", "15 Lap", "20 Lap",
+                                 "25 Lap", "30 Lap"] if c in best_x_df.columns]
+            st.dataframe(safe_fillna(format_display_df(best_x_df[tcols].copy())),
+                         width="stretch", hide_index=True, height=560)
+
     elif prac_mode == "Lap Chart":
         _render_lap_chart_with_data(practice_laps, active_df)
 
     # Bar chart (always show below for non-chart views)
     if not active_df.empty and prac_mode != "Lap Chart":
+        # In Best X mode, chart the captured best-X averages, not the
+        # consecutive-window frame
+        chart_src = best_x_df if prac_mode == "Best X Laps" else active_df
         # Interval selector for bar chart
         interval_options = ["Overall Avg"]
         for col in ["Best Lap", "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap"]:
-            if col in active_df.columns and active_df[col].notna().sum() > 3:
+            if col in chart_src.columns and chart_src[col].notna().sum() > 3:
                 interval_options.append(col)
 
         bar_cols = st.columns([2, 4])
@@ -216,7 +254,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
             bar_interval = st.selectbox("Lap interval", interval_options,
                                         key="prac_bar_interval", label_visibility="collapsed")
 
-        fig = practice_bar_chart(active_df, metric_col=bar_interval)
+        fig = practice_bar_chart(chart_src, metric_col=bar_interval)
         if fig:
             st.plotly_chart(fig, width="stretch")
 
@@ -224,6 +262,39 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
     csv = active_df.to_csv(index=False).encode("utf-8")
     st.download_button("Export Practice CSV", csv,
                        f"{race_name.replace(' ', '_')}_practice.csv", "text/csv")
+
+    # ── Live lap-by-lap capture (PC only — writes to local nascar.db) ──────
+    import os as _os
+    if not (_os.path.exists("/mount/src") or _os.name != "nt"):
+        with st.expander("Live lap-by-lap capture", expanded=False):
+            st.markdown(
+                "NASCAR only publishes consecutive-lap averages after a "
+                "session — per-lap times exist **only while practice is "
+                "live**. Start the recorder before or during a session and "
+                "leave it running; it polls every 3s, stores each lap, and "
+                "stops itself ~20 min after the session ends. Captured laps "
+                "unlock the **Best X Laps** and **Lap Chart** displays "
+                "(and sync to the cloud app with the DB).")
+            if not cap_df.empty:
+                st.caption(f"{len(cap_df)} laps / "
+                           f"{cap_df['vehicle_number'].nunique()} cars "
+                           f"captured for this race so far.")
+            if st.button("Start recorder (background)", key="start_lap_capture"):
+                import subprocess, sys as _sys
+                root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+                script = _os.path.join(root, "scripts", "capture_practice_laps.py")
+                _os.makedirs(_os.path.join(root, "cache"), exist_ok=True)
+                log = open(_os.path.join(root, "cache", f"capture_{race_id}.log"), "a")
+                # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — keeps running
+                # if the app is closed
+                subprocess.Popen(
+                    [_sys.executable, script, "--series-id", str(series_id),
+                     "--race-id", str(race_id), "--year", str(selected_year)],
+                    stdout=log, stderr=subprocess.STDOUT, cwd=root,
+                    creationflags=0x00000208)
+                st.success("Recorder started in the background. Revisit this "
+                           "tab during practice to watch laps come in "
+                           f"(log: cache/capture_{race_id}.log).")
 
 
 def _render_lap_chart_with_data(practice_laps, lap_averages_df):
