@@ -127,16 +127,35 @@ def capture(series_id: int, race_id: int, season: int, interval: float,
                 lt = v.get("last_lap_time")
                 if not num or laps_done is None:
                     continue
-                prev = last_laps.get(num)
-                last_laps[num] = laps_done
-                if prev is None or laps_done <= prev:
-                    continue
-                if not lt or lt <= 0:
-                    continue
                 drv = v.get("driver")
                 if isinstance(drv, dict):
                     drv = drv.get("full_name")
                 drv = _clean_api_name(str(drv or ""))
+                prev = last_laps.get(num)
+                last_laps[num] = laps_done
+                if prev is None:
+                    # First sight of this car. If it already posted laps
+                    # before we started (mid-session join, or the session
+                    # ran ahead of schedule), that history is gone from the
+                    # feed — but its BEST lap is still visible. Record it so
+                    # the driver isn't missing entirely (Xfinity quals
+                    # 2026-07-25: 21 of 38 cars ran before the poller
+                    # joined and were lost without this).
+                    bt = v.get("best_lap_time")
+                    if laps_done > 0 and bt and bt > 0:
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO captured_laps VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (season, series_id, race_id, run_name, num, drv,
+                             int(laps_done), float(bt), v.get("best_lap_speed"),
+                             flag, now))
+                        if cur.rowcount:
+                            new_this_poll += 1
+                            print(f"{tag}  seed {int(laps_done):>3}  #{num:<4} {drv:<24} {bt:.3f} (best, pre-join)")
+                    continue
+                if laps_done <= prev:
+                    continue
+                if not lt or lt <= 0:
+                    continue
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO captured_laps VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (season, series_id, race_id, run_name, num, drv,

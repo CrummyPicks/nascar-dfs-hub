@@ -157,22 +157,22 @@ def main():
     if a.scan_only:
         return
 
-    # Wait for the earliest start (sessions already live have start in past)
-    earliest = min(s["start_utc"] for s in sessions)
-    wait = (earliest - _utcnow()).total_seconds() - 120   # start 2 min early
-    if wait > 0:
-        print(f"sleeping {wait/60:.1f} min until first session...")
-        time.sleep(wait)
+    # Poll from 15 min BEFORE each scheduled start — sessions regularly run
+    # ahead of schedule, and joining late loses every lap already turned
+    # (the first-poll seeding in capture() recovers only each car's best).
+    def _run(s):
+        label = f"{SERIES[s['series_id']]}"
+        wait = (s["start_utc"] - _utcnow()).total_seconds() - 15 * 60
+        if wait > 0:
+            print(f"[{label}] sleeping {wait/60:.1f} min (polling from T-15)")
+            time.sleep(wait)
+        capture(series_id=s["series_id"], race_id=s["race_id"],
+                season=a.year, interval=3.0, duration_min=150.0,
+                idle_min=15.0, no_start_min=50.0, label=label)
 
     threads = []
     for s in sessions:
-        label = f"{SERIES[s['series_id']]}"
-        t = threading.Thread(
-            target=capture,
-            kwargs=dict(series_id=s["series_id"], race_id=s["race_id"],
-                        season=a.year, interval=3.0, duration_min=150.0,
-                        idle_min=15.0, no_start_min=35.0, label=label),
-            daemon=True)
+        t = threading.Thread(target=_run, args=(s,), daemon=True)
         t.start()
         threads.append(t)
         time.sleep(1)   # stagger the pollers

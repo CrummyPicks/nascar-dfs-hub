@@ -277,13 +277,28 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                          height=560, **_badge_kw)
 
     elif prac_mode == "Best X Laps":
+        # Captured laps can span several sessions (practice AND qualifying)
+        # — let the user scope the view, and always SAY what's included so
+        # single-lap qualifying data doesn't read as broken practice data.
+        cap_sessions = sorted(cap_df["run_name"].dropna().unique().tolist())
+        if len(cap_sessions) > 1:
+            sess_pick = st.selectbox("Session", ["All Sessions"] + cap_sessions,
+                                     key="bestx_session")
+            if sess_pick != "All Sessions":
+                best_x_df = _attach_dfs_context(best_lap_averages_from_captured(
+                    cap_df[cap_df["run_name"] == sess_pick]))
+            sess_label = sess_pick
+        else:
+            sess_label = cap_sessions[0] if cap_sessions else "unknown session"
         n_cap = int(pd.to_numeric(best_x_df["Laps"], errors="coerce").sum())
         st.caption(
-            f"**Best X laps overall** (not consecutive) — built from "
-            f"{n_cap} live-captured laps. A driver whose laps came in short "
-            "bursts never posts a 10-lap *consecutive* average (NASCAR's "
-            "windows), but their best 10 laps overall still show pace. "
-            "Lap Avg = clean-lap average (within 115% of driver median).")
+            f"**Best X laps overall** (not consecutive) — {n_cap} "
+            f"live-captured laps from **{sess_label}**. A driver whose laps "
+            "came in short bursts never posts a 10-lap *consecutive* average "
+            "(NASCAR's windows), but their best 10 laps overall still show "
+            "pace. Lap Avg = clean-lap average (within 115% of driver "
+            "median). Single-car qualifying shows 1 lap per driver — that's "
+            "the session, not missing data.")
         render_practice_heatmap(best_x_df, show_heatmap=True,
                                 series_id=series_id, track_name=track_name)
         with st.expander("Best-X lap times (seconds)"):
