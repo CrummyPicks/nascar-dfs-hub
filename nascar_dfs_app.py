@@ -873,7 +873,7 @@ def _page_practice():
         lap_averages_df=lap_averages_df, feed=feed,
         race_name=race_name, series_id=series_id,
         race_id=race_id, selected_year=selected_year,
-        track_name=track_name,
+        track_name=track_name, dk_df=dk_df, odds_data=odds_data,
     )
 
 

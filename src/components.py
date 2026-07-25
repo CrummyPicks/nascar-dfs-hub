@@ -242,6 +242,24 @@ def style_results_table(df, *, rank_cols=None, max_rank=40, one_dec=None,
     return styled
 
 
+def practice_context_col_config(df: pd.DataFrame) -> dict:
+    """Compact column_config for the Laps / DK Sal / Odds context columns —
+    left to auto-size they come out wider than the data warrants. Only
+    returns entries for columns present in df, so it's safe to pass
+    everywhere."""
+    cfg = {}
+    if "Laps" in df.columns:
+        cfg["Laps"] = st.column_config.NumberColumn("Laps", width="small")
+    if "DK Sal" in df.columns:
+        cfg["DK Sal"] = (st.column_config.NumberColumn(
+            "DK Sal", format="$%d", width="small")
+            if pd.api.types.is_numeric_dtype(df["DK Sal"])
+            else st.column_config.TextColumn("DK Sal", width="small"))
+    if "Odds" in df.columns:
+        cfg["Odds"] = st.column_config.TextColumn("Odds", width="small")
+    return cfg
+
+
 def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = True,
                               series_id: int = None, track_name: str = None):
     """Render the Practice Summary heatmap table.
@@ -270,20 +288,32 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
     }
 
     display_cols = ["Driver"]
+    # DFS context columns (attached by the practice tab when available) —
+    # order per user preference: salary, laps, odds
+    if "DK Sal" in df.columns and df["DK Sal"].notna().any():
+        df["DK Sal"] = pd.to_numeric(df["DK Sal"], errors="coerce")
+        display_cols.append("DK Sal")
     if "Laps" in df.columns:
         df["Laps"] = pd.to_numeric(df["Laps"], errors="coerce").astype("Int64")
         display_cols.append("Laps")
+    if "Odds" in df.columns and df["Odds"].notna().any():
+        display_cols.append("Odds")
     avail_rank_cols = []
     for rc, label in rank_cols_map.items():
         if rc in df.columns:
-            # Use the rank column directly, renamed for display
+            vals = pd.to_numeric(df[rc], errors="coerce")
+            # Skip windows nobody posted (e.g. no 20+ lap runs all session) —
+            # an all-"None" column is noise
+            if not vals.notna().any():
+                continue
             col_name = f"_r_{label}"
-            df[col_name] = pd.to_numeric(df[rc], errors="coerce").astype("Int64")
+            df[col_name] = vals.astype("Int64")
             # We'll rename at the end for clean display
             display_cols.append(col_name)
             avail_rank_cols.append(col_name)
 
-    if "Overall Rank" in df.columns:
+    if "Overall Rank" in df.columns and \
+            pd.to_numeric(df["Overall Rank"], errors="coerce").notna().any():
         df["_r_Lap Avg"] = pd.to_numeric(df["Overall Rank"], errors="coerce").astype("Int64")
         display_cols.append("_r_Lap Avg")
         avail_rank_cols.append("_r_Lap Avg")
@@ -330,24 +360,32 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
         drill_args = dict(key=f"prac_heat_{series_id}_{track_name}",
                           series_id=series_id, track_name=track_name)
 
+    # Compact width + money format for the context columns (they auto-size
+    # far too wide otherwise)
+    ctx_cfg = practice_context_col_config(disp)
+
     if show_heatmap:
         styled = style_heatmap(disp, avail_rank_display, max_rank=len(disp))
         if drill_args:
             interactive_drill_down_dataframe(
                 styled, **drill_args,
                 width="stretch", hide_index=True, height=560,
+                column_config=ctx_cfg,
             )
         else:
-            st.dataframe(styled, width="stretch", hide_index=True, height=560)
+            st.dataframe(styled, width="stretch", hide_index=True, height=560,
+                         column_config=ctx_cfg)
     else:
         from src.utils import safe_fillna
         if drill_args:
             interactive_drill_down_dataframe(
                 safe_fillna(disp), **drill_args,
                 width="stretch", hide_index=True, height=560,
+                column_config=ctx_cfg,
             )
         else:
-            st.dataframe(safe_fillna(disp), width="stretch", hide_index=True, height=560)
+            st.dataframe(safe_fillna(disp), width="stretch", hide_index=True,
+                         height=560, column_config=ctx_cfg)
 
 
 def render_driver_race_log(driver_name: str, race_data: list):

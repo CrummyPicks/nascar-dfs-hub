@@ -71,7 +71,7 @@ def _render_composite(active_df, series_id, track_name):
 
 
 def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_year,
-           track_name=None):
+           track_name=None, dk_df=None, odds_data=None):
     """Render the Practice tab."""
     section_header("Practice", race_name)
 
@@ -152,6 +152,27 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                 active_df = active_df.copy()
                 active_df["Overall Rank"] = range(1, len(active_df) + 1)
 
+    # Attach DK salary + odds so pace reads next to price on every display
+    def _attach_dfs_context(pdf):
+        if pdf is None or pdf.empty or "Driver" not in pdf.columns:
+            return pdf
+        from src.utils import fuzzy_match_name
+        pdf = pdf.copy()
+        if dk_df is not None and not dk_df.empty and "Driver" in dk_df.columns:
+            sal_col = next((c for c in dk_df.columns if "Salary" in c), None)
+            if sal_col:
+                smap = dict(zip(dk_df["Driver"], dk_df[sal_col]))
+                pdf["DK Sal"] = pdf["Driver"].map(
+                    lambda d: smap.get(d) if d in smap else smap.get(
+                        fuzzy_match_name(str(d), list(smap)) or ""))
+        if odds_data:
+            pdf["Odds"] = pdf["Driver"].map(
+                lambda d: odds_data.get(d) if d in odds_data else odds_data.get(
+                    fuzzy_match_name(str(d), list(odds_data)) or ""))
+        return pdf
+
+    active_df = _attach_dfs_context(active_df)
+
     st.caption(f"{len(active_df)} drivers  •  Source: NASCAR API lap-averages"
                + (f"  •  Session: {selected_session}" if len(all_sessions) > 1 and selected_session != "All (Combined)" else ""))
 
@@ -171,7 +192,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                                    if r.lap_time and r.lap_time > 0]}
             for d, g in cap_df.groupby("driver")]
         practice_laps = [e for e in practice_laps if e["laps"]]
-    best_x_df = best_lap_averages_from_captured(cap_df)
+    best_x_df = _attach_dfs_context(best_lap_averages_from_captured(cap_df))
 
     display_options = ["Rankings (Heatmap)", "Composite Score", "Lap Times"]
     if not best_x_df.empty:
@@ -195,15 +216,27 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         )
 
     elif prac_mode == "Lap Times":
-        time_cols = ["Driver", "Car", "Laps", "Overall Avg", "Best Lap",
-                     "5 Lap", "10 Lap", "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
-        avail = [c for c in time_cols if c in active_df.columns]
+        time_cols = ["Driver", "Car", "DK Sal", "Laps", "Odds", "Overall Avg",
+                     "Best Lap", "5 Lap", "10 Lap", "15 Lap", "20 Lap",
+                     "25 Lap", "30 Lap"]
+        # Only columns with at least one value — an all-empty window (nobody
+        # ran 20+ consecutive laps) is noise
+        avail = [c for c in time_cols if c in active_df.columns
+                 and active_df[c].notna().any()]
         disp = active_df[avail].copy()
+        if "DK Sal" in disp.columns:
+            disp["DK Sal"] = pd.to_numeric(disp["DK Sal"], errors="coerce").map(
+                lambda v: f"${v:,.0f}" if pd.notna(v) else None)
         disp = format_display_df(disp)
-        from src.components import apply_car_badges, CAR_BADGE_ROW_HEIGHT
+        from src.components import (apply_car_badges, CAR_BADGE_ROW_HEIGHT,
+                                    practice_context_col_config)
         disp, _badge_cfg = apply_car_badges(disp, series_id)
-        _badge_kw = ({"column_config": {"Car": _badge_cfg},
-                      "row_height": CAR_BADGE_ROW_HEIGHT} if _badge_cfg else {})
+        _col_cfg = practice_context_col_config(disp)
+        if _badge_cfg:
+            _col_cfg["Car"] = _badge_cfg
+        _badge_kw = {"column_config": _col_cfg}
+        if _badge_cfg:
+            _badge_kw["row_height"] = CAR_BADGE_ROW_HEIGHT
         if track_name:
             from src.components import interactive_drill_down_dataframe
             st.caption("Click any driver row for race-by-race history at this track")
@@ -229,11 +262,18 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         render_practice_heatmap(best_x_df, show_heatmap=True,
                                 series_id=series_id, track_name=track_name)
         with st.expander("Best-X lap times (seconds)"):
-            tcols = [c for c in ["Driver", "Laps", "Overall Avg", "Best Lap",
-                                 "5 Lap", "10 Lap", "15 Lap", "20 Lap",
-                                 "25 Lap", "30 Lap"] if c in best_x_df.columns]
-            st.dataframe(safe_fillna(format_display_df(best_x_df[tcols].copy())),
-                         width="stretch", hide_index=True, height=560)
+            tcols = [c for c in ["Driver", "DK Sal", "Laps", "Odds",
+                                 "Overall Avg", "Best Lap", "5 Lap", "10 Lap",
+                                 "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
+                     if c in best_x_df.columns and best_x_df[c].notna().any()]
+            tdisp = best_x_df[tcols].copy()
+            if "DK Sal" in tdisp.columns:
+                tdisp["DK Sal"] = pd.to_numeric(tdisp["DK Sal"], errors="coerce").map(
+                    lambda v: f"${v:,.0f}" if pd.notna(v) else None)
+            from src.components import practice_context_col_config
+            st.dataframe(safe_fillna(format_display_df(tdisp)),
+                         width="stretch", hide_index=True, height=560,
+                         column_config=practice_context_col_config(tdisp))
 
     elif prac_mode == "Lap Chart":
         _render_lap_chart_with_data(practice_laps, active_df)
