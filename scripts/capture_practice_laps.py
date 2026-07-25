@@ -24,16 +24,43 @@ visible as a missing lap_number).
 import argparse
 import datetime
 import os
+import re
 import sqlite3
 import sys
 import time
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
 
-from src.config import DB_PATH
-from src.data import _clean_api_name
+
+def _local_clean_name(name: str) -> str:
+    """Standalone mirror of src.data._clean_api_name — the CI capture
+    environment installs only `requests`, so src.data (pandas/streamlit)
+    may not be importable. Keep the rules in sync."""
+    if not name:
+        return ""
+    name = name.strip()
+    prev = None
+    while prev != name:
+        prev = name
+        name = re.sub(r'^\*\s*', '', name)
+        name = re.sub(r'\s*#$', '', name)
+        name = re.sub(r'\s*\([a-zA-Z]\)$', '', name)
+        name = name.strip()
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    name = name.replace(".", "")
+    return " ".join(name.split())
+
+
+try:
+    from src.config import DB_PATH
+    from src.data import _clean_api_name
+except Exception:                                    # minimal CI environment
+    DB_PATH = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "nascar.db")
+    _clean_api_name = _local_clean_name
 
 DDL = """
 CREATE TABLE IF NOT EXISTS captured_laps (
@@ -54,24 +81,30 @@ CREATE TABLE IF NOT EXISTS captured_laps (
 
 
 def capture(series_id: int, race_id: int, season: int, interval: float,
-            duration_min: float, idle_min: float):
+            duration_min: float, idle_min: float, no_start_min: float = 90.0,
+            label: str = ""):
     url = f"https://cf.nascar.com/cacher/live/series_{series_id}/{race_id}/live-feed.json"
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute(DDL)
     conn.commit()
 
+    tag = f"[{label}] " if label else ""
     last_laps = {}   # vehicle_number -> laps_completed at last poll
     total_new = 0
     started = time.monotonic()
     last_new_lap_at = time.monotonic()
-    print(f"Polling {url} every {interval:.0f}s (Ctrl+C to stop)")
+    print(f"{tag}Polling {url} every {interval:.0f}s (Ctrl+C to stop)")
 
     while True:
         if time.monotonic() - started > duration_min * 60:
-            print(f"Duration limit ({duration_min:.0f} min) reached.")
+            print(f"{tag}Duration limit ({duration_min:.0f} min) reached.")
             break
         if total_new and time.monotonic() - last_new_lap_at > idle_min * 60:
-            print(f"No new laps for {idle_min:.0f} min - session over, stopping.")
+            print(f"{tag}No new laps for {idle_min:.0f} min - session over, stopping.")
+            break
+        if not total_new and time.monotonic() - started > no_start_min * 60:
+            print(f"{tag}No laps seen in {no_start_min:.0f} min - "
+                  "session never went live here, stopping.")
             break
         try:
             feed = requests.get(url, timeout=10).json()
@@ -111,7 +144,7 @@ def capture(series_id: int, race_id: int, season: int, interval: float,
                      flag, now))
                 if cur.rowcount:
                     new_this_poll += 1
-                    print(f"  lap {int(laps_done):>3}  #{num:<4} {drv:<24} {lt:.3f}")
+                    print(f"{tag}  lap {int(laps_done):>3}  #{num:<4} {drv:<24} {lt:.3f}")
         if new_this_poll:
             conn.commit()
             total_new += new_this_poll
@@ -123,7 +156,9 @@ def capture(series_id: int, race_id: int, season: int, interval: float,
         "SELECT COUNT(*), COUNT(DISTINCT vehicle_number) FROM captured_laps "
         "WHERE api_race_id=?", (race_id,)).fetchone()
     conn.close()
-    print(f"Done. {total_new} new laps this run; {n[0]} laps / {n[1]} cars stored for race {race_id}.")
+    print(f"{tag}Done. {total_new} new laps this run; "
+          f"{n[0]} laps / {n[1]} cars stored for race {race_id}.")
+    return total_new
 
 
 def main():
@@ -135,8 +170,11 @@ def main():
     ap.add_argument("--duration", type=float, default=180.0, help="max minutes to run")
     ap.add_argument("--idle", type=float, default=20.0,
                     help="stop after this many minutes with no new laps")
+    ap.add_argument("--no-start", type=float, default=90.0,
+                    help="stop if NO laps at all after this many minutes")
     a = ap.parse_args()
-    capture(a.series_id, a.race_id, a.year, a.interval, a.duration, a.idle)
+    capture(a.series_id, a.race_id, a.year, a.interval, a.duration, a.idle,
+            a.no_start)
 
 
 if __name__ == "__main__":
