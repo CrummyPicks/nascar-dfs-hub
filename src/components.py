@@ -289,15 +289,15 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
 
     display_cols = ["Driver"]
     # DFS context columns (attached by the practice tab when available) —
-    # order per user preference: salary, laps, odds
+    # order per user preference: Driver, DK Sal, Odds, Laps, practice data
     if "DK Sal" in df.columns and df["DK Sal"].notna().any():
         df["DK Sal"] = pd.to_numeric(df["DK Sal"], errors="coerce")
         display_cols.append("DK Sal")
+    if "Odds" in df.columns and df["Odds"].notna().any():
+        display_cols.append("Odds")
     if "Laps" in df.columns:
         df["Laps"] = pd.to_numeric(df["Laps"], errors="coerce").astype("Int64")
         display_cols.append("Laps")
-    if "Odds" in df.columns and df["Odds"].notna().any():
-        display_cols.append("Odds")
     avail_rank_cols = []
     for rc, label in rank_cols_map.items():
         if rc in df.columns:

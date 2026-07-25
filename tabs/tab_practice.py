@@ -152,24 +152,49 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                 active_df = active_df.copy()
                 active_df["Overall Rank"] = range(1, len(active_df) + 1)
 
-    # Attach DK salary + odds so pace reads next to price on every display
+    # Attach DK salary + odds so pace reads next to price on every display.
+    # Odds values are NOT always strings — the auto-fetch and salary-estimate
+    # paths yield numbers, and a mixed str/float object column makes pyarrow
+    # throw ArrowTypeError (a TypeError) when st.dataframe serializes it,
+    # which took the cloud app down. Normalize hard: DK Sal numeric, Odds
+    # string-or-None.
+    def _odds_str(v):
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            v = v.get("odds") or v.get("american") or v.get("value")
+            if v is None:
+                return None
+        if isinstance(v, float) and pd.isna(v):
+            return None
+        if isinstance(v, (int, float)):
+            n = int(round(v))
+            return f"+{n}" if n > 0 else str(n)
+        return str(v)
+
     def _attach_dfs_context(pdf):
-        if pdf is None or pdf.empty or "Driver" not in pdf.columns:
+        try:
+            if pdf is None or pdf.empty or "Driver" not in pdf.columns:
+                return pdf
+            from src.utils import fuzzy_match_name
+            pdf = pdf.copy()
+            if dk_df is not None and not dk_df.empty and "Driver" in dk_df.columns:
+                sal_col = next((c for c in dk_df.columns if "Salary" in c), None)
+                if sal_col:
+                    smap = dict(zip(dk_df["Driver"], dk_df[sal_col]))
+                    pdf["DK Sal"] = pd.to_numeric(pdf["Driver"].map(
+                        lambda d: smap.get(d) if d in smap else smap.get(
+                            fuzzy_match_name(str(d), list(smap)) or "")),
+                        errors="coerce")
+            if odds_data:
+                pdf["Odds"] = [
+                    _odds_str(odds_data.get(d) if d in odds_data else odds_data.get(
+                        fuzzy_match_name(str(d), list(odds_data)) or ""))
+                    for d in pdf["Driver"]]
             return pdf
-        from src.utils import fuzzy_match_name
-        pdf = pdf.copy()
-        if dk_df is not None and not dk_df.empty and "Driver" in dk_df.columns:
-            sal_col = next((c for c in dk_df.columns if "Salary" in c), None)
-            if sal_col:
-                smap = dict(zip(dk_df["Driver"], dk_df[sal_col]))
-                pdf["DK Sal"] = pdf["Driver"].map(
-                    lambda d: smap.get(d) if d in smap else smap.get(
-                        fuzzy_match_name(str(d), list(smap)) or ""))
-        if odds_data:
-            pdf["Odds"] = pdf["Driver"].map(
-                lambda d: odds_data.get(d) if d in odds_data else odds_data.get(
-                    fuzzy_match_name(str(d), list(odds_data)) or ""))
-        return pdf
+        except Exception:
+            # Context columns are nice-to-have — never let them kill the page
+            return pdf
 
     active_df = _attach_dfs_context(active_df)
 
@@ -216,7 +241,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         )
 
     elif prac_mode == "Lap Times":
-        time_cols = ["Driver", "Car", "DK Sal", "Laps", "Odds", "Overall Avg",
+        time_cols = ["Driver", "Car", "DK Sal", "Odds", "Laps", "Overall Avg",
                      "Best Lap", "5 Lap", "10 Lap", "15 Lap", "20 Lap",
                      "25 Lap", "30 Lap"]
         # Only columns with at least one value — an all-empty window (nobody
@@ -262,7 +287,7 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
         render_practice_heatmap(best_x_df, show_heatmap=True,
                                 series_id=series_id, track_name=track_name)
         with st.expander("Best-X lap times (seconds)"):
-            tcols = [c for c in ["Driver", "DK Sal", "Laps", "Odds",
+            tcols = [c for c in ["Driver", "DK Sal", "Odds", "Laps",
                                  "Overall Avg", "Best Lap", "5 Lap", "10 Lap",
                                  "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
                      if c in best_x_df.columns and best_x_df[c].notna().any()]
