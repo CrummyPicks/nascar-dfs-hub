@@ -4989,6 +4989,27 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
     name_to_id = {row[1]: row[0] for row in db_drivers}
     driver_names = list(name_to_id.keys())
 
+    def _resolve_driver_id(name):
+        """Driver id for a pasted name; creates the driver for trusted imports.
+
+        Rookies and one-off entries (e.g. Tristan McKee, Elliott Sadler at
+        Richmond 2026-08-14) aren't in `drivers` until their first result
+        syncs — silently skipping them loses their odds. Mirrors the
+        salary-sync path, which already auto-creates. Auto-fetched sources
+        still skip unknowns so feed name-variants can't spawn junk rows.
+        """
+        matched = fuzzy_match_name(name, driver_names)
+        if matched:
+            return name_to_id[matched]
+        if sportsbook not in ("import", "manual", "bovada", "csv_import"):
+            return None
+        conn.execute("INSERT INTO drivers (full_name) VALUES (?)", (name,))
+        new_id = conn.execute("SELECT id FROM drivers WHERE full_name = ?",
+                              (name,)).fetchone()[0]
+        name_to_id[name] = new_id
+        driver_names.append(name)
+        return new_id
+
     # Build top3/top5/top10 lookup by driver_id (fuzzy matched)
     from src.utils import parse_american_odds as _amer
     t3_by_id = {}
@@ -5012,10 +5033,9 @@ def save_odds_to_db(odds_data: dict, race_id: int, sportsbook: str = "action_net
             continue
         odds_val = float(odds_val)
 
-        matched = fuzzy_match_name(name, driver_names)
-        if not matched:
+        driver_id = _resolve_driver_id(name)
+        if driver_id is None:
             continue
-        driver_id = name_to_id[matched]
 
         # Check if row exists with prop data we should preserve
         existing = conn.execute(

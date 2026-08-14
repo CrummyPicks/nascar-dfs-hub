@@ -42,7 +42,12 @@ jobs:
         run: pip install requests
 
       - name: Scan schedule and capture any live session
-        run: python scripts/capture_watchdog.py --window 40
+        # 75-min lookahead: GitHub cron ticks are best-effort and routinely
+        # fire late or get skipped (Richmond 2026-08-14: recorder joined 25
+        # min after green, losing each driver's first ~20 laps). With 75 min,
+        # the tick a full cycle earlier still arms the capture, which then
+        # sleeps until T-15 before polling.
+        run: python scripts/capture_watchdog.py --window 75
 
       - name: Commit captured laps
         # The daily refresh job also commits nascar.db, so a push can race.
