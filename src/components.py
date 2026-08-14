@@ -250,13 +250,24 @@ def practice_context_col_config(df: pd.DataFrame) -> dict:
     cfg = {}
     if "Laps" in df.columns:
         cfg["Laps"] = st.column_config.NumberColumn("Laps", width="small")
+    if "Ran" in df.columns:
+        cfg["Ran"] = st.column_config.NumberColumn(
+            "Ran", width="small",
+            help="Official session lap count — captured Laps can trail this "
+                 "when the live recorder joined mid-session")
     if "DK Sal" in df.columns:
         cfg["DK Sal"] = (st.column_config.NumberColumn(
             "DK Sal", format="$%d", width="small")
             if pd.api.types.is_numeric_dtype(df["DK Sal"])
             else st.column_config.TextColumn("DK Sal", width="small"))
     if "Odds" in df.columns:
-        cfg["Odds"] = st.column_config.TextColumn("Odds", width="small")
+        # Numeric odds sort correctly on header click (+350 before +1000);
+        # "%+d" restores the American-odds sign for display. String columns
+        # (older callers) fall back to text.
+        cfg["Odds"] = (st.column_config.NumberColumn(
+            "Odds", format="%+d", width="small")
+            if pd.api.types.is_numeric_dtype(df["Odds"])
+            else st.column_config.TextColumn("Odds", width="small"))
     return cfg
 
 
@@ -298,6 +309,9 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
     if "Laps" in df.columns:
         df["Laps"] = pd.to_numeric(df["Laps"], errors="coerce").astype("Int64")
         display_cols.append("Laps")
+    if "Ran" in df.columns and df["Ran"].notna().any():
+        df["Ran"] = pd.to_numeric(df["Ran"], errors="coerce").astype("Int64")
+        display_cols.append("Ran")
     avail_rank_cols = []
     for rc, label in rank_cols_map.items():
         if rc in df.columns:

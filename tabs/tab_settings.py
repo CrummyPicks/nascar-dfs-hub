@@ -30,8 +30,10 @@ def parse_odds_text(odds_text: str) -> dict:
     """Parse pasted sportsbook win odds into {driver: "+350"} form.
 
     Supports comma-separated ("Kyle Larson, -115"), trailing ("Chase Elliott
-    +1200"), and glued ("CoreyHeim+300") formats, plus EVEN/EV/PK. Header
-    lines (race name, dates, times, section labels) are auto-skipped.
+    +1200"), glued ("CoreyHeim+300"), and two-line ("Justin Allgaier" then
+    "+350" on the next line — new Bovada copy layout) formats, plus
+    EVEN/EV/PK. Header lines (race name, dates, times, section labels) are
+    auto-skipped.
     """
     odds_data = {}
     if not odds_text.strip():
@@ -45,7 +47,6 @@ def parse_odds_text(odds_text: str) -> dict:
     )
     # Odds tail: a signed/unsigned integer OR EVEN/EV/PK (case-insensitive)
     ODDS_RE = r'(?:[+-]?\d+|even|evens|ev|pk|pick(?:\'?em)?)'
-    has_odds_re = re.compile(ODDS_RE, re.IGNORECASE)
     csv_odds_re = re.compile(rf'^{ODDS_RE}$', re.IGNORECASE)
     trail_odds_re = re.compile(rf'^(.+?)\s*({ODDS_RE})$', re.IGNORECASE)
 
@@ -56,25 +57,36 @@ def parse_odds_text(odds_text: str) -> dict:
         odds_data[name] = f"+{val}" if val >= 0 else str(val)
         return True
 
+    pending_name = None  # name-only line awaiting odds on the next line
     for line in odds_text.strip().split("\n"):
         line = line.strip()
         if not line or skip_patterns.match(line):
             continue
-        if not has_odds_re.search(line):
+        # Format 0: bare odds on its own line pairs with the previous
+        # name-only line (new Bovada copy layout: "Justin Allgaier" / "+350")
+        if csv_odds_re.match(line):
+            if pending_name:
+                _store(pending_name, line)
+            pending_name = None
             continue
         # Format 1: comma-separated "Driver Name, +350" (or ", EVEN")
         if "," in line:
             parts = [p.strip() for p in line.split(",", 1)]
             if len(parts) == 2 and parts[0] and csv_odds_re.match(parts[1]):
                 if _store(parts[0], parts[1]):
+                    pending_name = None
                     continue
         # Format 2: trailing odds — "Driver Name +350", "DriverName+300",
         # "Connor Zilisch EVEN"
         m = trail_odds_re.match(line)
         if m:
             name = m.group(1).strip().rstrip(",")
-            if name:
-                _store(name, m.group(2))
+            if name and _store(name, m.group(2)):
+                pending_name = None
+                continue
+        # No odds on this line — treat it as a driver name candidate for
+        # the two-line format
+        pending_name = line
     return odds_data
 
 
@@ -194,7 +206,9 @@ def render(race_id: int, series_id: int, race_name: str, is_prerace: bool):
             "Odds", height=140, label_visibility="collapsed",
             placeholder="Paste win odds:\nCorey Heim+300\nKyle Busch+450\n\n"
                         "Or comma/space separated:\nKyle Larson, -115\nChase Elliott +1200",
-            help="Paste win odds from any sportsbook. Header lines "
+            help="Paste win odds from any sportsbook. Same-line "
+                 "(Kyle Larson +350) and two-line Bovada copies (name on "
+                 "one line, odds on the next) both work. Header lines "
                  "(race name, date, 'Outright') are auto-skipped.",
             key=f"odds_paste_{series_id}_{race_id}",
         )

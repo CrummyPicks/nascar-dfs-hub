@@ -214,6 +214,8 @@ def parse_odds(text):
         Kyle Larson, -115       (comma-separated)
         Chase Elliott +1200     (space-separated)
         Connor Zilisch EVEN     (pick'em — also EV / PK)
+        Justin Allgaier         (two-line: name, then odds on next line —
+        +350                     new Bovada copy layout)
 
     Auto-skips header lines (race name, date, time, "Outright", etc.)
     """
@@ -228,7 +230,6 @@ def parse_odds(text):
     )
     # Odds tail: signed/unsigned integer OR "EVEN"/"EV"/"PK"/"Pick'em"
     ODDS_RE = r'(?:[+-]?\d+|even|evens|ev|pk|pick(?:\'?em)?)'
-    has_odds_re = re.compile(ODDS_RE, re.IGNORECASE)
     csv_odds_re = re.compile(rf'^{ODDS_RE}$', re.IGNORECASE)
     trail_odds_re = re.compile(rf'^(.+?)\s*({ODDS_RE})$', re.IGNORECASE)
 
@@ -240,27 +241,38 @@ def parse_odds(text):
         odds[name] = f"+{v}" if v >= 0 else str(v)
         return True
 
+    pending_name = None  # name-only line awaiting odds on the next line
     for line in text.strip().split("\n"):
         line = line.strip()
         if not line:
             continue
         if skip_patterns.match(line):
             continue
-        if not has_odds_re.search(line):
+        # Bare odds on its own line pairs with the previous name-only line
+        # (new Bovada copy layout: "Justin Allgaier" / "+350").
+        if csv_odds_re.match(line):
+            if pending_name:
+                _store(pending_name, line)
+            pending_name = None
             continue
         # Comma-separated: "Driver Name, +350"  (or ", EVEN")
         if "," in line:
             parts = [p.strip() for p in line.split(",", 1)]
             if len(parts) == 2 and parts[0] and csv_odds_re.match(parts[1]):
                 if _store(parts[0], parts[1]):
+                    pending_name = None
                     continue
         # Trailing odds with optional whitespace — handles
         # "Driver Name +350", "DriverName+300", and "Connor Zilisch EVEN".
         m = trail_odds_re.match(line)
         if m:
             name = m.group(1).strip().rstrip(",")
-            if name:
-                _store(name, m.group(2))
+            if name and _store(name, m.group(2)):
+                pending_name = None
+                continue
+        # No odds on this line — treat it as a driver name candidate for
+        # the two-line format.
+        pending_name = line
 
     return odds
 
@@ -274,6 +286,8 @@ def import_odds():
     print(f"    Corey Heim+300           (no-space direct copy)")
     print(f"    Kyle Larson, -115        (comma-separated)")
     print(f"    Chase Elliott +1200      (space-separated)")
+    print(f"    Justin Allgaier          (two-line Bovada copy: name,")
+    print(f"    +350                      then odds on the next line)")
     print(f"  Header lines (race name, date, 'Outright') are auto-skipped.")
     print(f"  When done, press Enter twice (blank line) or type 'done'.\n")
 
@@ -532,9 +546,12 @@ def _sync_db_with_origin():
     if behind == "0" and ahead == "0":
         print("  Already up to date.")
         return
-    if _git("status", "--porcelain").stdout.strip():
-        print("  ! You have uncommitted changes — skipping auto-sync so nothing "
-              "is lost. Commit/stash them (or run `git pull`) and retry.")
+    if _git("status", "--porcelain", "nascar.db").stdout.strip():
+        # Uncommitted DB changes would be destroyed by the reset — that is
+        # real data (a paste/import not yet committed), so never touch it.
+        print("  ! nascar.db has uncommitted changes — skipping auto-sync so "
+              "nothing is lost. Commit them (or discard: `git checkout -- "
+              "nascar.db`) and retry.")
         return
     if ahead != "0":
         # Only reset away local-ahead commits if they touch NOTHING but
@@ -547,10 +564,29 @@ def _sync_db_with_origin():
                   f"{'...' if len(non_db) > 5 else ''}) — NOT resetting.")
             print("    Push/merge them first, or rerun with --no-sync.")
             return
+    # Uncommitted CODE edits (not nascar.db) are fine: stash them around the
+    # reset and restore after, so the sync never silently skips. (Skipping
+    # here was the old failure mode: import landed on a stale DB, the push
+    # was rejected non-fast-forward, and re-running could never recover.)
+    stashed = False
+    if _git("status", "--porcelain").stdout.strip():
+        if _git("stash", "push", "-m", "importer-autosync").returncode == 0:
+            stashed = True
+        else:
+            print("  ! Could not stash local edits — skipping auto-sync so "
+                  "nothing is lost. Commit/stash them and retry.")
+            return
     if _git("reset", "--hard", "origin/main").returncode == 0:
         print(f"  OK — local DB synced with GitHub (was behind {behind}, ahead {ahead}).")
     else:
         print("  ! Sync failed — continuing with the local database.")
+    if stashed:
+        if _git("stash", "pop").returncode == 0:
+            print("  OK — restored your uncommitted code edits.")
+        else:
+            print("  ! Your uncommitted edits hit a conflict while restoring — "
+                  "they are SAFE in `git stash list` (importer-autosync). "
+                  "Resolve with `git stash pop` after the import.")
 
 
 def main():

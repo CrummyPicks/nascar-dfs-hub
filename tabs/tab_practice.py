@@ -111,14 +111,13 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
     all_sessions = fetch_all_practice_sessions(series_id, race_id, selected_year)
 
     # Merge practice lap counts from weekend-feed into lap_averages_df
-    if feed:
-        lap_counts = extract_practice_lap_counts(feed)
-        if lap_counts and "Laps" not in lap_averages_df.columns:
-            from src.utils import fuzzy_match_name
-            lap_averages_df = lap_averages_df.copy()
-            lap_averages_df["Laps"] = lap_averages_df["Driver"].apply(
-                lambda d: lap_counts.get(d) or lap_counts.get(
-                    fuzzy_match_name(d, list(lap_counts.keys())) or "", None))
+    lap_counts = extract_practice_lap_counts(feed) if feed else {}
+    if lap_counts and "Laps" not in lap_averages_df.columns:
+        from src.utils import fuzzy_match_name
+        lap_averages_df = lap_averages_df.copy()
+        lap_averages_df["Laps"] = lap_averages_df["Driver"].apply(
+            lambda d: lap_counts.get(d) or lap_counts.get(
+                fuzzy_match_name(d, list(lap_counts.keys())) or "", None))
 
     # Per-driver GROUP label — only when NASCAR actually splits practice into
     # separate group sessions (each driver then appears in exactly one block).
@@ -161,20 +160,13 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
     # paths yield numbers, and a mixed str/float object column makes pyarrow
     # throw ArrowTypeError (a TypeError) when st.dataframe serializes it,
     # which took the cloud app down. Normalize hard: DK Sal numeric, Odds
-    # string-or-None.
-    def _odds_str(v):
-        if v is None:
-            return None
+    # NUMERIC (a "+2200" string column sorts lexicographically — +1000 before
+    # +350 — so keep the number and let column_config add the + sign).
+    def _odds_num(v):
         if isinstance(v, dict):
             v = v.get("odds") or v.get("american") or v.get("value")
-            if v is None:
-                return None
-        if isinstance(v, float) and pd.isna(v):
-            return None
-        if isinstance(v, (int, float)):
-            n = int(round(v))
-            return f"+{n}" if n > 0 else str(n)
-        return str(v)
+        from src.utils import parse_american_odds
+        return parse_american_odds(v)
 
     def _attach_dfs_context(pdf):
         try:
@@ -191,10 +183,10 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
                             fuzzy_match_name(str(d), list(smap)) or "")),
                         errors="coerce")
             if odds_data:
-                pdf["Odds"] = [
-                    _odds_str(odds_data.get(d) if d in odds_data else odds_data.get(
+                pdf["Odds"] = pd.array([
+                    _odds_num(odds_data.get(d) if d in odds_data else odds_data.get(
                         fuzzy_match_name(str(d), list(odds_data)) or ""))
-                    for d in pdf["Driver"]]
+                    for d in pdf["Driver"]], dtype="Int64")
             return pdf
         except Exception:
             # Context columns are nice-to-have — never let them kill the page
@@ -299,19 +291,31 @@ def render(*, lap_averages_df, feed, race_name, series_id, race_id, selected_yea
             sess_label = sess_pick
         else:
             sess_label = cap_sessions[0] if cap_sessions else "unknown session"
+        # Official session lap counts (weekend feed) next to captured counts.
+        # The recorder only sees laps while it's polling — a late start loses
+        # the early laps — so "Laps" (captured) can trail "Ran" (official).
+        if lap_counts and not best_x_df.empty:
+            from src.utils import fuzzy_match_name
+            best_x_df = best_x_df.copy()
+            best_x_df["Ran"] = pd.array([
+                lap_counts.get(d) or lap_counts.get(
+                    fuzzy_match_name(str(d), list(lap_counts)) or "")
+                for d in best_x_df["Driver"]], dtype="Int64")
         n_cap = int(pd.to_numeric(best_x_df["Laps"], errors="coerce").sum())
         st.caption(
             f"**Best X laps overall** (not consecutive) — {n_cap} "
-            f"live-captured laps from **{sess_label}**. A driver whose laps "
-            "came in short bursts never posts a 10-lap *consecutive* average "
-            "(NASCAR's windows), but their best 10 laps overall still show "
-            "pace. Lap Avg = clean-lap average (within 115% of driver "
-            "median). Single-car qualifying shows 1 lap per driver — that's "
-            "the session, not missing data.")
+            f"live-captured laps from **{sess_label}**. **Laps** = laps the "
+            "live recorder captured; **Ran** = the official session lap "
+            "count. When Laps < Ran, the recorder joined mid-session (or "
+            "the feed hiccuped) and the missing laps are unrecoverable — "
+            "NASCAR never archives per-lap practice times. Averages use "
+            "captured laps only. Lap Avg = clean-lap average (within 115% "
+            "of driver median). Single-car qualifying shows 1 lap per "
+            "driver — that's the session, not missing data.")
         render_practice_heatmap(best_x_df, show_heatmap=True,
                                 series_id=series_id, track_name=track_name)
         with st.expander("Best-X lap times (seconds)"):
-            tcols = [c for c in ["Driver", "DK Sal", "Odds", "Laps",
+            tcols = [c for c in ["Driver", "DK Sal", "Odds", "Laps", "Ran",
                                  "Overall Avg", "Best Lap", "5 Lap", "10 Lap",
                                  "15 Lap", "20 Lap", "25 Lap", "30 Lap"]
                      if c in best_x_df.columns and best_x_df[c].notna().any()]
