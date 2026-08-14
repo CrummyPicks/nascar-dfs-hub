@@ -326,7 +326,12 @@ def render_practice_heatmap(lap_averages_df: pd.DataFrame, show_heatmap: bool = 
             display_cols.append(col_name)
             avail_rank_cols.append(col_name)
 
-    if "Overall Rank" in df.columns and \
+    # "Lap Avg" (rank of the all-lap time average) is volume-confounded: 78
+    # laps of race runs average slower than 15 burst laps, so a driver can be
+    # top-5 in every consecutive window yet ~30th here (Honeycutt, Richmond
+    # 2026-08-14). The projection engine already excludes it for the same
+    # reason — only fall back to it when NO window ranks exist at all.
+    if not avail_rank_cols and "Overall Rank" in df.columns and \
             pd.to_numeric(df["Overall Rank"], errors="coerce").notna().any():
         df["_r_Lap Avg"] = pd.to_numeric(df["Overall Rank"], errors="coerce").astype("Int64")
         display_cols.append("_r_Lap Avg")

@@ -165,7 +165,11 @@ def render(*, feed, lap_data, lap_averages_df, entry_list_df, qualifying_df,
     # NaN for mismatched driver names.
     if not lap_averages_df.empty:
         prac_cols = ["Driver"]
-        for col in ["Overall Avg", "Overall Rank", "Best Lap",
+        # "Overall Avg"/"Overall Rank" (all-lap time average) intentionally
+        # excluded — volume-confounded (long race runs average slower than
+        # short bursts), and the projection engine ignores it for the same
+        # reason. Window ranks tell the real story.
+        for col in ["Best Lap",
                      "1 Lap Rank", "5 Lap Rank", "10 Lap Rank", "15 Lap Rank",
                      "20 Lap Rank", "25 Lap Rank", "30 Lap Rank"]:
             if col in lap_averages_df.columns:
