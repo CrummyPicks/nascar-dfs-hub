@@ -757,3 +757,77 @@ def find_dk_export_csvs() -> list:
                     continue
     out.sort(key=lambda x: -x[1])
     return [f for f, _ in out]
+
+
+def _entry_history_exports() -> list:
+    """Entry-history exports in Downloads/Desktop, newest first (no
+    standings files — those route to ownership, not the ledger)."""
+    out = []
+    for p in find_dk_export_csvs():
+        b = os.path.basename(p).lower()
+        if "standings" in b or b.endswith(".zip"):
+            continue
+        out.append(p)
+    return out
+
+
+def ledger_status() -> dict:
+    """How current the ledger is + the newest export sitting on disk.
+
+    The chore this kills: DK's entry-history export is FULL account
+    history, so ONE import backfills every missed day — there is no need
+    to remember a daily export. What was missing is any signal that the
+    ledger had gone stale, so it silently drifted months behind. This
+    reports the drift so the page can say so and offer a one-click import.
+
+    "Uncovered" race days are races with results that have no entry within
+    +/-1 day (DK sometimes dates a contest the day before its race). That
+    can mean a stale export OR a race genuinely sat out — the caller words
+    it as such.
+
+    Returns {entries, last_entry_date, uncovered, uncovered_labels,
+             newest_export, newest_export_date}.
+    """
+    res = {"entries": 0, "last_entry_date": None, "uncovered": 0,
+           "uncovered_labels": [], "newest_export": None,
+           "newest_export_date": None}
+    exports = _entry_history_exports()
+    if exports:
+        res["newest_export"] = exports[0]
+        try:
+            res["newest_export_date"] = datetime.fromtimestamp(
+                os.path.getmtime(exports[0])).strftime("%b %d")
+        except OSError:
+            pass
+
+    df = load_entries()
+    res["entries"] = len(df)
+    if df.empty:
+        return res
+    dates = pd.to_datetime(df["contest_date"], errors="coerce").dropna()
+    if dates.empty:
+        return res
+    last = dates.max()
+    res["last_entry_date"] = last.strftime("%b %-d, %Y") if os.name != "nt" \
+        else last.strftime("%b %#d, %Y")
+
+    idx = race_day_index()
+    if idx.empty:
+        return res
+    idx = idx.copy()
+    idx["_d"] = pd.to_datetime(idx["date"], errors="coerce")
+    entry_days = set(dates.dt.strftime("%Y-%m-%d"))
+
+    def _covered(ts):
+        if pd.isna(ts):
+            return True
+        return any((ts + pd.Timedelta(days=k)).strftime("%Y-%m-%d")
+                   in entry_days for k in (0, 1, -1))
+
+    cand = idx[(idx["_d"] >= last.normalize())
+               & (idx["_d"] <= pd.Timestamp.now())].copy()
+    cand = cand[~cand["_d"].map(_covered)].sort_values("_d")
+    res["uncovered"] = len(cand)
+    res["uncovered_labels"] = [
+        f"{r['date']} {r['track']} ({r['series']})" for _, r in cand.iterrows()]
+    return res

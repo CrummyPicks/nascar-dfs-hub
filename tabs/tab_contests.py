@@ -375,6 +375,47 @@ def render(*, series_name="Cup"):
     # container can't push to the repo — so imports/sync are PC-only, and the
     # cloud page must say so loudly instead of silently eating uploads.
     _cloud = os.path.exists("/mount/src") or os.name != "nt"
+
+    # ── Freshness banner ───────────────────────────────────────────────
+    # The ledger used to drift stale silently (months behind, no signal).
+    # DK's entry-history export is FULL account history, so one import
+    # backfills every missed day — this banner exists to remove the
+    # "remember to export after every race" chore, not to nag for a file.
+    from src.contests import ledger_status
+    _ls = ledger_status()
+    if _ls["entries"]:
+        if _ls["uncovered"]:
+            _n = _ls["uncovered"]
+            _lbl = "; ".join(_ls["uncovered_labels"][:4])
+            if _n > 4:
+                _lbl += f"; +{_n - 4} more"
+            st.warning(
+                f"**{_n} race day{'s' if _n != 1 else ''} since "
+                f"{_ls['last_entry_date']} have no entries recorded** — "
+                f"either you sat them out or this ledger is stale. {_lbl}."
+                + ("" if _cloud else
+                   "  \nOne import fixes all of it: DK's *Download Entry "
+                   "History* is your **full** account history, so you never "
+                   "need to export daily — just re-export whenever you see "
+                   "this banner.")
+            )
+            if not _cloud and _ls["newest_export"]:
+                _base = os.path.basename(_ls["newest_export"])
+                if st.button(
+                        f"⬇️ Import newest export in Downloads — {_base} "
+                        f"(saved {_ls['newest_export_date']})",
+                        type="primary", key="contest_quick_import"):
+                    _res = ingest_file(_ls["newest_export"], _base)
+                    _icon = {"ok": "✅", "skipped": "⏭️",
+                             "error": "❌"}[_res["status"]]
+                    st.write(f"{_icon} {_res['msg']}")
+                    st.rerun()
+        else:
+            st.caption(
+                f"✅ Ledger current through **{_ls['last_entry_date']}** · "
+                f"{_ls['entries']:,} entries — every race day since is "
+                "accounted for.")
+
     with st.expander("Import DraftKings exports", expanded=False):
         if _cloud:
             st.warning(
